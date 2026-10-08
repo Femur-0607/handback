@@ -210,6 +210,18 @@ class CompactGuiTests(DashboardMenuTests):
             if previous:
                 self.addCleanup(user.SetThreadDpiAwarenessContext, previous)
         super().setUp()
+        # Absolute drag targets (up to x=1400) and dock/panel placement need one
+        # consistent desktop, independent of the CI host's screen size or shell.
+        area = (0, 0, 1920, 1080)
+        height = round(48 * dashboard._window_dpi(self.root) / 96)
+        taskbar = {"rect": (0, area[3] - height, area[2], area[3]), "edge": 3,
+                   "auto_hide": False, "notification_left": area[2] - 200}
+        for name, value in (("_virtual_area", area), ("_monitor_rects", [area]),
+                            ("_monitor_area", area), ("_work_area", (area[2], area[3] - height)),
+                            ("taskbar_info", taskbar), ("taskbar_colors", [])):
+            fixture = patch.object(dashboard, name, return_value=value)
+            fixture.start()
+            self.addCleanup(fixture.stop)
         detector = patch.object(dashboard, "widget_fullscreen_covered", return_value=False)
         detector.start()
         self.addCleanup(detector.stop)
@@ -377,16 +389,6 @@ class CompactGuiTests(DashboardMenuTests):
             opener.assert_called_once_with("codex://threads/22222222-2222-2222-2222-222222222222")
 
     def test_small_upward_dock_pull_undocks_and_returns_without_resnapping(self):
-        # Exercise snapping even on an isolated desktop without Explorer's taskbar.
-        area = (0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight())
-        height = round(48 * dashboard._window_dpi(self.root) / 96)
-        info = {"rect": (0, area[3] - height, area[2], area[3]), "edge": 3,
-                "auto_hide": False, "notification_left": area[2] - 200}
-        for name, value in (("taskbar_info", info), ("_monitor_area", area),
-                            ("_monitor_rects", [area]), ("_virtual_area", area)):
-            fixture = patch.object(dashboard, name, return_value=value)
-            fixture.start()
-            self.addCleanup(fixture.stop)
         dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
         self.strip.render(self.sample_rows())
         self.root.deiconify()
