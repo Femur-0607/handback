@@ -130,9 +130,19 @@ class DashboardTests(unittest.TestCase):
         dashboard.save_prefs({}, self.home)
         self.assertEqual(dashboard.load_prefs(self.home)["mode"], "taskbar")
         self.assertIsNone(dashboard.load_prefs(self.home)["compact_x"])
+        self.assertIsNone(dashboard.load_prefs(self.home)["compact_y"])
+        self.assertTrue(dashboard.load_prefs(self.home)["docked"])
         dashboard.save_prefs({"mode": "panel", "compact_x": -450}, self.home)
         self.assertEqual(dashboard.load_prefs(self.home)["compact_x"], -450)
         self.assertEqual(dashboard.load_prefs(self.home)["mode"], "panel")
+        self.assertTrue(dashboard.load_prefs(self.home)["docked"])
+        dashboard.save_prefs({"compact_x": 500, "compact_y": -200, "docked": False}, self.home)
+        self.assertEqual((dashboard.load_prefs(self.home)["compact_x"],
+                          dashboard.load_prefs(self.home)["compact_y"],
+                          dashboard.load_prefs(self.home)["docked"]), (500, -200, False))
+        for y, docked in ((True, 1), ("50", "false"), (2.5, None)):
+            dashboard.save_prefs({"compact_y": y, "docked": docked}, self.home)
+            self.assertEqual(dashboard.load_prefs(self.home), dashboard.DEFAULT_PREFS)
         for x in (True, "50", 2.5, None):
             dashboard.save_prefs({"mode": "unknown", "compact_x": x}, self.home)
             self.assertEqual(dashboard.load_prefs(self.home), dashboard.DEFAULT_PREFS)

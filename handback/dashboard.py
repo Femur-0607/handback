@@ -27,7 +27,8 @@ AGENT_NAME = {"claude": "Claude", "codex": "Codex", "antigravity": "Antigravity"
 REFRESH_MS = 3000
 TASKBAR_ZORDER_MS = 750
 DETAIL_LIMIT = 5
-DEFAULT_PREFS = {"max_rows": 3, "order": [], "hidden": [], "mode": "taskbar", "compact_x": None}
+DEFAULT_PREFS = {"max_rows": 3, "order": [], "hidden": [], "mode": "taskbar",
+                 "compact_x": None, "compact_y": None, "docked": True}
 
 
 def _read(path):
@@ -220,6 +221,10 @@ def load_prefs(home=None):
         prefs["mode"] = stored["mode"]
     if type(stored.get("compact_x")) is int:
         prefs["compact_x"] = stored["compact_x"]
+    if type(stored.get("compact_y")) is int:
+        prefs["compact_y"] = stored["compact_y"]
+    if type(stored.get("docked")) is bool:
+        prefs["docked"] = stored["docked"]
     return prefs
 
 
@@ -362,8 +367,8 @@ def _work_area():
     return None
 
 
-def taskbar_info():
-    """Primary shell taskbar bounds and notification area, in this process's DPI space."""
+def taskbar_info(point=None):
+    """Explorer taskbar bounds on the requested monitor, in this process's DPI space."""
     if sys.platform != "win32":
         return None
     import ctypes
@@ -388,17 +393,124 @@ def taskbar_info():
         user.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
         user.FindWindowExW.restype = wintypes.HWND
         user.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
-        tray = user.FindWindowExW(user.FindWindowW("Shell_TrayWnd", None), None, "TrayNotifyWnd", None)
+        hwnd = user.FindWindowW("Shell_TrayWnd", None)
+        if point is not None:
+            user.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+            user.MonitorFromPoint.restype = wintypes.HANDLE
+            user.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+            user.MonitorFromWindow.restype = wintypes.HANDLE
+            monitor = user.MonitorFromPoint(wintypes.POINT(*point), 2)
+            if user.MonitorFromWindow(hwnd, 2) != monitor:
+                secondary = None
+                for _ in range(64):
+                    secondary = user.FindWindowExW(None, secondary, "Shell_SecondaryTrayWnd", None)
+                    if not secondary:
+                        return None
+                    if user.MonitorFromWindow(secondary, 2) == monitor:
+                        r = wintypes.RECT()
+                        if not user.GetWindowRect(secondary, ctypes.byref(r)):
+                            return None
+                        # Secondary Explorer taskbars have no TrayNotifyWnd.
+                        class MonitorInfo(ctypes.Structure):
+                            _fields_ = [("size", wintypes.DWORD), ("monitor", wintypes.RECT),
+                                        ("work", wintypes.RECT), ("flags", wintypes.DWORD)]
+                        info = MonitorInfo()
+                        info.size = ctypes.sizeof(info)
+                        user.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
+                        if not user.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                            return None
+                        if r.right - r.left >= r.bottom - r.top:
+                            edge = 1 if abs(r.top - info.monitor.top) < abs(r.bottom - info.monitor.bottom) else 3
+                        else:
+                            edge = 0 if abs(r.left - info.monitor.left) < abs(r.right - info.monitor.right) else 2
+                        return {"rect": (r.left, r.top, r.right, r.bottom), "edge": edge,
+                                "auto_hide": auto_hide, "notification_left": None, "hwnd": secondary}
+                return None
+        tray = user.FindWindowExW(hwnd, None, "TrayNotifyWnd", None)
         rect = wintypes.RECT()
         notification = rect.left if tray and user.GetWindowRect(tray, ctypes.byref(rect)) else None
         r = data.rc
         return {"rect": (r.left, r.top, r.right, r.bottom), "edge": data.uEdge,
-                "auto_hide": auto_hide, "notification_left": notification}
+                "auto_hide": auto_hide, "notification_left": notification, "hwnd": hwnd}
     except (AttributeError, OSError):
         return None
 
 
-def keep_above_taskbar(widget):
+def fullscreen_covers_widget(rect, monitor_rect, foreground_monitor, widget_monitor,
+                             class_name="", own_window=False, notification_state=None):
+    """Notification state is global: it cannot establish same-monitor coverage."""
+    if (own_window or class_name in {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
+            or not foreground_monitor or foreground_monitor != widget_monitor
+            or not rect or not monitor_rect):
+        return False
+    left, top, right, bottom = monitor_rect
+    return (right > left and bottom > top and rect[0] <= left and rect[1] <= top
+            and rect[2] >= right and rect[3] >= bottom)
+
+
+def widget_fullscreen_covered(widget, point=None):
+    """Compare foreground bounds with the full monitor, excluding our process."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    class MonitorInfo(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+    try:
+        user = ctypes.windll.user32
+        user.GetForegroundWindow.restype = wintypes.HWND
+        user.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        user.GetAncestor.restype = wintypes.HWND
+        user.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+        user.MonitorFromWindow.restype = wintypes.HANDLE
+        user.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+        user.MonitorFromPoint.restype = wintypes.HANDLE
+        user.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
+        user.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        user.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        foreground = user.GetForegroundWindow()
+        hwnd = user.GetAncestor(widget.winfo_id(), 2)
+        monitor = user.MonitorFromWindow(foreground, 2)
+        own_monitor = (user.MonitorFromPoint(wintypes.POINT(*point), 2) if point is not None
+                       else user.MonitorFromWindow(hwnd, 2))
+        if not foreground or not hwnd or monitor != own_monitor:
+            return False
+        pid = wintypes.DWORD()
+        user.GetWindowThreadProcessId(foreground, ctypes.byref(pid))
+        name = ctypes.create_unicode_buffer(256)
+        user.GetClassNameW(foreground, name, len(name))
+        rect, info = wintypes.RECT(), MonitorInfo()
+        info.cbSize = ctypes.sizeof(info)
+        if not user.GetWindowRect(foreground, ctypes.byref(rect)) or not user.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return False
+        bounds = lambda r: (r.left, r.top, r.right, r.bottom)
+        return fullscreen_covers_widget(bounds(rect), bounds(info.rcMonitor), monitor,
+                                        own_monitor, name.value, pid.value == os.getpid())
+    except (AttributeError, OSError):
+        return False
+
+
+def show_widget_without_activation(widget, visible):
+    # Keep Tk's mapping state in sync; ShowWindow(SW_HIDE) alone is undone
+    # when a subsequent idle geometry update remaps the wrapper.
+    if not visible:
+        widget.withdraw()
+        return
+    widget.deiconify()  # Override-redirect Tk windows are shown without activation.
+    import ctypes
+    from ctypes import wintypes
+    user = ctypes.windll.user32
+    user.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user.GetAncestor.restype = wintypes.HWND
+    user.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user.ShowWindow(user.GetAncestor(widget.winfo_id(), 2), 4)  # SW_SHOWNOACTIVATE
+
+
+def keep_above_taskbar(widget, taskbar=None):
     """Repair Explorer's topmost ordering without activating or repainting Tk."""
     if sys.platform != "win32" or not widget.winfo_ismapped():
         return
@@ -415,7 +527,7 @@ def keep_above_taskbar(widget):
                                  ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
     user.SetWindowPos.restype = wintypes.BOOL
     hwnd = user.GetAncestor(widget.winfo_id(), 2)  # GA_ROOT: Tk's native wrapper.
-    taskbar = user.FindWindowW("Shell_TrayWnd", None)  # Re-find after Explorer restarts.
+    taskbar = taskbar or user.FindWindowW("Shell_TrayWnd", None)
     if not hwnd or not taskbar:
         return
     above = user.GetWindow(hwnd, 3)  # GW_HWNDPREV
@@ -431,15 +543,17 @@ def keep_above_taskbar(widget):
 
 
 def compact_geometry(info, area, width, height, x=None):
-    """Use a bottom taskbar, otherwise put the widget just above the work-area bottom."""
+    """Dock to a horizontal taskbar, respecting the tray when there is enough room."""
     left, top, right, bottom = area
-    if (info and info["edge"] == 3 and not info["auto_hide"]
+    if (info and info["edge"] in (1, 3) and not info["auto_hide"]
             and info["rect"][2] > info["rect"][0] and info["rect"][3] > info["rect"][1]):
         left, y, right, bottom = info["rect"]
         height = bottom - y
         default_right = info.get("notification_left")
         if default_right is None or not left < default_right <= right:
             default_right = right
+        if default_right - left >= width:
+            right = default_right
     else:
         height = min(height, bottom - top)
         y, default_right = bottom - height - 4, right - 8
@@ -447,6 +561,68 @@ def compact_geometry(info, area, width, height, x=None):
     width = min(width, right - left)
     x = default_right - width if x is None else x
     return max(left, min(x, right - width)), y, width, height
+
+
+def clamp_compact(x, y, width, height, bounds):
+    left, top, right, bottom = bounds
+    width, height = min(width, right - left), min(height, bottom - top)
+    return (max(left, min(x, right - width)), max(top, min(y, bottom - height)), width, height)
+
+
+def compact_drag_geometry(info, monitor, virtual, x, y, width, height, dpi=96):
+    """Snap the free widget's near edge to a horizontal taskbar, including overlap."""
+    threshold = max(1, round(20 * dpi / 96))
+    if info and info["edge"] in (1, 3) and not info["auto_hide"]:
+        left, top, right, bottom = info["rect"]
+        edge = y + height if info["edge"] == 3 else y
+        distance = max(top - edge, edge - bottom, 0)
+        if right > left and bottom > top and x + width > left and x < right and distance <= threshold:
+            return True, compact_geometry(info, monitor, width, height, x)
+    # Constrain to the target monitor too, so disconnected/gapped desktops cannot lose the widget.
+    return False, clamp_compact(*clamp_compact(x, y, width, height, virtual), monitor)
+
+
+def compact_panel_geometry(widget_rect, width, height, area):
+    x, y, widget_width, widget_height = widget_rect
+    left, top, right, bottom = area
+    width, height = min(width, right - left), min(height, bottom - top)
+    x = max(left, min(x + widget_width - width, right - width))
+    y = y - height if y - height >= top else y + widget_height
+    return x, max(top, min(y, bottom - height)), width, height
+
+
+def _virtual_area(widget):
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+        user = ctypes.windll.user32
+        # GetSystemMetrics can be DPI-virtualized independently of shell rectangles.
+        # Use the same GetMonitorInfo coordinate space as taskbar placement instead.
+        class MonitorInfo(ctypes.Structure):
+            _fields_ = [("size", wintypes.DWORD), ("monitor", wintypes.RECT),
+                        ("work", wintypes.RECT), ("flags", wintypes.DWORD)]
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, wintypes.HDC,
+                                          ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+        user.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
+        rectangles = []
+        def collect(handle, hdc, rect, data):
+            info = MonitorInfo()
+            info.size = ctypes.sizeof(info)
+            if user.GetMonitorInfoW(handle, ctypes.byref(info)):
+                r = info.monitor
+                rectangles.append((r.left, r.top, r.right, r.bottom))
+            return True
+        user.EnumDisplayMonitors.argtypes = [wintypes.HDC, ctypes.POINTER(wintypes.RECT),
+                                            callback_type, wintypes.LPARAM]
+        user.EnumDisplayMonitors(None, None, callback_type(collect), 0)
+        if rectangles:
+            return (min(r[0] for r in rectangles), min(r[1] for r in rectangles),
+                    max(r[2] for r in rectangles), max(r[3] for r in rectangles))
+        x, y = user.GetSystemMetrics(76), user.GetSystemMetrics(77)
+        return x, y, x + user.GetSystemMetrics(78), y + user.GetSystemMetrics(79)
+    return (widget.winfo_vrootx(), widget.winfo_vrooty(),
+            widget.winfo_vrootx() + widget.winfo_vrootwidth(),
+            widget.winfo_vrooty() + widget.winfo_vrootheight())
 
 
 def compact_lines(rows, prefs, name_width, measure):
@@ -510,7 +686,7 @@ def compact_palette(samples=()):
 
 def taskbar_sample_points(info, dpi, excluded=None):
     """Sample inset top/bottom bands, away from icon centres and our own window."""
-    if not info or info["auto_hide"] or info["edge"] != 3:
+    if not info or info["auto_hide"] or info["edge"] not in (1, 3):
         return []
     left, top, right, bottom = info["rect"]
     inset = max(2, round(4 * dpi / 96))
@@ -562,7 +738,7 @@ def popup_position(x, y, width, height, area, parent=None):
     return max(left, min(x, right - width)), max(top, min(y, bottom - height)), width, height
 
 
-def _monitor_area(widget, x, y):
+def _monitor_area(widget, x, y, full=False):
     if sys.platform == "win32":
         import ctypes
         from ctypes import wintypes
@@ -579,7 +755,7 @@ def _monitor_area(widget, x, y):
         info.size = ctypes.sizeof(info)
         handle = user.MonitorFromPoint(wintypes.POINT(x, y), 2)
         if user.GetMonitorInfoW(handle, ctypes.byref(info)):
-            rect = info.work
+            rect = info.monitor if full else info.work
             return rect.left, rect.top, rect.right, rect.bottom
     return (widget.winfo_vrootx(), widget.winfo_vrooty(),
             widget.winfo_vrootx() + widget.winfo_vrootwidth(),
@@ -804,6 +980,12 @@ class Strip:
         self._outside_timer = None
         self._refresh_timer = None
         self._zorder_timer = None
+        self._fullscreen_hidden = False
+        self.docked = load_prefs(home)["docked"]
+        self._dragging = False
+        self._dragged = False
+        self._compact_position = None
+        self._taskbar_hwnd = None
         self._mouse_down = False
         self._start = None
         self._rows = []
@@ -863,10 +1045,22 @@ class Strip:
         elif self._zorder_timer is not None:
             self.root.after_cancel(self._zorder_timer)
             self._zorder_timer = None
+        if self.mode != "taskbar" and self._fullscreen_hidden:
+            show_widget_without_activation(self.root, True)
+            self._fullscreen_hidden = False
 
     def _watch_zorder(self):
         self._zorder_timer = None
-        keep_above_taskbar(self.root)
+        hidden = widget_fullscreen_covered(self.root)
+        if hidden != self._fullscreen_hidden:
+            if hidden:
+                self._collapse_panel()
+                self._close_menu()
+                self.tooltip.hide()
+            show_widget_without_activation(self.root, not hidden)
+            self._fullscreen_hidden = hidden
+        if not hidden and self.docked:
+            keep_above_taskbar(self.root, self._taskbar_hwnd)
         self._zorder_timer = self.root.after(TASKBAR_ZORDER_MS, self._watch_zorder)
 
     def _label(self, text, row, column, fg=None, font=None, padx=(0, 10), project=None):
@@ -904,6 +1098,8 @@ class Strip:
             self._collapse_panel()
             self.mode = prefs["mode"]
             self.anchor = None
+        if not self._dragging:
+            self.docked = prefs["docked"]
         self._sync_zorder_timer()
         if self.mode == "panel":
             self.root.attributes("-alpha", 0.93)
@@ -927,7 +1123,16 @@ class Strip:
         self.unread_counts = {row["root"]: len(row["unread"]) for row in rows}
         shown, _ = arrange(rows, {**prefs, "max_rows": 0})
         self.order = [row["root"] for row in shown]
-        info = taskbar_info()
+        primary = taskbar_info()
+        virtual = _virtual_area(self.root)
+        position = self._compact_position if self._dragging else (prefs["compact_x"], prefs["compact_y"])
+        px, py = position or (None, None)
+        point = (px if px is not None else primary["rect"][0] if primary else virtual[0],
+                 py if py is not None else primary["rect"][1] if primary else virtual[1])
+        point = clamp_compact(*point, 1, 1, virtual)[:2]
+        info = primary if px is None and py is None else taskbar_info(point)
+        self._taskbar_hwnd = info.get("hwnd") if info else None
+        area = _monitor_area(self.root, *point, full=True)
         dpi = _window_dpi(self.root)
         excluded = None
         if self.root.winfo_ismapped():
@@ -935,23 +1140,28 @@ class Strip:
             excluded = (x, y, x + self.root.winfo_width(), y + self.root.winfo_height())
         key = ((tuple(info["rect"]), info["edge"], info["auto_hide"]) if info else None, dpi, excluded)
         now = time.monotonic()
-        if key != self._palette_key or now - self._palette_at >= 30:
-            self._compact_palette = compact_palette(taskbar_colors(info, dpi, excluded))
+        if (self.docked and not self._fullscreen_hidden
+                and not widget_fullscreen_covered(self.root, point)
+                and (key != self._palette_key or now - self._palette_at >= 30)):
+            samples = [rgb for rgb in taskbar_colors(info, dpi, excluded) if rgb != (0, 0, 0)]
+            if samples:
+                self._compact_palette = compact_palette(samples)
             self._palette_key, self._palette_at = key, now
-        palette = self._compact_palette
+        palette = self._compact_palette if self.docked else {
+            "bg": self.BG, "fg": self.FG, "dim": self.DIM, "green": self.GREEN, "yellow": self.YELLOW}
         bg = palette["bg"]
         padding, gap = max(1, round(7 * dpi / 96)), max(1, round(3 * dpi / 96))
         # Samples already include the taskbar's transparency; avoid blending them twice.
         self.root.attributes("-alpha", 1.0)
         self.root.configure(bg=bg)
-        self.frame.configure(bg=bg, padx=padding, pady=0, highlightthickness=0)
+        self.frame.configure(bg=bg, padx=padding, pady=0 if self.docked else 2,
+                             highlightthickness=0 if self.docked else 1,
+                             highlightbackground=DarkMenu.HOVER)
         self.frame.pack_configure(fill="both", expand=True)
-        point = (info["rect"][0], info["rect"][1]) if info else (self.root.winfo_x(), self.root.winfo_y())
-        area = _monitor_area(self.root, *point)
         # Negative Tk font sizes are pixels; derive them from this window's actual DPI.
         pixels = max(6, round(8 * dpi / 72))
         self.compact_metrics.configure(size=-pixels)
-        if info and info["edge"] == 3 and not info["auto_hide"]:
+        if self.docked and info and info["edge"] in (1, 3) and not info["auto_hide"]:
             available = info["rect"][3] - info["rect"][1]
             while self.compact_metrics.metrics("linespace") * 2 > available and pixels > 5:
                 pixels -= 1
@@ -982,8 +1192,15 @@ class Strip:
         self.root.update_idletasks()
         width = max(self.frame.winfo_reqwidth(), name_width + sum(measure(text) for text in
                     ("● 99", "✉ 99", "+99")) + 3 * gap + 2 * padding)
-        geometry = compact_geometry(info, area, width, self.compact_metrics.metrics("linespace") * 2 + 4,
-                                    prefs["compact_x"])
+        self._compact_free_height = max(self.frame.winfo_reqheight(),
+                                        self.compact_metrics.metrics("linespace") * 2 + 6)
+        if self.docked:
+            geometry = compact_geometry(info, area, width, self._compact_free_height, px)
+        else:
+            x = px if px is not None else area[2] - width - 8
+            y = py if py is not None else area[3] - self._compact_free_height - 8
+            geometry = clamp_compact(*clamp_compact(x, y, width, self._compact_free_height, virtual), area)
+        self._compact_position = geometry[:2]
         self._compact_geometry = geometry
         x, y, width, height = geometry
         self.root.geometry(f"{width}x{height}+{x}+{y}")
@@ -1471,9 +1688,8 @@ class Strip:
             width, height = self.panel.winfo_reqwidth(), self.panel.winfo_reqheight()
             x, y = self.root.winfo_x(), self.root.winfo_y()
             area = _monitor_area(self.root, x, y)
-            width, height = min(width, area[2] - area[0]), min(height, area[3] - area[1])
-            x = max(area[0], min(x + self.root.winfo_width() - width, area[2] - width))
-            y = max(area[1], min(y - height, area[3] - height))
+            x, y, width, height = compact_panel_geometry(
+                (x, y, self.root.winfo_width(), self.root.winfo_height()), width, height, area)
             self.panel.geometry(f"{width}x{height}+{x}+{y}")
             return
         width, height = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
@@ -1485,18 +1701,32 @@ class Strip:
 
     def _press(self, event):
         self._start = (event.x_root, event.y_root, self.root.winfo_x(), self.root.winfo_y())
+        self._dragged = False
 
     def _drag(self, event):
         if self._start is None:
             return
         x0, y0, wx, wy = self._start
         if self.mode == "taskbar":
+            if not self._dragged and max(abs(event.x_root - x0), abs(event.y_root - y0)) <= 3:
+                return
+            self._dragging = self._dragged = True
+            self.root.grab_set()
             self._collapse_panel()
-            info = taskbar_info()
-            area = _monitor_area(self.root, wx, wy)
-            x, y, width, height = compact_geometry(info, area, self.root.winfo_width(),
-                                                 self.root.winfo_height(), wx + event.x_root - x0)
-            self.root.geometry(f"+{x}+{y}")
+            info = taskbar_info((event.x_root, event.y_root))
+            area = _monitor_area(self.root, event.x_root, event.y_root, full=True)
+            docked, geometry = compact_drag_geometry(info, area, _virtual_area(self.root),
+                wx + event.x_root - x0, wy + event.y_root - y0, self.root.winfo_width(),
+                self._compact_free_height, _window_dpi(self.root))
+            changed = docked != self.docked
+            self.docked = docked
+            self._compact_position = geometry[:2]
+            if changed:
+                self._palette_key = None
+                self.render(self._rows)
+            else:
+                x, y, width, height = self._compact_geometry = geometry
+                self.root.geometry(f"{width}x{height}+{x}+{y}")
             return
         self.root.geometry(f"+{wx + event.x_root - x0}+{wy + event.y_root - y0}")
 
@@ -1505,9 +1735,13 @@ class Strip:
             start, self._start = self._start, None
             if start is None:
                 return
-            if abs(event.x_root - start[0]) > 3:
+            self.root.grab_release()
+            self._dragging = False
+            if self._dragged:
+                self.root.update_idletasks()
                 prefs = load_prefs(self.home)
-                save_prefs({**prefs, "compact_x": self.root.winfo_x()}, self.home)
+                save_prefs({**prefs, "compact_x": self.root.winfo_x(),
+                            "compact_y": self.root.winfo_y(), "docked": self.docked}, self.home)
             else:
                 self._toggle_panel()
             return
@@ -1533,6 +1767,8 @@ class Strip:
     def run(self):
         self.refresh()
         self.root.deiconify()
+        if self._fullscreen_hidden:
+            show_widget_without_activation(self.root, False)
         self.root.mainloop()
 
 
