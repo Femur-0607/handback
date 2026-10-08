@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/assets/handback-logo.png" alt="handback" width="420"></p>
 
-https://github.com/user-attachments/assets/1b84114c-2313-43aa-a6ab-77b012d944ba
+https://github.com/user-attachments/assets/b9927ffd-ec73-4980-a128-65842894e269
 
 # handback
 
