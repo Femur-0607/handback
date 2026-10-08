@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/assets/handback-logo.png" alt="handback" width="420"></p>
 
-<p align="center"><a href="docs/assets/handback-promo.mp4">Watch the handback promo video</a></p>
+https://github.com/user-attachments/assets/1b84114c-2313-43aa-a6ab-77b012d944ba
 
 # agent-relay
 
