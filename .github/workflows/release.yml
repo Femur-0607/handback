@@ -26,6 +26,9 @@ jobs:
         shell: python {0}
         run: |
           import os
+          import sys
+
+          sys.path.insert(0, os.getcwd())  # the step script runs from a temp directory
           from handback import __version__
 
           tag = os.environ['GITHUB_REF_NAME']
