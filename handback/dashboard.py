@@ -569,9 +569,10 @@ def clamp_compact(x, y, width, height, bounds):
     return (max(left, min(x, right - width)), max(top, min(y, bottom - height)), width, height)
 
 
-def compact_drag_geometry(info, monitor, virtual, x, y, width, height, dpi=96, *, from_dock=False):
+def compact_drag_geometry(info, monitor, virtual, x, y, width, height, dpi=96, *, from_dock=False,
+                          snap_distance=None):
     """Snap the free widget's near edge to a horizontal taskbar, including overlap."""
-    threshold = max(1, round(20 * dpi / 96))
+    threshold = max(1, round(20 * dpi / 96)) if snap_distance is None else snap_distance
     if info and info["edge"] in (1, 3) and not info["auto_hide"]:
         left, top, right, bottom = info["rect"]
         edge = y + height if info["edge"] == 3 else y
@@ -593,7 +594,26 @@ def compact_panel_geometry(widget_rect, width, height, area):
     return x, max(top, min(y, bottom - height)), width, height
 
 
-def _virtual_area(widget):
+def drag_position(start, cursor):
+    """Always use the press position, even after a snap, clamp or stale event."""
+    x, y, wx, wy = start
+    return wx + cursor[0] - x, wy + cursor[1] - y
+
+
+def drag_threshold(dpi):
+    return max(1, round(4 * dpi / 96))
+
+
+def monitor_at_point(rectangles, point):
+    """Choose from cached rectangles, including negative origins and desktop gaps."""
+    x, y = point
+    def distance(rect):
+        left, top, right, bottom = rect
+        return max(left-x, x-right+1, 0)**2 + max(top-y, y-bottom+1, 0)**2
+    return min(rectangles, key=distance)
+
+
+def _monitor_rects(widget):
     if sys.platform == "win32":
         import ctypes
         from ctypes import wintypes
@@ -618,13 +638,58 @@ def _virtual_area(widget):
                                             callback_type, wintypes.LPARAM]
         user.EnumDisplayMonitors(None, None, callback_type(collect), 0)
         if rectangles:
-            return (min(r[0] for r in rectangles), min(r[1] for r in rectangles),
-                    max(r[2] for r in rectangles), max(r[3] for r in rectangles))
+            return rectangles
         x, y = user.GetSystemMetrics(76), user.GetSystemMetrics(77)
-        return x, y, x + user.GetSystemMetrics(78), y + user.GetSystemMetrics(79)
-    return (widget.winfo_vrootx(), widget.winfo_vrooty(),
+        return [(x, y, x + user.GetSystemMetrics(78), y + user.GetSystemMetrics(79))]
+    return [(widget.winfo_vrootx(), widget.winfo_vrooty(),
             widget.winfo_vrootx() + widget.winfo_vrootwidth(),
-            widget.winfo_vrooty() + widget.winfo_vrootheight())
+            widget.winfo_vrooty() + widget.winfo_vrootheight())]
+
+
+def _virtual_area(widget):
+    rectangles = _monitor_rects(widget)
+    return (min(r[0] for r in rectangles), min(r[1] for r in rectangles),
+            max(r[2] for r in rectangles), max(r[3] for r in rectangles))
+
+
+def _pointer_capture(widget):
+    """Tk's local grab uses a native capture while the real mouse button is down."""
+    widget.grab_set()
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+        user = ctypes.windll.user32
+        user.GetCapture.restype = wintypes.HWND
+        return user.GetCapture()
+    return None
+
+
+def _pointer_capture_owned(widget, native_capture):
+    if widget.grab_current() != widget:
+        return False
+    if native_capture and sys.platform == "win32":
+        import ctypes
+        return ctypes.windll.user32.GetCapture() == native_capture
+    return True
+
+
+def _native_drag_mover(widget):
+    """Cache the owned HWND and native call; resize/style changes still use Tk."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+    user = ctypes.windll.user32
+    user.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user.GetAncestor.restype = wintypes.HWND
+    hwnd = user.GetAncestor(widget.winfo_id(), 2)
+    if not hwnd:
+        return None
+    user.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                  ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    user.SetWindowPos.restype = wintypes.BOOL
+    # SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+    return lambda x, y: bool(user.SetWindowPos(hwnd, None, x, y, 0, 0, 0x15))
 
 
 def compact_lines(rows, prefs, name_width, measure):
@@ -992,6 +1057,12 @@ class Strip:
         self._compact_font_key = None
         self._compact_geometry = None
         self._drag_from_dock = False
+        self._drag_timer = None
+        self._drag_capture_timer = None
+        self._drag_context = None
+        self._drag_cursor = None
+        self._drag_native_capture = None
+        self._drag_native_move = None
         self._taskbar_hwnd = None
         self._mouse_down = False
         self._start = None
@@ -1034,16 +1105,20 @@ class Strip:
         self.root.bind("<ButtonPress-1>", self._press)
         self.root.bind("<B1-Motion>", self._drag)
         self.root.bind("<ButtonRelease-1>", self._release)
+        self.root.bind("<Unmap>", self._drag_unmapped)
         self.root.bind("<Escape>", lambda event: self._collapse_panel())
         self.root.bind("<Destroy>", self._destroyed, add="+")
 
     def _destroyed(self, event):
         if event.widget == self.root:
-            for name in ("_outside_timer", "_refresh_timer", "_zorder_timer"):
+            for name in ("_outside_timer", "_refresh_timer", "_zorder_timer",
+                         "_drag_timer", "_drag_capture_timer"):
                 timer = getattr(self, name)
                 if timer is not None:
                     self.root.after_cancel(timer)
                     setattr(self, name, None)
+            self._start = None
+            self._dragging = False
 
     def _sync_zorder_timer(self):
         if self.mode == "taskbar" and sys.platform == "win32":
@@ -1129,24 +1204,29 @@ class Strip:
         self.unread_counts = {row["root"]: len(row["unread"]) for row in rows}
         shown, _ = arrange(rows, {**prefs, "max_rows": 0})
         self.order = [row["root"] for row in shown]
-        primary = taskbar_info()
-        virtual = _virtual_area(self.root)
         position = self._compact_position if self._dragging else (prefs["compact_x"], prefs["compact_y"])
         px, py = position or (None, None)
-        point = (px if px is not None else primary["rect"][0] if primary else virtual[0],
-                 py if py is not None else primary["rect"][1] if primary else virtual[1])
-        point = clamp_compact(*point, 1, 1, virtual)[:2]
-        info = primary if px is None and py is None else taskbar_info(point)
+        if self._dragging and self._drag_context is not None:
+            info, area, dpi = self._drag_context
+            virtual = self._drag_virtual
+            point = (px, py)
+        else:
+            primary = taskbar_info()
+            virtual = _virtual_area(self.root)
+            point = (px if px is not None else primary["rect"][0] if primary else virtual[0],
+                     py if py is not None else primary["rect"][1] if primary else virtual[1])
+            point = clamp_compact(*point, 1, 1, virtual)[:2]
+            info = primary if px is None and py is None else taskbar_info(point)
+            area = _monitor_area(self.root, *point, full=True)
+            dpi = _window_dpi(self.root)
         self._taskbar_hwnd = info.get("hwnd") if info else None
-        area = _monitor_area(self.root, *point, full=True)
-        dpi = _window_dpi(self.root)
         excluded = None
         if self.root.winfo_ismapped():
             x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
             excluded = (x, y, x + self.root.winfo_width(), y + self.root.winfo_height())
         key = ((tuple(info["rect"]), info["edge"], info["auto_hide"]) if info else None, dpi, excluded)
         now = time.monotonic()
-        if (self.docked and not self._fullscreen_hidden
+        if (self.docked and not self._dragging and not self._fullscreen_hidden
                 and not widget_fullscreen_covered(self.root, point)
                 and (key != self._palette_key or now - self._palette_at >= 30)):
             samples = [rgb for rgb in taskbar_colors(info, dpi, excluded) if rgb != (0, 0, 0)]
@@ -1197,6 +1277,10 @@ class Strip:
         if actual != geometry:
             x, y, width, height = geometry
             self.root.geometry(f"{width}x{height}+{x}+{y}")
+        if self._dragging:
+            self._drag_width = geometry[2]
+            self._drag_height = self._compact_free_height
+            self._drag_applied_geometry = geometry
 
     def _compact_targets(self, project, kind):
         row = next((row for row in self._rows if row["root"] == project), None)
@@ -1734,51 +1818,141 @@ class Strip:
         self.root.geometry(f"{width}x{height}+{right - width}+{bottom - height}")
 
     def _press(self, event):
-        self._start = (event.x_root, event.y_root, self.root.winfo_x(), self.root.winfo_y())
+        if self._start is not None:
+            self._finish_drag()
+        cursor = self.root.winfo_pointerxy()
+        self._start = (*cursor, self.root.winfo_x(), self.root.winfo_y())
         self._dragged = False
         self._drag_from_dock = self.docked
+        self._drag_cursor = cursor
+        self._drag_monitors = _monitor_rects(self.root)
+        self._drag_virtual = (min(r[0] for r in self._drag_monitors),
+                              min(r[1] for r in self._drag_monitors),
+                              max(r[2] for r in self._drag_monitors),
+                              max(r[3] for r in self._drag_monitors))
+        self._drag_contexts = {}
+        self._drag_context = None
+        self._set_drag_context(cursor)
+        self._drag_threshold = drag_threshold(self._drag_context[2])
+        self._drag_width = self.root.winfo_width()
+        self._drag_height = (self._compact_free_height if self.mode == "taskbar"
+                             else self.root.winfo_height())
+        self._drag_prefs = load_prefs(self.home)
+        self._drag_native_move = _native_drag_mover(self.root)
+        self._drag_applied_geometry = (self.root.winfo_x(), self.root.winfo_y(),
+                                       self.root.winfo_width(), self.root.winfo_height())
+
+    def _set_drag_context(self, cursor):
+        area = monitor_at_point(self._drag_monitors, cursor)
+        if area not in self._drag_contexts:
+            # Only a monitor crossing can add a new taskbar/DPI query during a drag.
+            self._drag_contexts[area] = (taskbar_info(cursor), area, _window_dpi(self.root))
+        self._drag_context = self._drag_contexts[area]
+        self._drag_snap_distance = max(1, round(20 * self._drag_context[2] / 96))
 
     def _drag(self, event):
         if self._start is None:
             return
-        x0, y0, wx, wy = self._start
-        if self.mode == "taskbar":
-            if not self._dragged and max(abs(event.x_root - x0), abs(event.y_root - y0)) <= 3:
+        cursor = self._drag_cursor = self.root.winfo_pointerxy()
+        if not self._dragged:
+            x0, y0, _, _ = self._start
+            if max(abs(cursor[0]-x0), abs(cursor[1]-y0)) < self._drag_threshold:
                 return
             self._dragging = self._dragged = True
-            self.root.grab_set()
+            self._drag_native_capture = _pointer_capture(self.root)
             self._collapse_panel()
-            info = taskbar_info((event.x_root, event.y_root))
-            area = _monitor_area(self.root, event.x_root, event.y_root, full=True)
-            docked, geometry = compact_drag_geometry(info, area, _virtual_area(self.root),
-                wx + event.x_root - x0, wy + event.y_root - y0, self.root.winfo_width(),
-                self._compact_free_height, _window_dpi(self.root), from_dock=self._drag_from_dock)
+            self._close_menu()
+            self.tooltip.hide()
+            self._drag_capture_timer = self.root.after(50, self._watch_drag_capture)
+        # One idle callback consumes the latest cursor, however many events arrived.
+        if self._drag_timer is None:
+            self._drag_timer = self.root.after_idle(self._flush_drag)
+        return "break"
+
+    def _flush_drag(self, read_pointer=True):
+        self._drag_timer = None
+        if self._start is None or not self._dragged:
+            return
+        cursor = self.root.winfo_pointerxy() if read_pointer else self._drag_cursor
+        self._drag_cursor = cursor
+        old_dpi = self._drag_context[2]
+        self._set_drag_context(cursor)
+        info, area, dpi = self._drag_context
+        x, y = drag_position(self._start, cursor)
+        if self.mode == "taskbar":
+            docked, geometry = compact_drag_geometry(info, area, self._drag_virtual,
+                x, y, self._drag_width, self._drag_height, dpi,
+                from_dock=self._drag_from_dock, snap_distance=self._drag_snap_distance)
             changed = docked != self.docked
             self.docked = docked
             self._compact_position = geometry[:2]
-            if changed:
+            self._taskbar_hwnd = info.get("hwnd") if info else None
+            if changed or dpi != old_dpi:
                 self._palette_key = None
-                self.render(self._rows)
+                self._render_compact(self._rows, self._drag_prefs)
             else:
-                x, y, width, height = self._compact_geometry = geometry
-                self.root.geometry(f"{width}x{height}+{x}+{y}")
+                self._compact_geometry = geometry
+                self._move_drag_window(geometry)
             return
-        self.root.geometry(f"+{wx + event.x_root - x0}+{wy + event.y_root - y0}")
+        self._move_drag_window(clamp_compact(x, y, self._drag_width, self._drag_height, area))
 
-    def _release(self, event):
-        if self.mode == "taskbar":
-            start, self._start = self._start, None
-            if start is None:
-                return
+    def _move_drag_window(self, geometry):
+        if geometry == self._drag_applied_geometry:
+            return
+        x, y, width, height = geometry
+        if (self._drag_native_move is None
+                or (width, height) != (self.root.winfo_width(), self.root.winfo_height())
+                or not self._drag_native_move(x, y)):
+            self.root.geometry(f"{width}x{height}+{x}+{y}")
+        self._drag_applied_geometry = geometry
+
+    def _watch_drag_capture(self):
+        self._drag_capture_timer = None
+        if not self._dragging:
+            return
+        if not _pointer_capture_owned(self.root, self._drag_native_capture):
+            self._finish_drag()
+            return
+        self._drag_capture_timer = self.root.after(50, self._watch_drag_capture)
+
+    def _drag_unmapped(self, event):
+        if event.widget == self.root and self._start is not None:
+            self._finish_drag()
+
+    def _finish_drag(self, click=False, read_pointer=False):
+        if self._start is None:
+            return
+        for name in ("_drag_timer", "_drag_capture_timer"):
+            timer = getattr(self, name)
+            if timer is not None:
+                self.root.after_cancel(timer)
+                setattr(self, name, None)
+        if self._dragged:
+            # Flush before saving, including a release ahead of the pending idle move.
+            self._flush_drag(read_pointer=read_pointer)
+        self._start = None
+        self._dragging = False
+        self._drag_context = None
+        if self.root.grab_current() == self.root:
             self.root.grab_release()
-            self._dragging = False
-            if self._dragged:
-                self.root.update_idletasks()
+        self._drag_native_capture = None
+        if self._dragged:
+            self.root.update_idletasks()
+            if self.mode == "taskbar":
                 prefs = load_prefs(self.home)
                 save_prefs({**prefs, "compact_x": self.root.winfo_x(),
                             "compact_y": self.root.winfo_y(), "docked": self.docked}, self.home)
             else:
-                self._toggle_panel()
+                self.anchor = (self.root.winfo_x() + self.root.winfo_width(),
+                               self.root.winfo_y() + self.root.winfo_height())
+        elif click and self.mode == "taskbar":
+            self._toggle_panel()
+
+    def _release(self, event):
+        if self._start is not None:
+            self._finish_drag(click=True, read_pointer=True)
+            return "break" if self._dragged else None
+        if self.mode == "taskbar":
             return
         # Keep the bottom-right corner fixed so expanding grows upward and left.
         self.anchor = (self.root.winfo_x() + self.root.winfo_width(),

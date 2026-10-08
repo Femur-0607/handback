@@ -129,6 +129,45 @@ class CompactPureTests(unittest.TestCase):
                 self.assertEqual(docked, expected)
                 self.assertEqual(geometry[1], 1008 if expected else 1008-pull)
 
+    def test_drag_absolute_position_never_accumulates_snap_or_event_error(self):
+        start = (-1900, -120, -1910, -130)
+        for cursor, expected in (((-700, -120), (-710, -130)),
+                                 ((50, 50), (40, 40)), ((-1900, -120), (-1910, -130))):
+            self.assertEqual(dashboard.drag_position(start, cursor), expected)
+
+    def test_drag_threshold_scales_from_four_logical_pixels(self):
+        for dpi, threshold in ((96, 4), (120, 5), (144, 6), (192, 8)):
+            self.assertEqual(dashboard.drag_threshold(dpi), threshold)
+
+    def test_cached_monitor_selection_handles_crossings_gaps_and_offscreen_points(self):
+        monitors = [(-1920, -200, 0, 880), (100, 0, 2020, 1080)]
+        for point, index in (((-1, 20), 0), ((100, 20), 1), ((49, 20), 0),
+                             ((51, 20), 1), ((9999, 9999), 1), ((-9999, -9999), 0)):
+            self.assertEqual(dashboard.monitor_at_point(monitors, point), monitors[index])
+
+    def test_cached_snap_distance_preserves_attachment_and_tray_clamp(self):
+        area = (0, 0, 1920, 1080)
+        info = {"rect": (0, 1008, 1920, 1080), "edge": 3,
+                "auto_hide": False, "notification_left": 1461}
+        self.assertEqual(dashboard.compact_drag_geometry(info, area, area, 1800, 978, 299, 48,
+                         from_dock=True, snap_distance=30), (True, (1162, 1008, 299, 72)))
+        self.assertEqual(dashboard.compact_drag_geometry(info, area, area, 1800, 977, 299, 48,
+                         from_dock=True, snap_distance=30), (False, (1621, 977, 299, 48)))
+
+    @unittest.skipUnless(dashboard.sys.platform == "win32", "Windows native move")
+    def test_native_move_caches_owned_hwnd_and_never_activates_resizes_or_reorders(self):
+        import ctypes
+        widget, user = Mock(), Mock()
+        widget.winfo_id.return_value = 11
+        user.GetAncestor.return_value = 12
+        user.SetWindowPos.return_value = 1
+        with patch.object(ctypes.windll, "user32", user):
+            move = dashboard._native_drag_mover(widget)
+            self.assertTrue(move(-1800, -200))
+            self.assertTrue(move(-1700, -100))
+        user.GetAncestor.assert_called_once_with(11, 2)
+        self.assertEqual(user.SetWindowPos.call_args_list[0].args, (12, None, -1800, -200, 0, 0, 0x15))
+
     def test_virtual_clamp_and_tray_without_room(self):
         clamp = dashboard.clamp_compact
         self.assertEqual(clamp(-9999, -9999, 250, 32, (-1920, -200, 1920, 1080)),
@@ -174,6 +213,15 @@ class CompactGuiTests(DashboardMenuTests):
         detector = patch.object(dashboard, "widget_fullscreen_covered", return_value=False)
         detector.start()
         self.addCleanup(detector.stop)
+        self.cursor = [0, 0]
+        pointer = patch.object(self.root, "winfo_pointerxy", side_effect=lambda: tuple(self.cursor))
+        pointer.start()
+        self.addCleanup(pointer.stop)
+
+    def pointer_event(self, method, event):
+        # Synthetic events do not move the desktop cursor. Supply its virtual position.
+        self.cursor[:] = [event.x_root, event.y_root]
+        return method(event)
 
     @unittest.skipUnless(dashboard.sys.platform == "win32", "Windows z-order")
     def test_zorder_timer_is_singleton_across_ticks_refresh_and_mode_switches(self):
@@ -336,14 +384,153 @@ class CompactGuiTests(DashboardMenuTests):
         x0, y0 = self.root.winfo_x()+10, self.root.winfo_y()+10
         origin_y = self.root.winfo_y()
         threshold = round(20 * dashboard._window_dpi(self.root) / 96)
-        self.strip._press(SimpleNamespace(x_root=x0, y_root=y0))
+        self.pointer_event(self.strip._press, SimpleNamespace(x_root=x0, y_root=y0))
         for pull, expected in ((threshold, True), (threshold+1, False),
                                (threshold+10, False), (threshold-1, True)):
-            self.strip._drag(SimpleNamespace(x_root=x0, y_root=y0-pull))
+            self.pointer_event(self.strip._drag, SimpleNamespace(x_root=x0, y_root=y0-pull))
             self.root.update_idletasks()
             self.assertEqual(self.strip.docked, expected)
             self.assertEqual(self.root.winfo_y(), origin_y if expected else origin_y-pull)
-        self.strip._release(SimpleNamespace(x_root=x0, y_root=y0-threshold+1))
+        self.pointer_event(self.strip._release, SimpleNamespace(x_root=x0, y_root=y0-threshold+1))
+
+    def free_drag_fixture(self):
+        dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "docked": False,
+                              "compact_x": 200, "compact_y": 300}, self.home)
+        self.strip.render(self.sample_rows())
+        self.root.deiconify()
+        self.root.update()
+        self.cursor[:] = [210, 310]
+        self.strip._press(SimpleNamespace(x_root=-9999, y_root=-9999))
+
+    def test_current_cursor_and_idle_coalescing_ignore_two_hundred_stale_events(self):
+        self.free_drag_fixture()
+        start = self.strip._start
+        with patch.object(self.root, "grab_set", wraps=self.root.grab_set) as capture, \
+                patch.object(self.strip, "_move_drag_window", wraps=self.strip._move_drag_window) as move, \
+                patch.object(dashboard, "taskbar_info") as taskbar, \
+                patch.object(dashboard, "_monitor_rects") as monitors, \
+                patch.object(dashboard, "_monitor_area") as monitor, \
+                patch.object(dashboard, "_window_dpi") as dpi, \
+                patch.object(dashboard, "taskbar_colors") as colors:
+            for i in range(1, 201):
+                self.cursor[:] = [210+i*6, 310]
+                self.strip._drag(SimpleNamespace(x_root=-9999, y_root=-9999))
+            timer = self.strip._drag_timer
+            self.assertIsNotNone(timer)
+            move.assert_not_called()
+            capture.assert_called_once()
+            self.assertEqual(self.strip._start, start)
+            self.root.update_idletasks()
+            move.assert_called_once()
+            self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), (1400, 300))
+            for query in (taskbar, monitors, monitor, dpi, colors):
+                query.assert_not_called()
+        self.strip._release(SimpleNamespace(x_root=-9999, y_root=-9999))
+        self.assertEqual(dashboard.load_prefs(self.home)["compact_x"], 1400)
+        self.assertIsNone(self.strip.panel)
+        self.assertIsNone(self.strip._drag_timer)
+        self.assertIsNone(self.strip._drag_capture_timer)
+
+    def test_threshold_delays_capture_and_click_still_toggles_panel(self):
+        self.free_drag_fixture()
+        with patch.object(self.root, "grab_set", wraps=self.root.grab_set) as capture:
+            self.cursor[0] += self.strip._drag_threshold-1
+            self.strip._drag(self.event)
+            capture.assert_not_called()
+            self.assertIsNone(self.strip._drag_timer)
+            self.strip._release(self.event)
+            self.assertIsNotNone(self.strip.panel)
+            self.strip._collapse_panel()
+            self.strip._press(self.event)
+            self.cursor[0] += self.strip._drag_threshold
+            self.strip._drag(self.event)
+            capture.assert_called_once()
+            self.strip._release(self.event)
+            self.assertIsNone(self.strip.panel)
+
+    def test_release_flushes_latest_cursor_before_idle_and_persists(self):
+        self.free_drag_fixture()
+        self.cursor[:] = [510, 410]
+        self.strip._drag(self.event)
+        self.assertIsNotNone(self.strip._drag_timer)
+        self.cursor[:] = [710, 510]
+        self.strip._release(self.event)
+        self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), (700, 500))
+        prefs = dashboard.load_prefs(self.home)
+        self.assertEqual((prefs["compact_x"], prefs["compact_y"], prefs["docked"]), (700, 500, False))
+        self.assertIsNone(self.root.grab_current())
+        self.assertIsNone(self.strip._start)
+
+    def test_capture_loss_saves_last_drag_and_suppresses_late_release_click(self):
+        self.free_drag_fixture()
+        self.cursor[:] = [610, 410]
+        self.strip._drag(self.event)
+        self.root.grab_release()
+        self.cursor[:] = [910, 710]  # Pointer has already left after capture loss.
+        self.root.after_cancel(self.strip._drag_capture_timer)
+        self.strip._watch_drag_capture()
+        self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), (600, 400))
+        self.assertEqual(dashboard.load_prefs(self.home)["compact_x"], 600)
+        self.strip._release(self.event)
+        self.assertIsNone(self.strip.panel)
+        self.assertIsNone(self.strip._drag_timer)
+        self.assertIsNone(self.strip._drag_capture_timer)
+
+    def test_monitor_crossing_refreshes_only_new_cached_context(self):
+        left, right = (0, 0, 900, 1080), (900, 0, 1920, 1080)
+        with patch.object(dashboard, "_monitor_rects", return_value=[left, right]) as monitors, \
+                patch.object(dashboard, "taskbar_info", return_value=None) as taskbar, \
+                patch.object(dashboard, "_window_dpi", return_value=96) as dpi:
+            self.free_drag_fixture()
+            # free_drag_fixture's render also queries; count only the gesture.
+            taskbar.reset_mock()
+            dpi.reset_mock()
+            dpi.return_value = 144
+            for point in ((310, 310), (910, 310), (1010, 310), (9999, 310), (310, 310)):
+                self.cursor[:] = point
+                self.strip._drag(self.event)
+                self.root.update_idletasks()
+            taskbar.assert_called_once_with((910, 310))
+            dpi.assert_called_once()
+            self.assertEqual(len(self.strip._drag_contexts), 2)
+            self.assertEqual(self.strip._drag_context[1], left)
+            self.strip._release(self.event)
+
+    def test_destroy_during_pending_drag_removes_all_callbacks(self):
+        self.free_drag_fixture()
+        self.cursor[:] = [510, 410]
+        self.strip._drag(self.event)
+        self.root.destroy()
+        self.assertEqual(len(self.root.tk.call("after", "info")), 0)
+
+    def test_failed_native_move_falls_back_to_tk_geometry(self):
+        self.free_drag_fixture()
+        self.strip._drag_native_move = Mock(return_value=False)
+        self.cursor[:] = [510, 410]
+        self.strip._drag(self.event)
+        self.root.update_idletasks()
+        self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), (500, 400))
+        self.strip._drag_native_move.assert_called_once_with(500, 400)
+        self.strip._release(self.event)
+
+    def test_row_refresh_during_drag_preserves_new_content_width(self):
+        self.free_drag_fixture()
+        self.cursor[:] = [510, 410]
+        self.strip._drag(self.event)
+        self.root.update_idletasks()
+        width = self.root.winfo_width()
+        rows = self.sample_rows()
+        rows[0]["running"] = [{}] * 100000
+        rows[0]["unread"] = [{}] * 100000
+        self.strip.render(rows)
+        self.root.update_idletasks()
+        new_width = self.root.winfo_width()
+        self.assertGreater(new_width, width)
+        self.cursor[0] += 30
+        self.strip._drag(self.event)
+        self.root.update_idletasks()
+        self.assertEqual(self.root.winfo_width(), new_width)
+        self.strip._release(self.event)
 
     def test_palette_skips_fullscreen_black_and_undocked_then_resamples_on_dock(self):
         dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
@@ -370,11 +557,14 @@ class CompactGuiTests(DashboardMenuTests):
             info = dashboard.taskbar_info()
             if info and info["edge"] == 3 and not info["auto_hide"]:
                 event = SimpleNamespace(x_root=505, y_root=305)
-                self.strip._press(event)
-                self.strip._drag(SimpleNamespace(x_root=705, y_root=info["rect"][1]+5))
+                self.pointer_event(self.strip._press, event)
+                self.pointer_event(self.strip._drag, SimpleNamespace(x_root=705, y_root=info["rect"][1]+5))
+                self.root.update_idletasks()
                 self.assertTrue(self.strip.docked)
+                self.assertEqual(sample.call_count, 2)  # No pixel sampling in the drag path.
+                self.pointer_event(self.strip._release, SimpleNamespace(x_root=705, y_root=info["rect"][1]+5))
+                self.strip.render([])
                 self.assertEqual(sample.call_count, 3)
-                self.strip._release(SimpleNamespace(x_root=705, y_root=info["rect"][1]+5))
 
     @unittest.skipUnless(dashboard.sys.platform == "win32", "Windows timer")
     def test_undocked_fullscreen_uses_same_timer_without_taskbar_repair(self):
@@ -441,18 +631,18 @@ class CompactGuiTests(DashboardMenuTests):
         self.root.deiconify()
         self.root.update()
         event = SimpleNamespace(x_root=self.root.winfo_x()+5, y_root=self.root.winfo_y()+5)
-        self.strip._press(event)
-        self.strip._release(event)
+        self.pointer_event(self.strip._press, event)
+        self.pointer_event(self.strip._release, event)
         self.assertIsNotNone(self.strip.panel)
         self.strip.panel.event_generate("<Escape>")
         self.root.update()
         self.assertIsNone(self.strip.panel)
-        self.strip._press(event)
+        self.pointer_event(self.strip._press, event)
         moved = SimpleNamespace(x_root=event.x_root-50, y_root=event.y_root-100)
         old_y = self.root.winfo_y()
-        self.strip._drag(moved)
+        self.pointer_event(self.strip._drag, moved)
         self.root.update_idletasks()
-        self.strip._release(moved)
+        self.pointer_event(self.strip._release, moved)
         self.assertEqual(self.root.winfo_y(), old_y - 100)
         self.assertEqual(dashboard.load_prefs(self.home)["compact_x"], self.root.winfo_x())
         self.assertEqual(dashboard.load_prefs(self.home)["compact_y"], self.root.winfo_y())
