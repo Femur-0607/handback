@@ -39,6 +39,20 @@ class StateTests(unittest.TestCase):
                     raise
                 time.sleep(0.05 * (attempt + 1))
 
+    def test_extended_length_resolve_stays_inside_project_state(self):
+        # Windows Python 3.10 may resolve a file that is being renamed to \\?\D:\...
+        original = Path.resolve
+        target = self.state.path / "inbox" / "delivered" / "x.json"
+
+        def resolve(path, *args, **kwargs):
+            resolved = original(path, *args, **kwargs)
+            return Path("\\\\?\\" + str(resolved)) if path == target else resolved
+
+        with mock.patch.object(Path, "resolve", resolve):
+            self.assertEqual(self.state._path("inbox/delivered/x.json"), target)
+        with self.assertRaises(ValueError):
+            self.state._path("../other.json")
+
     def test_reads_do_not_create_state(self):
         self.assertEqual(self.state.read_json("topology.json", {}), {})
         self.assertEqual(self.state.requests(), [])

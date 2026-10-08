@@ -34,6 +34,14 @@ def state_home():
     return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "handback"
 
 
+def _plain(path):
+    """Drop the \\\\?\\ prefix Windows Python 3.10 can return for a file being renamed."""
+    text = str(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        return Path("\\\\" + text[8:])
+    return Path(text[4:]) if text.startswith("\\\\?\\") else path
+
+
 def _normal_path(path):
     return os.path.normcase(os.path.realpath(os.path.abspath(os.fspath(path))))
 
@@ -329,7 +337,7 @@ class ProjectState:
             raise ValueError("State name must be a relative path inside project state")
         path = self.path / name
         try:
-            path.resolve().relative_to(self.path.resolve())
+            _plain(path.resolve()).relative_to(_plain(self.path.resolve()))
         except ValueError as error:
             raise ValueError("State path escapes project state") from error
         return path
