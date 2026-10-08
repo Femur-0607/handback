@@ -59,7 +59,7 @@ def resolve_codex(executable=None):
 
     An invalid explicit override fails rather than silently choosing another CLI.
     """
-    override = executable or os.environ.get("AGENT_RELAY_CODEX")
+    override = executable or os.environ.get("HANDBACK_CODEX")
     if override:
         candidate = os.path.expanduser(os.path.expandvars(str(override)))
         candidate = shutil.which(candidate) or candidate
@@ -72,7 +72,7 @@ def resolve_codex(executable=None):
     candidate = shutil.which("codex")
     if candidate and _version(candidate):
         return candidate
-    raise AdapterUnavailable("No working Codex executable found; set AGENT_RELAY_CODEX or install Codex")
+    raise AdapterUnavailable("No working Codex executable found; set HANDBACK_CODEX or install Codex")
 
 
 def codex_home():
@@ -134,7 +134,7 @@ class AppServer:
                 return reply["result"]
 
     def initialize(self):
-        self.call("initialize", {"clientInfo": {"name": "agent_relay", "title": "agent-relay", "version": "1"}})
+        self.call("initialize", {"clientInfo": {"name": "handback", "title": "handback", "version": "1"}})
         self.call("initialized", {}, notify=True)
 
     def close(self):

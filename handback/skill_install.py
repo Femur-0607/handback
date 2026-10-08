@@ -11,10 +11,10 @@ from .invocation import command_text
 
 
 def render(agent):
-    templates = resources.files("agent_relay").joinpath("skills")
+    templates = resources.files("handback").joinpath("skills")
     common = templates.joinpath("SKILL.md").read_text(encoding="utf-8").rstrip()
     content = common if agent == "claude" else templates.joinpath(agent, "SKILL.md.in").read_text(encoding="utf-8").replace("{{COMMON_SKILL}}", common)
-    content = content.replace("{{AGENT_RELAY}}", command_text())
+    content = content.replace("{{HANDBACK}}", command_text())
     if re.search(r"\{\{[^}]+\}\}", content):
         raise ValueError(f"Unresolved template in {agent} skill")
     return content
@@ -39,6 +39,17 @@ def install(target_home=None, dry_run=False):
             messages.append(f"skip: skill path outside target home: {target}")
             return
         content = render(agent)
+        legacy_backup = None
+        legacy = target.parent.parent / "agent-relay" / "SKILL.md"
+        if legacy.is_file() and (not isolated or contained(legacy)):
+            messages.append(f"legacy skill detected: {legacy}")
+            if not dry_run:
+                stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+                backup = legacy.with_name(f"SKILL.md.{stamp}.bak")
+                with backup.open("xb") as stream:
+                    stream.write(legacy.read_bytes())
+                legacy_backup = backup
+                messages.append(f"backup: {backup}; replaced by {target}")
         if dry_run:
             messages.append(f"dry-run: {agent} -> {target} (UTF-8 skill; existing file gets timestamp backup)")
             return
@@ -50,16 +61,18 @@ def install(target_home=None, dry_run=False):
                 stream.write(target.read_bytes())
             messages.append(f"backup: {backup}")
         target.write_text(content, encoding="utf-8")
+        if legacy_backup is not None:
+            legacy.unlink()  # remove the obsolete skill only after replacement succeeds
         messages.append(f"installed: {target}")
 
-    write("claude", home / ".claude/skills/agent-relay/SKILL.md")
+    write("claude", home / ".claude/skills/handback/SKILL.md")
     codex = find("codex", "OpenAI/Codex/bin/codex.exe")
     if codex:
         root = home / ".codex"
         if not isolated and os.environ.get("CODEX_HOME"):
             root = Path(os.environ["CODEX_HOME"]).expanduser().resolve()
         messages.append(f"detected: codex {codex}; skill root {root / 'skills'}")
-        write("codex", root / "skills/agent-relay/SKILL.md")
+        write("codex", root / "skills/handback/SKILL.md")
     else:
         messages.append("skip: codex app not detected")
     antigravity = find("antigravity", "antigravity/Antigravity.exe")
@@ -81,9 +94,9 @@ def install(target_home=None, dry_run=False):
                 break
         if root:
             messages.append(f"detected: antigravity {antigravity}; registered skill root {root}")
-            write("antigravity", root / "agent-relay/SKILL.md")
+            write("antigravity", root / "handback/SKILL.md")
         else:
-            messages.append(f"skip: antigravity global skill location unverified; inspect {registration}; template retained in agent_relay/skills/antigravity")
+            messages.append(f"skip: antigravity global skill location unverified; inspect {registration}; template retained in handback/skills/antigravity")
     else:
         messages.append("skip: antigravity app not detected")
     return messages

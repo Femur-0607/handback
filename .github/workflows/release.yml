@@ -26,7 +26,7 @@ jobs:
         shell: python {0}
         run: |
           import os
-          from agent_relay import __version__
+          from handback import __version__
 
           tag = os.environ['GITHUB_REF_NAME']
           if tag != f'v{__version__}':
@@ -77,13 +77,13 @@ jobs:
           wheels = list(Path('dist').resolve().glob('*.whl'))
           if len(wheels) != 1:
               raise SystemExit(f'Expected exactly one wheel, found {len(wheels)}')
-          with tempfile.TemporaryDirectory(prefix='agent-relay-smoke-', dir=os.environ['RUNNER_TEMP']) as temp:
+          with tempfile.TemporaryDirectory(prefix='handback-smoke-', dir=os.environ['RUNNER_TEMP']) as temp:
               root = Path(temp)
               environment = root / 'venv'
               venv.EnvBuilder(with_pip=True).create(environment)
               scripts = environment / ('Scripts' if os.name == 'nt' else 'bin')
               python = scripts / ('python.exe' if os.name == 'nt' else 'python')
-              cli = scripts / ('agent-relay.exe' if os.name == 'nt' else 'agent-relay')
+              cli = scripts / ('handback.exe' if os.name == 'nt' else 'handback')
               subprocess.run([str(python), '-m', 'pip', 'install', '--no-deps', str(wheels[0])], check=True, cwd=root)
               subprocess.run([str(cli), '--help'], check=True, cwd=root)
               target_home = root / 'target-home'

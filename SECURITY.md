@@ -1,6 +1,6 @@
 # Security and local data
 
-agent-relay is an experimental tool for one user on one computer. It is not a
+handback is an experimental tool for one user on one computer. It is not a
 security boundary between agents or a service for untrusted remote clients.
 
 ## Report a problem

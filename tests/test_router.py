@@ -12,9 +12,9 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from agent_relay import cli, collector, config, envelope, hooks, inbox, router
-from agent_relay.adapters import antigravity
-from agent_relay.state import ProjectState, atomic_json, home_lock, _normal_path
+from handback import cli, collector, config, envelope, hooks, inbox, router
+from handback.adapters import antigravity
+from handback.state import ProjectState, atomic_json, home_lock, _normal_path
 import hashlib
 
 
@@ -26,11 +26,11 @@ class RouterTests(unittest.TestCase):
         self.root = base / "project"
         self.root.mkdir()
         self.home = base / "state"
-        env = patch.dict(os.environ, {"AGENT_RELAY_HOME": str(self.home),
+        env = patch.dict(os.environ, {"HANDBACK_HOME": str(self.home),
                                      "GIT_CEILING_DIRECTORIES": str(base)})
         env.start()
         self.addCleanup(env.stop)
-        for name in ("AGENT_RELAY_LEAD", "AGENT_RELAY_WORKERS", "CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY",
+        for name in ("HANDBACK_LEAD", "HANDBACK_WORKERS", "CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY",
                      "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_SANDBOX"):
             os.environ.pop(name, None)
         self.state = ProjectState(self.root, home=self.home)
@@ -195,7 +195,7 @@ class RouterTests(unittest.TestCase):
         legacy = self.home.parent / name
         legacy.write_bytes(b"\0")
         script = """import sys
-from agent_relay.state import _home_os_lock, _home_os_unlock
+from handback.state import _home_os_lock, _home_os_unlock
 with open(sys.argv[1], 'a+b') as stream:
     try:
         token = _home_os_lock(stream, True)
@@ -320,8 +320,8 @@ with open(sys.argv[1], 'a+b') as stream:
         mail = self.mail()
         script = """import json, sys, time
 from pathlib import Path
-from agent_relay.state import ProjectState
-from agent_relay.router import route
+from handback.state import ProjectState
+from handback.router import route
 state=ProjectState(sys.argv[1],home=sys.argv[2])
 mail=json.loads((state.path/'inbox'/(sys.argv[3]+'.json')).read_text(encoding='utf-8'))
 class Adapter:
@@ -351,8 +351,8 @@ route(state,mail,adapter_for=lambda agent:Adapter())
     def test_process_crash_during_delivery_prevents_automatic_replay(self):
         mail = self.mail()
         script = """import json, sys, os
-from agent_relay.state import ProjectState
-from agent_relay.router import route
+from handback.state import ProjectState
+from handback.router import route
 state=ProjectState(sys.argv[1],home=sys.argv[2])
 mail=json.loads((state.path/'inbox'/(sys.argv[3]+'.json')).read_text(encoding='utf-8'))
 class Adapter:

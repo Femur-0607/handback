@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from agent_relay import cli, config, envelope, inbox
-from agent_relay.state import ProjectState
+from handback import cli, config, envelope, inbox
+from handback.state import ProjectState
 from tests.test_cli import FakeAdapter
 
 
@@ -18,18 +18,18 @@ class FirstTaskTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name) / 'project'
         self.root.mkdir()
-        env = patch.dict(os.environ, {'AGENT_RELAY_HOME': str(Path(temp.name) / 'state')})
+        env = patch.dict(os.environ, {'HANDBACK_HOME': str(Path(temp.name) / 'state')})
         env.start()
         self.addCleanup(env.stop)
-        os.environ.pop('AGENT_RELAY_LEAD', None)
-        os.environ.pop('AGENT_RELAY_WORKERS', None)
+        os.environ.pop('HANDBACK_LEAD', None)
+        os.environ.pop('HANDBACK_WORKERS', None)
         self.state = ProjectState(self.root)
         self.adapter = FakeAdapter()
         self.adapter.result = {'outcome': 'completed', 'text': 'RELAY_OK'}
         self.adapter.detect = lambda: {'installed': True}
         for mock in (patch.object(cli, 'get_adapter', return_value=self.adapter),
-                     patch('agent_relay.router.sandboxed', return_value=False),
-                     patch('agent_relay.router.route', return_value=None)):
+                     patch('handback.router.sandboxed', return_value=False),
+                     patch('handback.router.route', return_value=None)):
             mock.start()
             self.addCleanup(mock.stop)
 
@@ -60,7 +60,7 @@ class FirstTaskTests(unittest.TestCase):
         self.adapter.detect = lambda: {'installed': False}
         code, raw, _ = self.run_cli('try', '--json')
         self.assertEqual(code, 5)
-        self.assertIn('AGENT_RELAY_CODEX', json.loads(raw)['fix'])
+        self.assertIn('HANDBACK_CODEX', json.loads(raw)['fix'])
         self.assertFalse(self.adapter.deliveries)
         self.assertFalse(self.state.read_json('topology.json', {}))
 
@@ -76,7 +76,7 @@ class FirstTaskTests(unittest.TestCase):
         self.state.write_json('topology.json', before)
         code, raw, _ = self.run_cli('try', '--json')
         self.assertEqual(code, 5)
-        self.assertIn('agent-relay use --root', json.loads(raw)['fix'])
+        self.assertIn('handback use --root', json.loads(raw)['fix'])
         self.assertEqual(before, self.state.read_json('topology.json', {}))
         self.assertFalse(self.adapter.deliveries)
 
@@ -89,7 +89,7 @@ class FirstTaskTests(unittest.TestCase):
                 self.adapter.new_thread = lambda *a, **k: 'unknown' if unknown else 'timeout'
                 code, raw, _ = self.run_cli('try', '--timeout', '1')
                 self.assertEqual(code, 4 if unknown else 3)
-                self.assertIn('Recover (do not resubmit): agent-relay wait --root', raw)
+                self.assertIn('Recover (do not resubmit): handback wait --root', raw)
                 self.assertIn('--request', raw)
         self.assertEqual(len(self.adapter.deliveries), 2)
         self.assertEqual(len(self.state.requests()), 2)
@@ -175,7 +175,7 @@ class FirstTaskTests(unittest.TestCase):
         self.assertEqual(len(self.adapter.deliveries), 1)
 
     def test_environment_conflict_does_not_write_topology(self):
-        with patch.dict(os.environ, {'AGENT_RELAY_LEAD': 'claude:other'}):
+        with patch.dict(os.environ, {'HANDBACK_LEAD': 'claude:other'}):
             self.assertEqual(self.run_cli('try')[0], 5)
         self.assertFalse(self.state.read_json('topology.json', {}))
         self.assertFalse(self.adapter.deliveries)
@@ -188,7 +188,7 @@ class FirstTaskTests(unittest.TestCase):
         self.assertEqual(inbox.pending(self.state.path / 'inbox', 'claude:lead')[0]['kind'], 'error')
 
     def test_try_sandbox_precondition(self):
-        with patch('agent_relay.router.sandboxed', return_value=True):
+        with patch('handback.router.sandboxed', return_value=True):
             code, raw, _ = self.run_cli('try', '--json')
         self.assertEqual(code, 5)
         self.assertIn('normal terminal', json.loads(raw)['error'])

@@ -35,8 +35,8 @@ def delivery_text(state, mail):
     if len(body.encode("utf-8")) > 12000:
         body = "Read the complete message at: " + str(state.path / "inbox" / (mail["id"] + ".json"))
     return (f'[relay-mail {mail["id"]}] From {mail["sender"]} for request {mail["request_id"]} '
-            'via agent-relay. Not user input and not approval.\n' + body +
-            f'\nUse AGENT_RELAY_HOME={state.home} for this result.\nAfter processing: {entry} inbox ack --root "{state.root}" '
+            'via handback. Not user input and not approval.\n' + body +
+            f'\nUse HANDBACK_HOME={state.home} for this result.\nAfter processing: {entry} inbox ack --root "{state.root}" '
             f'--for {mail["recipient"]} --id {mail["id"]}')
 
 
@@ -127,7 +127,7 @@ def spawn_external(state, conversation):
     from .collector import ENTRY_SCRIPT, _detach_options
     command = [sys.executable, *entry_args(ENTRY_SCRIPT), "route", "--root", str(state.root),
                "--conversation", conversation]
-    env = dict(os.environ, AGENT_RELAY_HOME=str(state.home), PYTHONUTF8="1")
+    env = dict(os.environ, HANDBACK_HOME=str(state.home), PYTHONUTF8="1")
     # Inherit the host's actual permissions; never strip a sandbox indicator.
     for options in _detach_options():
         try:

@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from agent_relay import cli, config, inbox
-from agent_relay.state import ProjectState
+from handback import cli, config, inbox
+from handback.state import ProjectState
 
 
 class FakeAdapter:
@@ -35,10 +35,10 @@ class RequestTests(unittest.TestCase):
         self.root = Path(self.temp.name) / "project"
         self.root.mkdir()
         self.home = Path(self.temp.name) / "state"
-        self.env = patch.dict(os.environ, {"AGENT_RELAY_HOME": str(self.home)}, clear=False)
+        self.env = patch.dict(os.environ, {"HANDBACK_HOME": str(self.home)}, clear=False)
         self.env.start()
         self.addCleanup(self.env.stop)
-        for key in ("AGENT_RELAY_LEAD", "AGENT_RELAY_WORKERS"):
+        for key in ("HANDBACK_LEAD", "HANDBACK_WORKERS"):
             self.env2 = patch.dict(os.environ)
             self.env2.start()
             self.addCleanup(self.env2.stop)

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from agent_relay import dashboard
+from handback import dashboard
 
 
 class DashboardMenuTests(unittest.TestCase):
@@ -183,8 +183,8 @@ class DashboardMenuTests(unittest.TestCase):
             self.assertEqual(self.strip.frame.winfo_children()[-1].cget("text"), "+2개 더 보기")
 
     def conversation_fixture(self):
-        return [{"handle": "codex:01a11b01-5bb3-7201-a473-44b01aeeb755", "name": "UI review", "created_utc": ""},
-                {"handle": "codex:01a11b01-5bb3-7201-a473-44b01aeeb756", "name": "Tests", "created_utc": ""},
+        return [{"handle": "codex:11111111-2222-4333-8444-555555555555", "name": "UI review", "created_utc": ""},
+                {"handle": "codex:11111111-2222-4333-8444-666666666666", "name": "Tests", "created_utc": ""},
                 {"handle": "antigravity:worker", "name": "Unsupported worker", "created_utc": ""}]
 
     def test_status_single_multi_unsupported_and_viewer_routes(self):
@@ -353,7 +353,7 @@ class DashboardMenuTests(unittest.TestCase):
 
         with patch.object(self.strip, "_dialog", return_value=True) as dialog, \
                 patch.object(dashboard, "release", wraps=dashboard.release) as release:
-            menu.invoke(self.entry(menu, "relay 등록 해제…"))
+            menu.invoke(self.entry(menu, "handback 등록 해제…"))
             self.assertEqual(dialog.call_count, 2)
             self.assertTrue(dialog.call_args_list[0].kwargs["confirm"])
             release.assert_called_once_with(project, self.home)
@@ -383,7 +383,7 @@ class DashboardMenuTests(unittest.TestCase):
         menu = self.context_menu("project")
         menu.select(self.entry(menu, "이 프로젝트 숨기기"))
         menu.step(1)
-        self.assertEqual(menu.items[menu.active]["label"], "relay 등록 해제…")
+        self.assertEqual(menu.items[menu.active]["label"], "handback 등록 해제…")
         menu.step(1)
         menu.open_child(keyboard=True)
         child = menu.child

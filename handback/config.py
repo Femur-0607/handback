@@ -92,11 +92,22 @@ def validate_topology(config, lead, workers, fallback):
     return {"lead": lead, "workers": list(workers), "fallback": fallback}
 
 
+def project_config_path(root):
+    """Use legacy project policy only with explicit local migration guidance."""
+    import sys
+    current, legacy = Path(root) / ".handback.json", Path(root) / ".agent-relay.json"
+    if legacy.exists():
+        print(f"WARN Legacy project configuration: {legacy}; copy to {current}. "
+              + ("The new file takes precedence." if current.exists() else "Reading legacy policy."),
+              file=sys.stderr)
+    return current if current.exists() or not legacy.exists() else legacy
+
+
 def resolve(root, home=None, overrides=None, validate=True):
     """Resolve defaults < user < project < topology < environment < CLI."""
     state = ProjectState(root, home=home)
     user = _read_object(state.home / "config.json")
-    project = _read_object(state.checkout_root / ".agent-relay.json")
+    project = _read_object(project_config_path(state.checkout_root))
     topology = state.read_json("topology.json", {})
     if not isinstance(topology, dict):
         raise ValueError("topology.json must be an object")
@@ -113,10 +124,10 @@ def resolve(root, home=None, overrides=None, validate=True):
                            "topology")):
         _merge(values, layer, sources, source)
     environment = {}
-    if "AGENT_RELAY_LEAD" in os.environ:
-        environment["lead"] = os.environ["AGENT_RELAY_LEAD"]
-    if "AGENT_RELAY_WORKERS" in os.environ:
-        environment["workers"] = [worker.strip() for worker in os.environ["AGENT_RELAY_WORKERS"].split(",")
+    if "HANDBACK_LEAD" in os.environ:
+        environment["lead"] = os.environ["HANDBACK_LEAD"]
+    if "HANDBACK_WORKERS" in os.environ:
+        environment["workers"] = [worker.strip() for worker in os.environ["HANDBACK_WORKERS"].split(",")
                                   if worker.strip()]
     _merge(values, environment, sources, "environment")
     if overrides:

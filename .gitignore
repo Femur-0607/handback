@@ -4,7 +4,7 @@ __pycache__/
 
 # Local settings, raw evidence, and release preparation are never published.
 /.private/
-/.agent-relay.json
+/.handback.json
 /.env
 /.env.*
 !/.env.example
@@ -16,3 +16,6 @@ __pycache__/
 /build/
 /dist/
 /*.egg-info/
+
+# Legacy local configuration remains private.
+/.agent-relay.json

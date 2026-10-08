@@ -9,8 +9,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from agent_relay import envelope, hooks, inbox
-from agent_relay.state import ProjectState, atomic_json
+from handback import envelope, hooks, inbox
+from handback.state import ProjectState, atomic_json
 
 
 class HookTests(unittest.TestCase):
@@ -181,7 +181,7 @@ class HookTests(unittest.TestCase):
                                         home=self.home))
 
     def test_fresh_watcher_lease_suppresses_the_hint_and_stale_one_does_not(self):
-        from agent_relay import watcher
+        from handback import watcher
         self.state.write_json("topology.json", {"lead": "claude:lead-session", "workers": ["codex"],
                                                 "root": str(self.root)})
         self.seed_request(status="accepted")
@@ -220,7 +220,7 @@ class HookTests(unittest.TestCase):
         settings = ({"hooks": {"enabled": False}}, {"hooks": {"codex": {"enabled": False}, "claude": {"enabled": False}}},
                     {"agents": {"codex": {"enabled": False}, "claude": {"enabled": False}}})
         for configuration in settings:
-            for config_path in (self.home / "config.json", self.root / ".agent-relay.json"):
+            for config_path in (self.home / "config.json", self.root / ".handback.json"):
                 with self.subTest(configuration=configuration, location=config_path.name):
                     atomic_json(config_path, configuration)
                     self.submit()
@@ -319,7 +319,7 @@ class HookTests(unittest.TestCase):
         other = ProjectState(other_root, home=self.home)
         other.write_json("topology.json", {"lead": "claude:lead-session", "root": str(other_root)})
         inbox.put(other.path / "inbox", envelope.make("other", "codex:worker", "claude:lead-session", "DENIED MAIL"))
-        (other_root / ".agent-relay.json").write_bytes(b"{corrupt policy")
+        (other_root / ".handback.json").write_bytes(b"{corrupt policy")
         self.seed_lead()
         with patch.object(hooks, "_projects", return_value=iter([other.path, self.state.path])):
             result = self.recover()

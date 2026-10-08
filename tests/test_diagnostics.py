@@ -8,8 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from agent_relay import cli, config, diagnostics as d, envelope, inbox
-from agent_relay.state import ProjectState
+from handback import cli, config, diagnostics as d, envelope, inbox
+from handback.state import ProjectState
 
 
 class DiagnosticTests(unittest.TestCase):
@@ -19,11 +19,11 @@ class DiagnosticTests(unittest.TestCase):
         self.root = Path(temp.name) / "project"
         self.root.mkdir()
         self.home = Path(temp.name) / "state"
-        env = patch.dict(os.environ, AGENT_RELAY_HOME=str(self.home))
+        env = patch.dict(os.environ, HANDBACK_HOME=str(self.home))
         env.start()
         self.addCleanup(env.stop)
-        os.environ.pop("AGENT_RELAY_LEAD", None)
-        os.environ.pop("AGENT_RELAY_WORKERS", None)
+        os.environ.pop("HANDBACK_LEAD", None)
+        os.environ.pop("HANDBACK_WORKERS", None)
         self.state = ProjectState(self.root)
         self.now = datetime.now(timezone.utc)
         self.agents = [{"agent": name, "installed": True, "executable": "fake-app",
@@ -83,9 +83,9 @@ class DiagnosticTests(unittest.TestCase):
         self.assertIn("FAIL Codex queue --thread", out)
 
     def test_json_preserves_legacy_fields_values_and_exit(self):
-        from agent_relay.router import diagnostics
+        from handback.router import diagnostics
         cleanup = {"candidates": [], "dry_run": True}
-        with patch("agent_relay.adapters.antigravity.cleanup_sidecars", return_value=cleanup):
+        with patch("handback.adapters.antigravity.cleanup_sidecars", return_value=cleanup):
             code, out, _ = self.invoke("doctor", "--json")
         value = json.loads(out)
         self.assertEqual(code, 0)
@@ -243,11 +243,11 @@ class DiagnosticTests(unittest.TestCase):
         self.assertIn("Diagnostic reader warnings", out)
 
     def test_report_home_is_tilde_and_invalid_topology_does_not_leak(self):
-        self.state.home = Path.home() / ".agent-relay"
+        self.state.home = Path.home() / ".handback"
         resolved = config.resolve(self.root, validate=False)
         resolved["values"].update(lead="private-agent:secret", workers=["private-worker"])
         value = d.bug_report(self.state, resolved, self.agents, [])
-        self.assertEqual(value["state_home"], "~/.agent-relay")
+        self.assertEqual(value["state_home"], "~/.handback")
         self.assertEqual(value["topology"], {"lead": "unknown", "workers": ["unknown"]})
 
     def test_human_diagnostic_error_stays_a_checklist_failure(self):

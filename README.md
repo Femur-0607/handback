@@ -2,7 +2,9 @@
 
 https://github.com/user-attachments/assets/1b84114c-2313-43aa-a6ab-77b012d944ba
 
-# agent-relay
+# handback
+
+Previously developed as **agent-relay**; legacy state is detected with migration guidance.
 
 A local tool for handing work between coding-agent apps and bringing the results back to the conversation where you started.
 
@@ -10,11 +12,11 @@ A local tool for handing work between coding-agent apps and bringing the results
 
 [First task](#try-your-first-task) · [Use-your-own-project guide](#use-it-on-your-own-project) · [Detailed setup](docs/quickstart.md) · [한국어 사용 설명서](docs/usage.ko.md)
 
-## What is agent-relay?
+## What is handback?
 
-agent-relay connects coding agents running on your computer. You work with one main conversation, called the **Lead**, and let it send a defined task to another conversation, called a **worker**. The relay creates the worker conversation, sends the task, and saves its reply in a local inbox for the Lead to review.
+handback connects coding agents running on your computer. You work with one main conversation, called the **Lead**, and let it send a defined task to another conversation, called a **worker**. The relay creates the worker conversation, sends the task, and saves its reply in a local inbox for the Lead to review.
 
-For example, you can discuss a change with Claude, have a Codex worker inspect the relevant code, and review its findings back in Claude. The apps perform the reasoning and coding; agent-relay handles task delivery, result collection, and recovery.
+For example, you can discuss a change with Claude, have a Codex worker inspect the relevant code, and review its findings back in Claude. The apps perform the reasoning and coding; handback handles task delivery, result collection, and recovery.
 
 It runs as an installed Python package or directly from this repository, using only Python's standard library. You need the supported agent apps installed and signed in. Everything is scoped to one computer and one OS user, and no other project repository is required.
 
@@ -26,11 +28,11 @@ Delegating heavy reading, investigation, and implementation to workers helps kee
 
 ## Why it exists
 
-agent-relay started from a simple wish: let the agent apps already on my computer talk to each other while I can still watch every conversation in the apps themselves. That is why a worker is a real conversation inside its own app, not a hidden subprocess. You can open it at any time and follow the work as it happens.
+handback started from a simple wish: let the agent apps already on my computer talk to each other while I can still watch every conversation in the apps themselves. That is why a worker is a real conversation inside its own app, not a hidden subprocess. You can open it at any time and follow the work as it happens.
 
 Working across multiple coding agents creates repeated handoffs: send the task, remember which conversation is working on it, find the answer, and bring it back to the original discussion. If a conversation closes or a wait times out, it can also become unclear whether a task finished or should be sent again.
 
-agent-relay gives each request an identity and keeps its result on disk. The Lead can retrieve an existing request after an interruption and mark a reviewed result as handled. This makes the handoff easier to follow and reduces the risk of submitting the same work twice.
+handback gives each request an identity and keeps its result on disk. The Lead can retrieve an existing request after an interruption and mark a reviewed result as handled. This makes the handoff easier to follow and reduces the risk of submitting the same work twice.
 
 It is intended for developers who already use multiple supported coding-agent apps and want to coordinate bounded tasks in their own projects. You still decide what work is allowed and review the results. A message from an agent is task information, never user authorization.
 
@@ -59,20 +61,20 @@ Windows has live integration coverage. macOS and Linux are unverified. App queue
 After the PyPI release (not published yet), install into an isolated tool environment:
 
 ```sh
-uv tool install agent-relay
+uv tool install handback
 # Or, with Python already available:
-pipx install agent-relay
-agent-relay install-skills --dry-run
-agent-relay install-skills
+pipx install handback
+handback install-skills --dry-run
+handback install-skills
 ```
 
-uv can provision Python when needed. From a source checkout today, use `uv tool install .` or `pipx install .`, then the same `agent-relay` commands. No runtime dependencies are installed. The optional `agent-relay-dashboard` GUI requires a Python build with Tk support.
+uv can provision Python when needed. From a source checkout today, use `uv tool install .` or `pipx install .`, then the same `handback` commands. No runtime dependencies are installed. The optional `handback-dashboard` GUI requires a Python build with Tk support.
 
-`agent-relay install-skills --dry-run --target-home <absolute-test-home>` previews an isolated installation without consulting host PATH or CODEX_HOME. Existing skills get timestamp backups. Claude is always installed; Codex and Antigravity require app detection, and Antigravity also requires a registered skill directory. Without `--target-home`, detection checks the known Windows app paths and PATH on all platforms.
+`handback install-skills --dry-run --target-home <absolute-test-home>` previews an isolated installation without consulting host PATH or CODEX_HOME. Existing skills get timestamp backups. Claude is always installed; Codex and Antigravity require app detection, and Antigravity also requires a registered skill directory. Without `--target-home`, detection checks the known Windows app paths and PATH on all platforms.
 
-Packaged skills and hooks use the environment's absolute Python executable with `-m agent_relay`. A direct, uninstalled checkout uses its absolute entry script instead, so hooks and workers also run from other project directories. Keep that environment (or checkout) available, and reinstall skills/hooks if you move it. Existing hook ownership manifests still support removing or upgrading old script-based hooks.
+Packaged skills and hooks use the environment's absolute Python executable with `-m handback`. A direct, uninstalled checkout uses its absolute entry script instead, so hooks and workers also run from other project directories. Keep that environment (or checkout) available, and reinstall skills/hooks if you move it. Existing hook ownership manifests still support removing or upgrading old script-based hooks.
 
-The source-only walkthrough below remains supported; `install.ps1` is a thin wrapper around `python agent_relay.py install-skills`. Package users can replace `python "$relayScript"` in later examples with `agent-relay`.
+The source-only walkthrough below remains supported; `install.ps1` is a thin wrapper around `python handback.py install-skills`. Package users can replace `python "$relayScript"` in later examples with `handback`.
 
 ## Try your first task
 
@@ -85,9 +87,9 @@ Start with **Claude Lead → Codex worker**. Have these ready:
 After installation, run this from your project in a normal terminal, outside an agent sandbox:
 
 ```powershell
-agent-relay try
+handback try
 # From an uninstalled source checkout:
-python agent_relay.py try
+python handback.py try
 ```
 
 `try` checks configuration and Codex detection, creates one read-only worker, sends a reply-only task, verifies its saved `RELAY_OK` result and request identity, then ACKs it. It prints the worker handle, request ID, elapsed time, result, and ACK status. It does not install skills or hooks. App detection alone does not verify login or queue compatibility; the task checks the round trip.
@@ -102,16 +104,16 @@ The manual route below includes optional skill setup. Keep the same state home a
 ### 1. Get the tool and check your setup
 
 ```powershell
-git clone https://github.com/Femur-0607/agent-relay.git
-Set-Location agent-relay
+git clone https://github.com/Femur-0607/handback.git
+Set-Location handback
 $relayRoot = (Get-Location).Path
-$relayScript = Join-Path $relayRoot 'agent_relay.py'
+$relayScript = Join-Path $relayRoot 'handback.py'
 python --version
 python "$relayScript" doctor --root "$relayRoot"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -DryRun
 ```
 
-If you downloaded an archive, open its extracted `agent-relay` folder in PowerShell and continue from `$relayRoot = ...`. No `pip install` is required. Review the diagnostic output and planned installation paths. `doctor` checks app availability; it does not prove a task can complete. See [setup and troubleshooting](docs/quickstart.md) if it reports a missing app or an existing-state warning.
+If you downloaded an archive, open its extracted `handback` folder in PowerShell and continue from `$relayRoot = ...`. No `pip install` is required. Review the diagnostic output and planned installation paths. `doctor` checks app availability; it does not prove a task can complete. See [setup and troubleshooting](docs/quickstart.md) if it reports a missing app or an existing-state warning.
 
 ### 2. Install the skills and select the Lead inbox
 
@@ -124,7 +126,7 @@ python "$relayScript" status --root "$relayRoot"
 
 Check that `status` shows the Claude Lead and Codex worker combination. `claude:lead` is an inbox address for this first test; you do not need to discover a real Claude session ID to read its results manually. Session-specific recovery hooks require a real session ID later.
 
-The installer writes agent skills and backs up existing skill files. It does not start the apps, a Lead conversation, or a watcher. Keep the checkout after installation because the installed skills refer to its files. The Windows default state home is `%USERPROFILE%\.agent-relay`; if you already set `AGENT_RELAY_HOME`, keep the same value throughout.
+The installer writes agent skills and backs up existing skill files. It does not start the apps, a Lead conversation, or a watcher. Keep the checkout after installation because the installed skills refer to its files. The Windows default state home is `%USERPROFILE%\.handback`; if you already set `HANDBACK_HOME`, keep the same value throughout.
 
 ### 3. Send one small task
 
@@ -171,11 +173,11 @@ python "$relayScript" use --root "$projectRoot" --lead "$leadAddress" --workers 
 python "$relayScript" status --root "$projectRoot"
 ```
 
-Open that project in your Lead app and confirm the installed `agent-relay` skill is available. Here is an example request to give a Claude Lead; replace both paths and the module name:
+Open that project in your Lead app and confirm the installed `handback` skill is available. Here is an example request to give a Claude Lead; replace both paths and the module name:
 
 ```text
-Use the agent-relay skill for the project at <absolute-project-path>.
-The relay script is <absolute-relay-installation>/agent_relay.py.
+Use the handback skill for the project at <absolute-project-path>.
+The relay script is <absolute-relay-installation>/handback.py.
 Use claude:lead as the Lead inbox and Codex as the worker.
 Ask one worker to review error handling in <module-path> without changing files.
 Collect its result, review the findings, summarize them here, and ACK the result after review.
@@ -210,7 +212,7 @@ The [detailed guide](docs/quickstart.md) covers timeouts, replay, custom state h
 
 ## Optional dashboard
 
-Run `pythonw dashboard.pyw` from the relay installation folder to see project activity, in-progress tasks, and unacknowledged results. The dashboard is optional; it is not required for delegation. `python agent_relay.py dashboard --autostart on` starts the dashboard at Windows login, not the Lead or its Monitor.
+Run `pythonw dashboard.pyw` from the relay installation folder to see project activity, in-progress tasks, and unacknowledged results. The dashboard is optional; it is not required for delegation. `python handback.py dashboard --autostart on` starts the dashboard at Windows login, not the Lead or its Monitor.
 
 <details>
 <summary>Dashboard memory measurements</summary>
@@ -239,7 +241,7 @@ The large-inbox figure measures Python allocations, not total process memory, an
 
 ## Development
 
-Implementation lives in `agent_relay/`, the CLI entry point is `agent_relay.py`, and tests are in `tests/`.
+Implementation lives in `handback/`, the CLI entry point is `handback.py`, and tests are in `tests/`.
 
 ```powershell
 python -m unittest
@@ -250,3 +252,18 @@ Unit tests use isolated fixtures. They do not establish compatibility with a cur
 ## License
 
 [MIT](LICENSE). The license covers this repository's code; the agent applications are separately installed and retain their own licenses and terms.
+
+## Migrating a previous local installation
+
+`HANDBACK_HOME` selects the state directory. Defaults are `%USERPROFILE%\.handback`
+on Windows, `~/Library/Application Support/handback` on macOS, and
+`${XDG_STATE_HOME:-~/.local/state}/handback` on Linux. `AGENT_RELAY_HOME` is never
+used as the new state setting. `handback doctor` warns about legacy state and prints
+`handback migrate-state --from '<old-state-path>'`. Stop requests, collectors, and
+watchers before copying. Migration verifies copied bytes, retains the original files,
+and adds a `MOVED.json` receipt to prevent accidental writes to the old store.
+
+Reinstall hooks and skills with `handback install-hooks` and `handback install-skills`;
+legacy hooks are recognized and original skill files receive timestamp backups.
+Copy a legacy `.agent-relay.json` project policy to `.handback.json`. Until then the
+legacy policy is read with a warning; when both exist, `.handback.json` takes precedence.

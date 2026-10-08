@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import sys
 from unittest import mock
-from agent_relay import skill_install
+from handback import skill_install
 import unittest
 
 
@@ -15,7 +15,7 @@ class SkillInstallTests(unittest.TestCase):
     def test_placeholder_and_existing_backup(self):
         repo = Path(__file__).absolute().parent.parent
         with tempfile.TemporaryDirectory(dir=repo / 'tests') as tmp:
-            target = Path(tmp) / '.claude' / 'skills' / 'agent-relay' / 'SKILL.md'
+            target = Path(tmp) / '.claude' / 'skills' / 'handback' / 'SKILL.md'
             target.parent.mkdir(parents=True)
             target.write_bytes(b'previous skill')
             result = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
@@ -23,8 +23,8 @@ class SkillInstallTests(unittest.TestCase):
                                     env=dict(os.environ, USERPROFILE=tmp), capture_output=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             installed = target.read_text(encoding='utf-8')
-            self.assertNotIn('{{AGENT_RELAY}}', installed)
-            self.assertIn(str(repo / 'agent_relay.py'), installed)
+            self.assertNotIn('{{HANDBACK}}', installed)
+            self.assertIn(str(repo / 'handback.py'), installed)
             backups = list(target.parent.glob('SKILL.md.*.bak'))
             self.assertEqual(len(backups), 1)
             self.assertEqual(backups[0].read_bytes(), b'previous skill')
@@ -32,7 +32,7 @@ class SkillInstallTests(unittest.TestCase):
     def run_installer(self, root, *args):
         repo = Path(__file__).absolute().parent.parent
         return subprocess.run(
-            [sys.executable, '-m', 'agent_relay', 'install-skills', '--target-home', str(root), *args],
+            [sys.executable, '-m', 'handback', 'install-skills', '--target-home', str(root), *args],
             capture_output=True, timeout=30)
 
     def fixture_apps(self, root):
@@ -52,11 +52,11 @@ class SkillInstallTests(unittest.TestCase):
                       root / '.gemini/config/skills.json']
             for path in shared[:2]:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(b'other rules\r\n<!-- agent-relay:start -->\r\nold\r\n<!-- agent-relay:end -->\r\ntail')
+                path.write_bytes(b'other rules\r\n<!-- handback:start -->\r\nold\r\n<!-- handback:end -->\r\ntail')
             originals = {p: p.read_bytes() for p in shared}
             first = self.run_installer(root)
             self.assertEqual(first.returncode, 0, first.stderr)
-            targets = [root / p / 'agent-relay/SKILL.md' for p in
+            targets = [root / p / 'handback/SKILL.md' for p in
                        ('.claude/skills', '.codex/skills', '.gemini/config/skills')]
             old = {p: p.read_bytes() for p in targets}
             second = self.run_installer(root)
@@ -111,7 +111,7 @@ class SkillInstallTests(unittest.TestCase):
     def test_packaged_templates_load_and_resolve(self):
         from importlib import resources
         for relative in ("SKILL.md", "codex/SKILL.md.in", "antigravity/SKILL.md.in"):
-            self.assertTrue(resources.files("agent_relay").joinpath("skills", *relative.split("/")).read_text(encoding="utf-8").strip())
+            self.assertTrue(resources.files("handback").joinpath("skills", *relative.split("/")).read_text(encoding="utf-8").strip())
         for agent in ("claude", "codex", "antigravity"):
             self.assertNotIn("{{", skill_install.render(agent))
 
@@ -120,4 +120,4 @@ class SkillInstallTests(unittest.TestCase):
             root = Path(tmp)
             with mock.patch.object(skill_install.Path, "home", return_value=root), mock.patch.object(skill_install.shutil, "which", side_effect=lambda name: "/bin/codex" if name == "codex" else None), mock.patch.dict(os.environ, {"CODEX_HOME": str(root / "custom-codex")}):
                 skill_install.install()
-            self.assertTrue((root / "custom-codex/skills/agent-relay/SKILL.md").is_file())
+            self.assertTrue((root / "custom-codex/skills/handback/SKILL.md").is_file())

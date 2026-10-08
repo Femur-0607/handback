@@ -29,7 +29,7 @@ OPEN_STATES = frozenset({"prepared", "dispatching", "accepted", "delivery_unknow
 # Statuses whose marked turn may still appear in the worker's record.
 COLLECTABLE = frozenset({"dispatching", "accepted", "delivery_unknown"})
 DEFAULT_COLLECT_TIMEOUT = 24 * 60 * 60
-ENTRY_SCRIPT = Path(__file__).resolve().parents[1] / "agent_relay.py"
+ENTRY_SCRIPT = Path(__file__).resolve().parents[1] / "handback.py"
 
 
 def utcnow():
@@ -99,7 +99,7 @@ def _spawn(state, request, timeout, python):
     command = [python or sys.executable, *entry_args(ENTRY_SCRIPT), "collect", "--request", request["id"],
                "--root", str(state.root), "--timeout", str(timeout)]
     env = dict(os.environ, PYTHONUTF8="1")
-    env["AGENT_RELAY_HOME"] = str(state.home)
+    env["HANDBACK_HOME"] = str(state.home)
     process = error = None
     # Persist intent before starting a child. If PID publication crashes, migration
     # sees ambiguous collector metadata and refuses to move a possibly live writer.

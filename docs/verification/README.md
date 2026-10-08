@@ -35,7 +35,7 @@ Use the commands and supported combinations in the [main README](../../README.md
 
 ## Public-source preparation, October 8, 2026
 
-The prepared source was exported without Git history, private development records, or live app state, then extracted into a new directory. Checks ran on Windows with Python 3.13.15. The imported `agent_relay` package was verified to come from that extracted directory.
+The prepared source was exported without Git history, private development records, or live app state, then extracted into a new directory. Checks ran on Windows with Python 3.13.15. The imported `handback` package was verified to come from that extracted directory.
 
 | Check | Result |
 |---|---|
@@ -51,4 +51,4 @@ The passing run still emitted an interpreter-location warning and a subprocess `
 
 ## Version-awareness baseline
 
-The small historical version table is `VERIFIED_VERSIONS` in `agent_relay/diagnostics.py`: Codex CLI 0.153.4 and Claude CLI 2.1.292 from the October 7 preflight above. Antigravity has an explicit unknown placeholder because its build was not recorded. These values are CLI observations, not desktop UI build guarantees or proof of the versions used in every later run. `doctor` warns on a different or unknown version; it never treats a mismatch alone as a failure. Update this table only with recorded live verification evidence.
+The small historical version table is `VERIFIED_VERSIONS` in `handback/diagnostics.py`: Codex CLI 0.153.4 and Claude CLI 2.1.292 from the October 7 preflight above. Antigravity has an explicit unknown placeholder because its build was not recorded. These values are CLI observations, not desktop UI build guarantees or proof of the versions used in every later run. `doctor` warns on a different or unknown version; it never treats a mismatch alone as a failure. Update this table only with recorded live verification evidence.

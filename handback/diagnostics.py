@@ -38,7 +38,7 @@ def quote(value):
 
 
 def command(state, action):
-    return f"agent-relay {action} --root {quote(state.root)}"
+    return f"handback {action} --root {quote(state.root)}"
 
 
 def collector_info(request, now=None):
@@ -185,11 +185,11 @@ def skill_status(agent):
     from .invocation import command_text, entry_args
     root = (Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") if agent == "codex"
             else Path.home() / ".claude")
-    path = root / "skills/agent-relay/SKILL.md"
+    path = root / "skills/handback/SKILL.md"
     try:
         content = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
-        return "missing"
+        return "legacy agent-relay skill; reinstall" if (root / "skills/agent-relay/SKILL.md").is_file() else "missing"
     current = command_text() in content or (len(entry_args()) == 1 and
               entry_args()[0].replace("\\", "/").lower() in content.replace("\\", "/").lower())
     return "points at this installation" if current else "installation reference differs or is unverified"
@@ -219,33 +219,33 @@ def checklist(state, resolved, agents):
         parent = parent.parent
     writable = parent.is_dir() and os.access(parent, os.W_OK)
     add("State home", "OK" if writable else "FAIL", str(state.home) +
-        " (permission estimate; no write probe)", "Set AGENT_RELAY_HOME to a writable state directory.")
+        " (permission estimate; no write probe)", "Set HANDBACK_HOME to a writable state directory.")
     by_agent = {a["agent"]: a for a in agents}
     codex = by_agent["codex"]
     add("Codex executable", "OK" if codex.get("installed") else "FAIL",
-        codex.get("executable") or "not detected", "Set AGENT_RELAY_CODEX to the installed Codex executable.")
+        codex.get("executable") or "not detected", "Set HANDBACK_CODEX to the installed Codex executable.")
     add("Codex queue --thread", "OK" if queue_supported(codex.get("executable")) else "FAIL",
         "queue help capability probe", "Install a Codex build with queue --thread support.")
     enabled = values.get("agents", {}).get("antigravity", {}).get("enabled", False)
     if enabled:
         agy = by_agent["antigravity"]
         add("Antigravity", "OK" if agy.get("installed") else "FAIL", agy.get("executable") or "not detected",
-            "Set AGENT_RELAY_ANTIGRAVITY to the installed Antigravity executable.")
+            "Set HANDBACK_ANTIGRAVITY to the installed Antigravity executable.")
         add("Antigravity hooks", "OK" if agy.get("capabilities", {}).get("hooks_installed") else "WARN",
-            "relay hook registration", "agent-relay install-hooks --agents antigravity")
+            "relay hook registration", "handback install-hooks --agents antigravity")
     for agent in ("claude", "codex"):
         try:
             detail = skill_status(agent)
         except (OSError, ValueError):
             detail = "cannot read skill"
         add(agent + " skill", "OK" if detail == "points at this installation" else "WARN", detail,
-            "agent-relay install-skills")
+            "handback install-skills")
     error = resolved.get("validation_error")
     configured = resolved.get("sources", {}).get("lead") != "builtin"
     add("Topology", "FAIL" if error else "OK" if configured else "WARN",
         error or (values["lead"].split(":")[0] + " -> " + ",".join(values["workers"]) +
                   ("" if configured else " (builtin default; not explicitly set)")),
-        "Configure a supported Lead/worker combination with agent-relay use --root <checkout> --lead <agent:id> --workers <agents>.")
+        "Configure a supported Lead/worker combination with handback use --root <checkout> --lead <agent:id> --workers <agents>.")
     lead = values["lead"].split(":")[0]
     if lead in {"claude", "codex"}:
         try:
@@ -253,7 +253,7 @@ def checklist(state, resolved, agents):
         except (OSError, ValueError):
             present = False
         add(lead + " recovery hooks", "OK" if present else "WARN", "registration for this installation/state home; execution/trust not verified",
-            f"agent-relay install-hooks --agents {lead} --state-home {quote(state.home)}")
+            f"handback install-hooks --agents {lead} --state-home {quote(state.home)}")
     for agent in agents:
         name = agent["agent"]
         if name == "antigravity" and not enabled:
@@ -264,7 +264,7 @@ def checklist(state, resolved, agents):
         tested = bool(verified and match and match[0] == verified)
         add(name + " version", "OK" if tested else "WARN", version +
             (" (historical preflight match)" if tested else " (untested version; recorded=" + str(verified or "unknown") + ")"),
-            "agent-relay selftest" if name == "codex" else "Verify a small authorized live round trip for this app version.")
+            "handback selftest" if name == "codex" else "Verify a small authorized live round trip for this app version.")
     for request in state.requests():
         if request.get("status") not in collector.OPEN_STATES:
             continue
@@ -281,7 +281,7 @@ def checklist(state, resolved, agents):
         add("Claude Monitor", "WARN", "watch expires after 30 minutes; active Monitor cannot be observed",
             "Re-arm inbox watch in Claude Monitor after each expiry.")
     for index, warning in enumerate(state_warnings(state.home) + legacy_warnings(), 1):
-        add(f"State warning {index}", "WARN", warning, "Review the selected AGENT_RELAY_HOME before recovery.")
+        add(f"State warning {index}", "WARN", warning, "Review the selected HANDBACK_HOME before recovery.")
     return rows
 
 
@@ -293,11 +293,11 @@ def bug_report(state, resolved, agents, rows):
         match = re.search(r"\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?", agent.get("version") or "")
         versions[agent["agent"]] = match[0] if match else "unknown"
     # Preserve home-relative location only for the normal, non-project state home.
-    normal = Path.home() / ".agent-relay"
-    state_label = "~/.agent-relay" if state.home == normal else "<custom-state-home>"
+    normal = Path.home() / ".handback"
+    state_label = "~/.handback" if state.home == normal else "<custom-state-home>"
     agent_name = lambda name: name if name in config.AGENTS else "unknown"
     return {"os": platform.system() + " " + platform.release(), "python": platform.python_version(),
-            "agent_relay": __version__, "state_home": state_label,
+            "handback": __version__, "state_home": state_label,
             "app_versions": versions,
             "topology": {"lead": agent_name(resolved["values"]["lead"].split(":")[0]),
                          "workers": [agent_name(w) for w in resolved["values"]["workers"]]},

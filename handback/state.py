@@ -23,15 +23,15 @@ _MISSING = object()
 
 def state_home():
     """Return the state directory without creating it or reading credentials."""
-    override = os.environ.get("AGENT_RELAY_HOME")
+    override = os.environ.get("HANDBACK_HOME")
     if override:
         return Path(override).expanduser().resolve()
     if sys.platform == "win32":
         # Profile-root dot directories are shared with processes outside MSIX.
-        return Path(os.environ.get("USERPROFILE") or Path.home()) / ".agent-relay"
+        return Path(os.environ.get("USERPROFILE") or Path.home()) / ".handback"
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "agent-relay"
-    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "agent-relay"
+        return Path.home() / "Library" / "Application Support" / "handback"
+    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "handback"
 
 
 def _normal_path(path):

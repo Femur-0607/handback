@@ -11,7 +11,7 @@ import unittest
 from unittest import mock
 import uuid
 
-from agent_relay.state import ProjectState, atomic_json, home_lock, moved_destination, project_identity, state_home, state_warnings
+from handback.state import ProjectState, atomic_json, home_lock, moved_destination, project_identity, state_home, state_warnings
 
 
 class StateTests(unittest.TestCase):
@@ -55,7 +55,7 @@ class StateTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("git"), "git unavailable")
     def test_real_git_worktrees_share_identity(self):
         def git(*args):
-            return subprocess.run(["git", "-c", "user.name=Relay Test", "-c", "user.email=test@example.invalid",
+            return subprocess.run(["git", "-c", "user.name=Relay Test", "-c", "user.email=synthetic-test",
                                    "-C", str(self.root), *args], capture_output=True, text=True,
                                   encoding="utf-8", timeout=15, check=True)
         git("init", "-q")
@@ -82,7 +82,7 @@ class StateTests(unittest.TestCase):
     def test_atomic_failure_preserves_existing_file(self):
         path = self.root / "atomic.json"
         atomic_json(path, {"value": 1})
-        with mock.patch("agent_relay.state.os.replace", side_effect=OSError("simulated failure")):
+        with mock.patch("handback.state.os.replace", side_effect=OSError("simulated failure")):
             with self.assertRaises(OSError):
                 atomic_json(path, {"value": 2})
         self.assertEqual(json.loads(path.read_text()), {"value": 1})
@@ -133,7 +133,7 @@ class StateTests(unittest.TestCase):
         self.assertEqual(self.state.threads()["codex:0"]["name"], "worker 0")
 
     def test_cross_process_lock_timeout_and_release(self):
-        script = """from agent_relay.state import ProjectState
+        script = """from handback.state import ProjectState
 import sys
 state = ProjectState(sys.argv[1], home=sys.argv[2])
 try:
@@ -154,7 +154,7 @@ except TimeoutError:
         self.assertEqual(acquired.stdout.strip(), "acquired")
 
     def test_crashed_lock_owner_does_not_leave_stale_ownership(self):
-        script = """from agent_relay.state import ProjectState
+        script = """from handback.state import ProjectState
 import os, sys
 with ProjectState(sys.argv[1], home=sys.argv[2]).lock():
     os._exit(0)
@@ -166,27 +166,27 @@ with ProjectState(sys.argv[1], home=sys.argv[2]).lock():
             self.state.write_json("recovered.json", {"ok": True})
 
     def test_state_home_explicit_and_platform_defaults(self):
-        with mock.patch.dict(os.environ, {"AGENT_RELAY_HOME": str(self.home)}, clear=True):
+        with mock.patch.dict(os.environ, {"HANDBACK_HOME": str(self.home)}, clear=True):
             self.assertEqual(state_home(), self.home.resolve())
         with mock.patch.dict(os.environ, {"USERPROFILE": str(self.root), "LOCALAPPDATA": str(self.home)}, clear=True), \
-                mock.patch("agent_relay.state.sys.platform", "win32"):
-            self.assertEqual(state_home(), self.root / ".agent-relay")
+                mock.patch("handback.state.sys.platform", "win32"):
+            self.assertEqual(state_home(), self.root / ".handback")
         redirected = self.root / "Packages" / "sandbox.test" / "AC"
         with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(redirected)}, clear=True), \
-                mock.patch("agent_relay.state.sys.platform", "win32"), \
-                mock.patch("agent_relay.state.Path.home", return_value=self.root):
-            self.assertEqual(state_home(), self.root / ".agent-relay")
+                mock.patch("handback.state.sys.platform", "win32"), \
+                mock.patch("handback.state.Path.home", return_value=self.root):
+            self.assertEqual(state_home(), self.root / ".handback")
         with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.home)}, clear=True), \
-                mock.patch("agent_relay.state.sys.platform", "linux"):
-            self.assertEqual(state_home(), self.home / "agent-relay")
+                mock.patch("handback.state.sys.platform", "linux"):
+            self.assertEqual(state_home(), self.home / "handback")
         with mock.patch.dict(os.environ, {}, clear=True), \
-                mock.patch("agent_relay.state.sys.platform", "darwin"), \
-                mock.patch("agent_relay.state.Path.home", return_value=self.root):
-            self.assertEqual(state_home(), self.root / "Library" / "Application Support" / "agent-relay")
+                mock.patch("handback.state.sys.platform", "darwin"), \
+                mock.patch("handback.state.Path.home", return_value=self.root):
+            self.assertEqual(state_home(), self.root / "Library" / "Application Support" / "handback")
 
     def test_shared_home_lock_allows_other_readers_and_excludes_migration(self):
         script = """import sys
-from agent_relay.state import home_lock
+from handback.state import home_lock
 try:
     with home_lock(sys.argv[1], exclusive=sys.argv[2] == 'exclusive', timeout=0.15):
         print('acquired')
@@ -237,9 +237,9 @@ except TimeoutError:
                 pass
 
     def test_msix_warning_uses_realpath_without_mutation(self):
-        virtualized = str(self.root / "Packages" / "Claude_fixture" / "LocalCache" / "Local" / "agent-relay")
-        with mock.patch("agent_relay.state.os.path.realpath", return_value=virtualized), \
-                mock.patch("agent_relay.state.moved_destination", return_value=None):
+        virtualized = str(self.root / "Packages" / "Claude_fixture" / "LocalCache" / "Local" / "handback")
+        with mock.patch("handback.state.os.path.realpath", return_value=virtualized), \
+                mock.patch("handback.state.moved_destination", return_value=None):
             self.assertTrue(any("MSIX" in text for text in state_warnings(self.home)))
         self.assertFalse(self.home.exists())
 

@@ -7,8 +7,8 @@ import sys
 def entry_args(script=None):
     # A source checkout need not be pip-installed; its absolute script anchors
     # imports even when a hook or detached process runs in a different project.
-    source = Path(script) if script is not None else Path(__file__).resolve().parent.parent / "agent_relay.py"
-    return [str(source)] if source.is_file() else ["-m", "agent_relay"]
+    source = Path(script) if script is not None else Path(__file__).resolve().parent.parent / "handback.py"
+    return [str(source)] if source.is_file() else ["-m", "handback"]
 
 
 def command_text(*arguments):

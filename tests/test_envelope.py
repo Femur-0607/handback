@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-from agent_relay import envelope
+from handback import envelope
 
 
 class EnvelopeTests(unittest.TestCase):

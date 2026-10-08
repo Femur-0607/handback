@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from agent_relay import envelope, inbox
+from handback import envelope, inbox
 
 
 class InboxTests(unittest.TestCase):

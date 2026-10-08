@@ -1,17 +1,17 @@
 name: Bug report
-description: Report a reproducible agent-relay problem.
+description: Report a reproducible handback problem.
 body:
   - type: markdown
     attributes:
       value: |
-        agent-relay is experimental and currently targets Windows. App updates can affect compatibility.
+        handback is experimental and currently targets Windows. App updates can affect compatibility.
         Remove tokens, private prompts, usernames, absolute paths, and conversation IDs before posting.
         Do not attach a complete state directory or app transcript.
   - type: textarea
     id: environment
     attributes:
       label: Environment
-      description: Paste the redacted block from agent-relay doctor --root <project> --report. Include the commit if running from source.
+      description: Paste the redacted block from handback doctor --root <project> --report. Include the commit if running from source.
       placeholder: |
         Paste doctor --report here (OS, Python, tool/app versions, checks, topology).
         Source commit, if applicable:

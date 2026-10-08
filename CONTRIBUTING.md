@@ -1,6 +1,6 @@
 # Contributing
 
-agent-relay is an experimental local relay for one computer and one OS user. Windows is the verified integration platform. Start with the [quick start](docs/quickstart.md), [Korean manual](docs/usage.ko.md), and [verification summary](docs/verification/README.md).
+handback is an experimental local relay for one computer and one OS user. Windows is the verified integration platform. Start with the [quick start](docs/quickstart.md), [Korean manual](docs/usage.ko.md), and [verification summary](docs/verification/README.md).
 
 ## Scope
 
@@ -16,7 +16,7 @@ Python 3.10 or newer is required. There are no third-party Python package depend
 python -m unittest
 ```
 
-The compatibility entry point is `agent_relay.py`; implementation is in `agent_relay/` and tests are in `tests/`. Windows CI runs the standard-library unittest suite. PowerShell installer tests are platform-specific and may be skipped elsewhere.
+The compatibility entry point is `handback.py`; implementation is in `handback/` and tests are in `tests/`. Windows CI runs the standard-library unittest suite. PowerShell installer tests are platform-specific and may be skipped elsewhere.
 
 Use a short checkout path on Windows. Tests create nested state paths below `tests/`; with legacy Windows path limits, a deeply nested checkout can cause `FileNotFoundError` at 260 characters. The public snapshot was also tested outside its original Git checkout so implicit sibling-project dependencies could be detected.
 
@@ -28,9 +28,9 @@ Unit tests and live integration checks are separate. A passing suite does not pr
 
 ## Releasing
 
-One-time setup: create the `pypi` environment in the GitHub repository and configure its deployment protection rules. In PyPI, add a Trusted Publisher (a pending publisher for the first release) for project `agent-relay`, owner `Femur-0607`, repository `agent-relay`, workflow filename `release.yml`, and environment `pypi`. No API token is needed.
+One-time setup: create the `pypi` environment in the GitHub repository and configure its deployment protection rules. In PyPI, add a Trusted Publisher (a pending publisher for the first release) for project `handback`, owner `Femur-0607`, repository `handback`, workflow filename `release.yml`, and environment `pypi`. No API token is needed.
 
-To release, bump `__version__` in `agent_relay/__init__.py`, commit the release changes, create tag `vX.Y.Z` matching that version, and push the tag (`git tag vX.Y.Z` then `git push origin vX.Y.Z`). The release workflow builds and checks the distributions, tests the wheel on Windows, Linux, and macOS with Python 3.10 and 3.13, then publishes through PyPI Trusted Publishing. A manual workflow dispatch runs build and smoke checks only; it does not publish.
+To release, bump `__version__` in `handback/__init__.py`, commit the release changes, create tag `vX.Y.Z` matching that version, and push the tag (`git tag vX.Y.Z` then `git push origin vX.Y.Z`). The release workflow builds and checks the distributions, tests the wheel on Windows, Linux, and macOS with Python 3.10 and 3.13, then publishes through PyPI Trusted Publishing. A manual workflow dispatch runs build and smoke checks only; it does not publish.
 
 ## Reports and fixtures
 

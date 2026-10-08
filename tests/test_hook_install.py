@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from agent_relay import hook_install
+from handback import hook_install
 
 
 class HookInstallerTests(unittest.TestCase):
@@ -318,13 +318,13 @@ class HookInstallerTests(unittest.TestCase):
 
     def test_legacy_owned_hooks_upgrade_to_module_and_uninstall(self):
         self.install()
-        from agent_relay import invocation
+        from handback import invocation
         with mock.patch.object(invocation.Path, "is_file", return_value=False):
             result = hook_install.install(["codex", "claude"], home=self.home, config_paths=self.paths)
         for change in result["changes"]:
             self.assertEqual(len(change["added"]), len(change["removed"]))
             for spec in change["invocations"]:
-                self.assertEqual(spec["argv"][1:6], ["-X", "utf8", "-m", "agent_relay", "hook"])
+                self.assertEqual(spec["argv"][1:6], ["-X", "utf8", "-m", "handback", "hook"])
         self.uninstall()
         self.assertEqual(self.read("codex"), {})
         self.assertEqual(self.read("claude"), {})

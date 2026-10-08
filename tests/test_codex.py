@@ -11,8 +11,8 @@ import time
 import unittest
 from unittest import mock
 
-from agent_relay.adapters import codex
-from agent_relay.adapters.base import AdapterError, AdapterUnavailable
+from handback.adapters import codex
+from handback.adapters.base import AdapterError, AdapterUnavailable
 
 
 def event(kind, **fields):
@@ -157,12 +157,12 @@ class DiscoveryTests(unittest.TestCase):
                 self.assertEqual(Path(codex.resolve_codex()), bundled)
 
     def test_explicit_argument_precedes_environment_and_invalid_override_does_not_fallback(self):
-        with mock.patch.dict(os.environ, {"AGENT_RELAY_CODEX": "env-codex"}), \
+        with mock.patch.dict(os.environ, {"HANDBACK_CODEX": "env-codex"}), \
                 mock.patch.object(codex.shutil, "which", side_effect=lambda value: value), \
                 mock.patch.object(codex, "_version", return_value="version") as version:
             self.assertEqual(codex.resolve_codex("argument-codex"), "argument-codex")
             version.assert_called_once_with("argument-codex")
-        with mock.patch.dict(os.environ, {"AGENT_RELAY_CODEX": "broken"}), \
+        with mock.patch.dict(os.environ, {"HANDBACK_CODEX": "broken"}), \
                 mock.patch.object(codex.shutil, "which", return_value=None), mock.patch.object(codex, "_version", return_value=""), \
                 mock.patch.object(codex, "_bundled_candidates") as candidates:
             with self.assertRaises(AdapterUnavailable):

@@ -4,7 +4,7 @@ Place the following block in one authoritative project rules file, such as `AGEN
 
 ```markdown
 ## Delegation
-Delegate authorized worker work through agent-relay; follow its installed skill and the project's ownership, brief and verification rules.
+Delegate authorized worker work through handback; follow its installed skill and the project's ownership, brief and verification rules.
 Run `python "<relay-script>" status --root "<checkout>"` before delegation to identify the Lead and workers; never assume a vendor or model.
 Create one fresh worker thread per minor unit with `new --worker auto --cwd "<checkout>" --name "<unit> <goal>" --file "<brief>" --no-wait`; serialize units in the same checkout.
 Send corrections to that unit's existing thread with `send --root "<checkout>" --to "<agent:id>" --file "<brief>" --no-wait`; allow only one open request per worker conversation.
@@ -32,9 +32,9 @@ See [known limitations](limitations.md) for Lead replacement commands and result
 
 ## Applying the block
 
-1. Replace `<relay-script>` with the absolute path to `agent_relay.py` in the installed checkout, and `<checkout>` with the absolute path to the working checkout. Fill in the remaining placeholders for each assignment. Prefix every abbreviated `new`, `send`, `wait`, and recovery `status` command with the same `python "<relay-script>"`. This block does not assume an `agent-relay` executable on PATH.
+1. Replace `<relay-script>` with the absolute path to `handback.py` in the installed checkout, and `<checkout>` with the absolute path to the working checkout. Fill in the remaining placeholders for each assignment. Prefix every abbreviated `new`, `send`, `wait`, and recovery `status` command with the same `python "<relay-script>"`. This block does not assume an `handback` executable on PATH.
 2. Confirm the skill installation and operational state home first. `status` only reads the topology; it does not register a Lead, grant permissions, or set a model. Follow the [README](../README.md) to change the topology. `--worker auto` selects its first worker; it does not automatically replace a failed worker.
 3. `--file` sends an absolute path for the worker to read, not the file body. A brief should specify allowed files, actions, checks, expected results, and ownership-release conditions. Antigravity cannot enforce a read-only sandbox. Follow the installed skill and README for Codex `--sandbox` choices.
-4. Treat receipt, review, and acceptance as distinct steps. Asynchronous exit 0 is not task completion. A `wait` timeout neither cancels the request nor releases ownership, and `wait` does not resend. Receive and ACK using the Lead address captured at submission and the exact `AGENT_RELAY_HOME` that holds the result. Follow the Lead-specific inbox procedure in the [shared skill](../agent_relay/skills/SKILL.md).
+4. Treat receipt, review, and acceptance as distinct steps. Asynchronous exit 0 is not task completion. A `wait` timeout neither cancels the request nor releases ownership, and `wait` does not resend. Receive and ACK using the Lead address captured at submission and the exact `HANDBACK_HOME` that holds the result. Follow the Lead-specific inbox procedure in the [shared skill](../handback/skills/SKILL.md).
 
 The [Korean manual](usage.ko.md) contains the complete exit-code contract. The short block does not enumerate Codex `selftest` failure code 1. Antigravity `selftest` exit 5 means detection-only behavior with no implemented runtime self-test; it is not a quota signal. The [verification summary](verification/README.md) describes historical checks and their limits.

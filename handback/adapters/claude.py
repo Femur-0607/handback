@@ -13,7 +13,7 @@ class ClaudeAdapter(BaseAdapter):
         self.executable = executable
 
     def detect(self):
-        executable = self.executable or os.environ.get("AGENT_RELAY_CLAUDE") or shutil.which("claude")
+        executable = self.executable or os.environ.get("HANDBACK_CLAUDE") or shutil.which("claude")
         version = None
         warnings = ["Claude worker creation and Desktop hook execution are unverified; Lead inbox only"]
         if executable:

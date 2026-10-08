@@ -1,6 +1,6 @@
 # Known limitations and workarounds
 
-These limits describe the current implementation and recorded verification. **Current feature** means implemented behavior; **Operating tip** means a suggested workflow, not an enforced safeguard; **Future improvement** means unavailable functionality, not a release commitment. Commands below use the installed `agent-relay` entry point; from a source checkout, replace it with `python "<absolute-relay-installation>/agent_relay.py"`.
+These limits describe the current implementation and recorded verification. **Current feature** means implemented behavior; **Operating tip** means a suggested workflow, not an enforced safeguard; **Future improvement** means unavailable functionality, not a release commitment. Commands below use the installed `handback` entry point; from a source checkout, replace it with `python "<absolute-relay-installation>/handback.py"`.
 
 ## 1. Lead conversation context grows
 
@@ -20,19 +20,19 @@ These limits describe the current implementation and recorded verification. **Cu
 
 ### Replace the Lead session explicitly
 
-- **Current feature:** After opening a new Claude session, `use --lead` changes the configured Lead for subsequent requests. Already-open requests keep their original `return_to`, and their results go to the old address. Changing topology neither moves existing requests nor transfers conversation history. Use the same project and the exact `AGENT_RELAY_HOME` that holds those requests. Environment overrides `AGENT_RELAY_LEAD` and `AGENT_RELAY_WORKERS`, if set, take precedence over saved topology; check `status` after switching.
+- **Current feature:** After opening a new Claude session, `use --lead` changes the configured Lead for subsequent requests. Already-open requests keep their original `return_to`, and their results go to the old address. Changing topology neither moves existing requests nor transfers conversation history. Use the same project and the exact `HANDBACK_HOME` that holds those requests. Environment overrides `HANDBACK_LEAD` and `HANDBACK_WORKERS`, if set, take precedence over saved topology; check `status` after switching.
 
 ```powershell
-agent-relay use --root "<absolute-project-path>" --lead "claude:<new-session-id>" --workers codex
-agent-relay status --root "<absolute-project-path>"
-agent-relay wait --root "<absolute-project-path>" --request "<old-request-id>" --timeout 300
-agent-relay inbox list --root "<absolute-project-path>" --for "claude:<old-session-id>" --request "<old-request-id>"
+handback use --root "<absolute-project-path>" --lead "claude:<new-session-id>" --workers codex
+handback status --root "<absolute-project-path>"
+handback wait --root "<absolute-project-path>" --request "<old-request-id>" --timeout 300
+handback inbox list --root "<absolute-project-path>" --for "claude:<old-session-id>" --request "<old-request-id>"
 # Review the result and any referenced full result file before ACK.
-agent-relay inbox ack --root "<absolute-project-path>" --for "claude:<old-session-id>" --request "<old-request-id>"
+handback inbox ack --root "<absolute-project-path>" --for "claude:<old-session-id>" --request "<old-request-id>"
 ```
 
 - **Current feature:** A new session can explicitly list and ACK the old address's results with these commands. `--for` selects the stored recipient; it is not authentication of the running session. `inbox list --request` filters pending messages; `inbox ack --request` acknowledges that recipient's result/error messages. `--id "<message-id>"` remains an alternative ACK selector. Reading does not ACK or move the result.
-- **Current feature:** A watch for the new address neither collects old-address requests nor displays old-address mail. To receive the old backlog explicitly, run `agent-relay inbox watch --root "<absolute-project-path>" --for "claude:<old-session-id>" --timeout 60`. It can still collect and display old results after the switch. A detached collector already following an old request also keeps its original destination.
+- **Current feature:** A watch for the new address neither collects old-address requests nor displays old-address mail. To receive the old backlog explicitly, run `handback inbox watch --root "<absolute-project-path>" --for "claude:<old-session-id>" --timeout 60`. It can still collect and display old results after the switch. A detached collector already following an old request also keeps its original destination.
 - **Current feature:** Recovery hooks require both the configured Lead and the mail recipient to match the session. The new Lead's hook does not inherit old mail; after the switch, the old Lead's recovery hook also no longer matches that project's topology. Use explicit old-address reads/watch. Claude global recovery hook loading and Codex recovery-hook trust retain the live-verification gaps described in the [verification summary](verification/README.md).
 - **Operating tip:** Before leaving the old session, record its address, the state home, open request IDs, pending results, decisions, and next actions in a handoff document. Review and ACK old results deliberately from the new session. This example preserves the Claude → Codex combination; keep any replacement topology within the [supported combinations](../README.md#supported-combinations).
 - **Future improvement:** Reassigning already-open requests or unACKed results to a replacement Lead is not supported by a dedicated command. Do not treat `use` or `inbox redeliver` as reassignment; redelivery uses the saved recipient.
@@ -96,7 +96,7 @@ agent-relay inbox ack --root "<absolute-project-path>" --for "claude:<old-sessio
 **Fix or workaround:**
 
 - **Current feature:** `doctor --root "<absolute-project-path>"` warns on different or unknown app versions; a version mismatch alone is a WARN, not a FAIL. `doctor --report` produces a redacted diagnostic block.
-- **Operating tip:** After a Codex update, run `agent-relay selftest` and retain exact failures. Antigravity `selftest --agent antigravity` currently performs detection only and exits 5; it is not a successful runtime transport check. Consult the [verification summary](verification/README.md) for recovery-hook and skill-loading gaps.
+- **Operating tip:** After a Codex update, run `handback selftest` and retain exact failures. Antigravity `selftest --agent antigravity` currently performs detection only and exits 5; it is not a successful runtime transport check. Consult the [verification summary](verification/README.md) for recovery-hook and skill-loading gaps.
 
 ## 6. Timeout or unknown delivery does not mean nothing happened
 

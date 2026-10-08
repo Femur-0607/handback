@@ -187,7 +187,7 @@ def _folder_for(root, home):
     for folder in (home / "projects").iterdir():
         if folder.is_dir() and _read(folder / "topology.json").get("root") == root:
             return folder
-    raise ValueError(f"relay 상태에 없는 프로젝트입니다: {root}")
+    raise ValueError(f"handback 상태에 없는 프로젝트입니다: {root}")
 
 
 def prefs_path(home=None):
@@ -766,11 +766,11 @@ class Strip:
         self.mode = load_prefs(home)["mode"]
         self.root = tk.Tk()
         self.root.withdraw()
-        self.root.title("agent-relay")
+        self.root.title("handback")
         self.icons = []
         for size in (256, 64, 48, 32, 16):
             try:
-                asset = resources.files("agent_relay").joinpath("assets", f"icon-{size}.png")
+                asset = resources.files("handback").joinpath("assets", f"icon-{size}.png")
                 self.icons.append(tk.PhotoImage(master=self.root, data=asset.read_bytes(), format="png"))
             except (OSError, tk.TclError):
                 pass  # Source-only or incomplete installs still have a usable dashboard.
@@ -899,7 +899,7 @@ class Strip:
         name_width = measure("프로젝트 이름 프로젝트")
         lines = compact_lines(rows, prefs, name_width, measure)
         if not lines:
-            self.tk.Label(self.frame, text="relay · 대기", bg=bg, fg=palette["dim"],
+            self.tk.Label(self.frame, text="handback · 대기", bg=bg, fg=palette["dim"],
                           font=self.compact_metrics, bd=0, padx=0).pack(anchor="w", expand=True)
         for line in lines:
             row = self.tk.Frame(self.frame, bg=bg)
@@ -1010,7 +1010,7 @@ class Strip:
         shown, overflow = display_rows(rows, prefs, self.show_all)
         self.order = [row["root"] for row in limited + hidden]
         if not shown:
-            self._label("표시할 relay 프로젝트 없음 (우클릭으로 설정)", 0, 0, fg=self.DIM)
+            self._label("표시할 handback 프로젝트 없음 (우클릭으로 설정)", 0, 0, fg=self.DIM)
         line = 0
         for data in shown:
             key = data["root"]
@@ -1146,7 +1146,7 @@ class Strip:
                 {"label": f"미확인 결과 모두 확인 처리 ({self.unread_counts.get(project, 0)}개)",
                  "enabled": bool(self.unread_counts.get(project, 0)),
                  "command": lambda: self._acknowledge(project)},
-                {"label": "relay 등록 해제…", "command": lambda: self._release_project(project)}, None])
+                {"label": "handback 등록 해제…", "command": lambda: self._release_project(project)}, None])
         settings = [{"label": "표시 줄 수", "enabled": False}]
         for count, label in ((2, "2줄"), (3, "3줄"), (0, "전부")):
             settings.append({"label": ("✓ " if prefs["max_rows"] == count else "    ") + label,
@@ -1296,10 +1296,10 @@ class Strip:
     def _release_project(self, project):
         name = self.names.get(project, project)
         if not self._dialog(
-                "relay 등록 해제",
-                f"{name}을(를) relay에서 등록 해제할까요?\n\n"
+                "handback 등록 해제",
+                f"{name}을(를) handback에서 등록 해제할까요?\n\n"
                 "리더·워커 설정, 요청 기록, 수신함이 상태 홈의 released 폴더로 옮겨집니다(삭제 아님). "
-                "이 프로젝트에서 relay를 다시 쓰면 새로 등록됩니다.", parent=self.root, confirm=True):
+                "이 프로젝트에서 handback을 다시 쓰면 새로 등록됩니다.", parent=self.root, confirm=True):
             return
         try:
             target = release(project, self.home)
@@ -1393,7 +1393,7 @@ class Strip:
 
 
 def startup_shortcut():
-    return Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup/agent-relay 현황판.lnk"
+    return Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup/handback 현황판.lnk"
 
 
 def set_autostart(enabled):
@@ -1417,7 +1417,7 @@ def set_autostart(enabled):
               "$s.TargetPath = " + quoted(pythonw) + ";"
               "$s.Arguments = " + quoted(arguments) + ";"
               "$s.WorkingDirectory = " + quoted(launcher.parent) + ";"
-              "$s.Description = 'agent-relay 현황판';$s.Save()")
+              "$s.Description = 'handback 현황판';$s.Save()")
     subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
                    check=True, capture_output=True, timeout=30)
     return {"autostart": True, "shortcut": str(link), "target": str(pythonw), "launcher": str(launcher)}
@@ -1427,7 +1427,7 @@ def main(home=None):
     if sys.platform == "win32":
         import ctypes
         # One strip per user session: autostart plus a manual launch must not stack.
-        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\agent-relay-dashboard")
+        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\handback-dashboard")
         if mutex and ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
             return
         try:

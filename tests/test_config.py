@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from agent_relay.config import resolve, use_topology, validate_topology
-from agent_relay.state import ProjectState, atomic_json
+from handback.config import resolve, use_topology, validate_topology
+from handback.state import ProjectState, atomic_json
 
 
 class ConfigTests(unittest.TestCase):
@@ -21,14 +21,14 @@ class ConfigTests(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
         os.environ["GIT_CEILING_DIRECTORIES"] = self.temporary.name
-        for name in ("AGENT_RELAY_HOME", "AGENT_RELAY_LEAD", "AGENT_RELAY_WORKERS"):
+        for name in ("HANDBACK_HOME", "HANDBACK_LEAD", "HANDBACK_WORKERS"):
             os.environ.pop(name, None)
 
     def user(self, value):
         atomic_json(self.home / "config.json", value)
 
     def project(self, value):
-        atomic_json(self.root / ".agent-relay.json", value)
+        atomic_json(self.root / ".handback.json", value)
 
     def test_defaults_are_read_only_and_have_provenance(self):
         config = resolve(self.root, home=self.home)
@@ -64,8 +64,8 @@ class ConfigTests(unittest.TestCase):
         self.project({"lead": "codex:project", "agents": {"codex": {"effort": "high"}}})
         state = ProjectState(self.root, home=self.home)
         state.write_json("topology.json", {"lead": "claude:topology"})
-        os.environ["AGENT_RELAY_LEAD"] = "codex:environment"
-        os.environ["AGENT_RELAY_WORKERS"] = " codex "
+        os.environ["HANDBACK_LEAD"] = "codex:environment"
+        os.environ["HANDBACK_WORKERS"] = " codex "
         result = resolve(self.root, home=self.home, overrides={"lead": "claude:cli"})
         self.assertEqual(result["values"]["lead"], "claude:cli")
         self.assertEqual(result["sources"]["lead"], "cli")
@@ -76,20 +76,20 @@ class ConfigTests(unittest.TestCase):
 
     def test_use_saves_only_external_topology_and_preserves_metadata(self):
         self.project({"agents": {"codex": {"model": "configured-model"}}})
-        before = (self.root / ".agent-relay.json").read_bytes()
+        before = (self.root / ".handback.json").read_bytes()
         state = ProjectState(self.root, home=self.home)
         state.write_json("topology.json", {"revision_note": "preserve"})
         result = use_topology(self.root, "claude:session", ["codex"], home=self.home)
         self.assertEqual(result["values"]["lead"], "claude:session")
         self.assertEqual(result["sources"]["lead"], "topology")
         self.assertEqual(state.read_json("topology.json")["revision_note"], "preserve")
-        self.assertEqual((self.root / ".agent-relay.json").read_bytes(), before)
-        self.assertEqual([path.name for path in self.root.iterdir()], [".agent-relay.json"])
+        self.assertEqual((self.root / ".handback.json").read_bytes(), before)
+        self.assertEqual([path.name for path in self.root.iterdir()], [".handback.json"])
 
     def test_user_disabled_cannot_be_reenabled_by_later_layers(self):
         self.user({"agents": {"codex": {"enabled": False}}})
         self.project({"agents": {"codex": {"enabled": True}}})
-        os.environ["AGENT_RELAY_WORKERS"] = "codex"
+        os.environ["HANDBACK_WORKERS"] = "codex"
         with self.assertRaisesRegex(ValueError, "disabled in user"):
             resolve(self.root, home=self.home, overrides={"agents": {"codex": {"enabled": True}}})
         with self.assertRaisesRegex(ValueError, "disabled in user"):
@@ -103,7 +103,7 @@ class ConfigTests(unittest.TestCase):
             validate_topology(config, "claude", ["codex"], "ask")
         with self.assertRaisesRegex(ValueError, "not allowed"):
             resolve(self.root, home=self.home, overrides={"lead": "claude", "allowed_agents": ["claude", "codex"]})
-        os.environ["AGENT_RELAY_LEAD"] = "claude"
+        os.environ["HANDBACK_LEAD"] = "claude"
         with self.assertRaisesRegex(ValueError, "not allowed"):
             resolve(self.root, home=self.home)
 

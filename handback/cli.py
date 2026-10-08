@@ -33,7 +33,7 @@ def output(value):
 
 def get_adapter(agent, values=None):
     settings = (values or {}).get("agents", {}).get(agent, {})
-    executable = os.environ.get("AGENT_RELAY_" + agent.upper()) or settings.get("executable")
+    executable = os.environ.get("HANDBACK_" + agent.upper()) or settings.get("executable")
     if agent == "codex":
         return CodexAdapter(executable=executable)
     if agent == "claude":
@@ -84,7 +84,7 @@ def submit(state, resolved, target, body, label):
     return_to = lead_handle(resolved["values"])
     if target == return_to:
         raise ValueError("Lead and worker must not have the same handle")
-    text = f"{marker} From {label} through agent-relay.\n{body}"
+    text = f"{marker} From {label} through handback.\n{body}"
     outgoing = envelope.make(request_id, return_to, target, text, kind="request")
     request = {"schema": 1, "id": request_id, "marker": marker, "thread": native_id,
                "handle": target, "agent": agent, "return_to": return_to,
@@ -361,12 +361,12 @@ def cmd_try(args):
     root = str(Path(args.root).resolve())
     quote = lambda value: "'" + value.replace("'", "''") + "'"
     suggested_lead = args.lead if args.lead.startswith("claude:") else "claude:lead"
-    use = f"agent-relay use --root {quote(root)} --lead {quote(suggested_lead)} --workers codex"
+    use = f"handback use --root {quote(root)} --lead {quote(suggested_lead)} --workers codex"
     report = {"status": "configuration_error", "acknowledged": False}
     fix = use
     try:
         if not Path(root).is_dir():
-            fix = f"agent-relay try --root '<existing-project-directory>' --lead {quote(args.lead)}"
+            fix = f"handback try --root '<existing-project-directory>' --lead {quote(args.lead)}"
             raise ValueError("Project directory does not exist")
         state = ProjectState(root)
         saved = state.read_json("topology.json", {})
@@ -376,12 +376,12 @@ def cmd_try(args):
             if "codex" not in values["workers"]:
                 raise ValueError("Existing topology has no Codex worker; it was not changed")
             if any(values[key] != saved.get(key, values[key]) for key in ("lead", "workers", "fallback")):
-                fix = "Remove-Item Env:AGENT_RELAY_LEAD, Env:AGENT_RELAY_WORKERS -ErrorAction SilentlyContinue"
+                fix = "Remove-Item Env:HANDBACK_LEAD, Env:HANDBACK_WORKERS -ErrorAction SilentlyContinue"
                 raise ValueError("Environment overrides the saved topology; clear overrides before trying")
         else:
-            if (os.environ.get("AGENT_RELAY_LEAD", args.lead) != args.lead or
-                    os.environ.get("AGENT_RELAY_WORKERS", "codex") != "codex"):
-                fix = "Remove-Item Env:AGENT_RELAY_LEAD, Env:AGENT_RELAY_WORKERS -ErrorAction SilentlyContinue"
+            if (os.environ.get("HANDBACK_LEAD", args.lead) != args.lead or
+                    os.environ.get("HANDBACK_WORKERS", "codex") != "codex"):
+                fix = "Remove-Item Env:HANDBACK_LEAD, Env:HANDBACK_WORKERS -ErrorAction SilentlyContinue"
                 raise ValueError("Environment conflicts with the trial topology; no topology was changed")
             resolved = config.resolve(root, overrides={"lead": args.lead, "workers": ["codex"]}, validate=False)
             values = resolved["values"]
@@ -389,15 +389,15 @@ def cmd_try(args):
             fix = f"notepad {quote(str(state.home / 'config.json'))}"
         elif any(a not in resolved["policy"]["allowed_agents"] or not resolved["policy"]["project_enabled"].get(a, True)
                  for a in ("claude", "codex")):
-            fix = f"notepad {quote(str(state.checkout_root / '.agent-relay.json'))}"
+            fix = f"notepad {quote(str(state.checkout_root / '.handback.json'))}"
         config.validate_topology(resolved, values["lead"], values["workers"], values["fallback"])
         if not values["lead"].startswith("claude"):
             raise ValueError("try requires Claude Lead -> Codex worker. " + config.SUPPORTED_COMBINATIONS)
         from .router import sandboxed
         if sandboxed():
-            fix = f"agent-relay try --root {quote(root)} --lead {quote(args.lead)}"
+            fix = f"handback try --root {quote(root)} --lead {quote(args.lead)}"
             raise ValueError("Codex queue cannot run inside an agent sandbox; run the fix in a normal terminal")
-        fix = "$env:AGENT_RELAY_CODEX = '<absolute-path-to-installed-Codex-executable>'"
+        fix = "$env:HANDBACK_CODEX = '<absolute-path-to-installed-Codex-executable>'"
         detection = get_adapter("codex", values).detect()
         if not detection.get("installed"):
             raise ValueError("Codex executable was not found. Install/open Codex and set its executable path")
@@ -406,7 +406,7 @@ def cmd_try(args):
             config.use_topology(root, args.lead, ["codex"])
             effective = config.resolve(root)["values"]
             if effective["lead"] != args.lead or effective["workers"] != ["codex"]:
-                raise ValueError("Environment overrides the selected topology; clear AGENT_RELAY_LEAD/WORKERS")
+                raise ValueError("Environment overrides the selected topology; clear HANDBACK_LEAD/WORKERS")
         child = build_parser().parse_args([
             "new", "--cwd", root, "--name", "relay first task", "--worker", "codex",
             "--sandbox", "read-only", "--text",
@@ -430,7 +430,7 @@ def cmd_try(args):
                 report["acks"] = inbox.acknowledge_request(state.path / "inbox", request["id"], request["return_to"])
                 report["acknowledged"] = True
         if code in (3, 4):
-            report["recovery"] = f"agent-relay wait --root {quote(root)} --request {request['id']} --timeout {args.timeout:g}"
+            report["recovery"] = f"handback wait --root {quote(root)} --request {request['id']} --timeout {args.timeout:g}"
         if code == 3:
             report["status"] = "timeout"
         if diagnostics.getvalue() and code not in (0, 3, 4):
@@ -439,7 +439,7 @@ def cmd_try(args):
         report.update(error=str(error))
         if report.get("request_id"):
             code = 4
-            report["recovery"] = f"agent-relay wait --root {quote(root)} --request {report['request_id']} --timeout {args.timeout:g}"
+            report["recovery"] = f"handback wait --root {quote(root)} --request {report['request_id']} --timeout {args.timeout:g}"
         else:
             report["fix"] = fix
             code = 5
@@ -460,7 +460,7 @@ def cmd_try(args):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Durable local agent relay")
+    parser = argparse.ArgumentParser(prog="handback", description="handback: durable local agent relay")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("codex")
     trial = sub.add_parser("try", help="run and acknowledge one read-only Codex smoke task")
@@ -485,7 +485,7 @@ def build_parser():
     new.add_argument("--no-wait", action="store_true")
     new.add_argument("--timeout", type=float, default=0, help="seconds; 0 waits indefinitely")
     new.add_argument("--return-file")
-    new.add_argument("--label", default=os.environ.get("AGENT_RELAY_LABEL", "the Lead"))
+    new.add_argument("--label", default=os.environ.get("HANDBACK_LABEL", "the Lead"))
     send = sub.add_parser("send")
     target = send.add_mutually_exclusive_group(required=True)
     target.add_argument("--thread")
@@ -493,7 +493,7 @@ def build_parser():
     source = send.add_mutually_exclusive_group(required=True)
     source.add_argument("--text")
     source.add_argument("--file")
-    send.add_argument("--label", default=os.environ.get("AGENT_RELAY_LABEL", "the Lead"))
+    send.add_argument("--label", default=os.environ.get("HANDBACK_LABEL", "the Lead"))
     mode = send.add_mutually_exclusive_group()
     mode.add_argument("--wait", action="store_true")
     mode.add_argument("--no-wait", action="store_true")
@@ -627,7 +627,7 @@ def main(argv=None):
             return 5
         if args.command == "try":
             result = {"status": "configuration_error", "error": str(error),
-                      "fix": "Run agent-relay try from a normal terminal with the correct AGENT_RELAY_HOME"}
+                      "fix": "Run handback try from a normal terminal with the correct HANDBACK_HOME"}
             if args.json:
                 output(result)
             else:

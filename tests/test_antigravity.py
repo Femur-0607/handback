@@ -11,10 +11,10 @@ import time
 import unittest
 from unittest.mock import patch
 
-from agent_relay import cli, hooks
-from agent_relay.adapters import antigravity as agy
-from agent_relay.adapters.base import AdapterError, AdapterUnavailable
-from agent_relay.state import ProjectState
+from handback import cli, hooks
+from handback.adapters import antigravity as agy
+from handback.adapters.base import AdapterError, AdapterUnavailable
+from handback.state import ProjectState
 
 CONVERSATION = "11111111-2222-3333-4444-555555555555"
 
@@ -48,10 +48,10 @@ class Base(unittest.TestCase):
         self.root = base / "project"
         self.root.mkdir()
         (self.gemini / "config" / "projects").mkdir(parents=True)
-        env = patch.dict(os.environ, {"GEMINI_HOME": str(self.gemini), "AGENT_RELAY_HOME": str(self.relay)})
+        env = patch.dict(os.environ, {"GEMINI_HOME": str(self.gemini), "HANDBACK_HOME": str(self.relay)})
         env.start()
         self.addCleanup(env.stop)
-        for key in ("AGENT_RELAY_LEAD", "AGENT_RELAY_WORKERS", "ANTIGRAVITY_PROJECT_ID", "ANTIGRAVITY_AGENTAPI_EXE"):
+        for key in ("HANDBACK_LEAD", "HANDBACK_WORKERS", "ANTIGRAVITY_PROJECT_ID", "ANTIGRAVITY_AGENTAPI_EXE"):
             os.environ.pop(key, None)
         self.now = 1_000_000.0
 
@@ -395,7 +395,7 @@ class CliRebindTests(Base):
             code, out, err = self.invoke("wait", "--request", request["id"])
         self.assertEqual((code, out.strip()), (0, "답"), err)
         self.assertEqual(state.load_request(request["id"])["status"], "completed")
-        from agent_relay import inbox
+        from handback import inbox
         self.assertEqual(inbox.pending(state.path / "inbox", "antigravity:pending-1"), [])
         self.assertEqual([m["body"] for m in inbox.pending(state.path / "inbox", "claude:lead")], ["답"])
 
@@ -409,7 +409,7 @@ class CleanupTests(Base):
             state.save_request({'id': request_id, 'status': status})
         name = agy.SIDECAR_PREFIX + request_id[:12]
         agy._write_json(self.gemini / 'config' / 'sidecars' / name / 'sidecar.json', {
-            'description': 'agent-relay: one agentapi call',
+            'description': 'handback: one agentapi call',
             'args': [str(agy.ENTRY_SCRIPT), 'antigravity-sidecar', '--job', str(folder / 'job.json')]})
         path = self.gemini / 'config' / 'config.json'
         value = agy._read_json(path, {'other': 7, 'sidecars': {}})
@@ -423,7 +423,7 @@ class CleanupTests(Base):
         for name in (closed, opened):
             manifest = self.gemini / 'config' / 'sidecars' / name / 'sidecar.json'
             value = agy._read_json(manifest)
-            value['args'] = ['-m', 'agent_relay', *value['args'][1:]]
+            value['args'] = ['-m', 'handback', *value['args'][1:]]
             agy._write_json(manifest, value)
         result = agy.cleanup_sidecars(self.relay, True, self.gemini)
         self.assertEqual(result['candidates'], [closed])
@@ -467,7 +467,7 @@ class CleanupTests(Base):
         # Only sidecars whose manifest runs this relay's antigravity-sidecar job qualify.
         name = agy.SIDECAR_PREFIX + 'experiment'
         agy._write_json(self.gemini / 'config' / 'sidecars' / name / 'sidecar.json',
-                        {'description': 'agent-relay experiment', 'args': ['probe.py', 'serve']})
+                        {'description': 'handback experiment', 'args': ['probe.py', 'serve']})
         agy._write_json(self.gemini / 'config' / 'config.json', {'sidecars': {name: {'enabled': False}}})
         self.assertEqual(agy.cleanup_sidecars(self.relay, True, self.gemini)['count'], 0)
 

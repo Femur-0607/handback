@@ -278,7 +278,7 @@ def migrate_state(source, destination=None, dry_run=False, timeout=5):
         raise ValueError("Source and destination must be distinct, non-overlapping directories")
     if source.name.casefold() in {".codex", ".claude", ".gemini", ".aws", ".ssh"} or not any(
             (source / name).exists() for name in ("config.json", "projects", "hook-install")):
-        raise ValueError(f"Source does not identify an agent-relay state home: {source}")
+        raise ValueError(f"Source does not identify an handback state home: {source}")
 
     def inspect():
         snapshot = _snapshot(source)

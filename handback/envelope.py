@@ -1,4 +1,4 @@
-"""Validated, vendor-independent messages stored by agent-relay."""
+"""Validated, vendor-independent messages stored by handback."""
 
 from datetime import datetime, timedelta, timezone
 import json

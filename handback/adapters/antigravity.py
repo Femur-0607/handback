@@ -31,14 +31,14 @@ from .base import AdapterError, AdapterUnavailable, BaseAdapter
 from .codex import BinaryRolloutTailer
 from ..invocation import entry_args
 
-SIDECAR_PREFIX = "agent-relay-"
-HOOK_GROUP = "agent-relay"
+SIDECAR_PREFIX = "handback-"
+HOOK_GROUP = "handback"
 HOOK_EVENTS = ("Stop", "PreInvocation")
 DEFAULT_HOOK_TIMEOUT = 30
 CONFIRM_MARGIN = 2.0
 BLOCKED_PREFIX = "Stop hook blocked termination:"
 MESSAGE_PREFIX = "[Message]"
-ENTRY_SCRIPT = Path(__file__).resolve().parents[2] / "agent_relay.py"
+ENTRY_SCRIPT = Path(__file__).resolve().parents[2] / "handback.py"
 
 
 def utcnow():
@@ -368,7 +368,7 @@ def _short_path(path):
 
 
 def hook_command(event, relay_home):
-    entry = [_short_path(p) if p not in ("-m", "agent_relay") else p for p in entry_args(ENTRY_SCRIPT)]
+    entry = [_short_path(p) if p not in ("-m", "handback") else p for p in entry_args(ENTRY_SCRIPT)]
     parts = [_short_path(sys.executable), "-X", "utf8", *entry, "hook", "--agent", "antigravity",
              "--event", event, "--state-home", _short_path(relay_home)]
     if any(" " in part or '"' in part for part in parts):
@@ -377,14 +377,27 @@ def hook_command(event, relay_home):
     return " ".join(parts)
 
 
+def _remove_legacy_hooks(value):
+    from ..hook_install import legacy_handler
+    group = value.get("agent-relay")
+    if not isinstance(group, dict):
+        return False
+    entries = list(_hook_entries({"agent-relay": {**group, "enabled": True}}))
+    if entries and all(legacy_handler(hook, "antigravity", event) for _, event, hook in entries):
+        del value["agent-relay"]
+        return True
+    return False
+
+
 def install_hooks(relay_home, dry_run=False, home=None):
     path = (home or gemini_home()) / "config" / "hooks.json"
     group = {event: [{"type": "command", "command": hook_command(event, relay_home), "timeout": 10}]
              for event in HOOK_EVENTS}
 
     def change(value):
+        removed = _remove_legacy_hooks(value)
         if value.get(HOOK_GROUP) == group:
-            return False
+            return removed
         value[HOOK_GROUP] = group
         return True
 
@@ -400,8 +413,9 @@ def uninstall_hooks(relay_home, dry_run=False, home=None):
         return {"path": str(path), "remove": HOOK_GROUP, "dry_run": True}
 
     def change(value):
+        removed = _remove_legacy_hooks(value)
         if HOOK_GROUP not in value:
-            return False
+            return removed
         value.pop(HOOK_GROUP)
         return True
 
@@ -449,7 +463,7 @@ def cleanup_sidecars(relay_home, dry_run=False, home=None):
     candidates = []
     manifests = {}
     for name, entry in value.get("sidecars", {}).items():
-        if (not name.startswith(SIDECAR_PREFIX) or Path(name).name != name or
+        if (not name.startswith((SIDECAR_PREFIX, "agent-relay-")) or Path(name).name != name or
                 any(c in name for c in "/\\:") or not isinstance(entry, dict) or
                 entry.get("enabled") is not False):
             continue
@@ -461,11 +475,11 @@ def cleanup_sidecars(relay_home, dry_run=False, home=None):
             raw = manifest.read_bytes()
             spec = json.loads(raw)
             args = spec.get("args", [])
-            if not spec.get("description", "").startswith("agent-relay"):
+            if not spec.get("description", "").startswith(("handback", "agent-relay")):
                 continue
             legacy = (len(args) == 4 and Path(args[0]).resolve() == ENTRY_SCRIPT and
                       args[1:3] == ["antigravity-sidecar", "--job"])
-            module = len(args) == 5 and args[:4] == ["-m", "agent_relay", "antigravity-sidecar", "--job"]
+            module = len(args) == 5 and args[0] == "-m" and args[1] in ("handback", "agent_relay") and args[2:4] == ["antigravity-sidecar", "--job"]
             if legacy or module:
                 job_path = Path(args[-1]).resolve()
                 job_path.relative_to(relay_home / "projects")
@@ -474,7 +488,7 @@ def cleanup_sidecars(relay_home, dry_run=False, home=None):
                 from ..state import ID_PATTERN
                 if not isinstance(request_id, str) or not ID_PATTERN.fullmatch(request_id):
                     continue
-                if name != SIDECAR_PREFIX + request_id[:12]:
+                if name not in (SIDECAR_PREFIX + request_id[:12], "agent-relay-" + request_id[:12]):
                     continue
                 request = _read_json(job_path.parents[2] / "requests" / (request_id + ".json"))
                 if request is not None and (not isinstance(request, dict) or
@@ -525,7 +539,7 @@ class AntigravityAdapter(BaseAdapter):
         self.gemini = gemini or gemini_home()
 
     def _agentapi_help(self):
-        override = self.executable or os.environ.get("AGENT_RELAY_ANTIGRAVITY") or os.environ.get("ANTIGRAVITY_AGENTAPI")
+        override = self.executable or os.environ.get("HANDBACK_ANTIGRAVITY") or os.environ.get("ANTIGRAVITY_AGENTAPI")
         candidates = [override] if override else []
         if not override:
             roots = [os.environ.get("LOCALAPPDATA")]
@@ -582,7 +596,7 @@ class AntigravityAdapter(BaseAdapter):
         project_id = resolve_project(request.get("root") or state.root, self.gemini)
         folder = state.path / "antigravity" / request["id"]
         if thread.startswith("pending-"):
-            args = ["new-conversation", f"--title={title or 'agent-relay'}", f"--model={self.model}", envelope["body"]]
+            args = ["new-conversation", f"--title={title or 'handback'}", f"--model={self.model}", envelope["body"]]
         else:
             args = ["send-message", thread, envelope["body"]]
         job = {"request_id": request["id"], "project_id": project_id, "args": args, "created": utcnow()}
@@ -591,8 +605,8 @@ class AntigravityAdapter(BaseAdapter):
         sidecar_dir = self.gemini / "config" / "sidecars" / sidecar
         _write_json(sidecar_dir / "sidecar.json", {
             "command": sys.executable, "args": [*entry_args(ENTRY_SCRIPT), "antigravity-sidecar", "--job", str(folder / "job.json")],
-            "restart_policy": "never", "display_name": "agent-relay " + request["id"][:8],
-            "description": "agent-relay: one agentapi call for one request, then exits."})
+            "restart_policy": "never", "display_name": "handback " + request["id"][:8],
+            "description": "handback: one agentapi call for one request, then exits."})
         backups = state.home / "antigravity" / "backups"
         config = self.gemini / "config" / "config.json"
 

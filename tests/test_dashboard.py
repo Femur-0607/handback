@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from agent_relay import dashboard, envelope, inbox
+from handback import dashboard, envelope, inbox
 
 
 class DashboardTests(unittest.TestCase):

@@ -3,7 +3,7 @@ import gc
 import unittest
 from unittest.mock import patch
 
-from agent_relay import dashboard
+from handback import dashboard
 from tests.test_dashboard_gui import DashboardMenuTests
 
 

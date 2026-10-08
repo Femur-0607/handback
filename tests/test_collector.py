@@ -10,9 +10,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from agent_relay import cli, collector, envelope, inbox
-from agent_relay.adapters import codex
-from agent_relay.state import ProjectState
+from handback import cli, collector, envelope, inbox
+from handback.adapters import codex
+from handback.state import ProjectState
 
 
 def event(kind, **fields):
@@ -41,10 +41,10 @@ class Base(unittest.TestCase):
         self.root.mkdir()
         self.home = base / "state"
         self.codex_home = base / "codex"
-        env = patch.dict(os.environ, {"AGENT_RELAY_HOME": str(self.home), "CODEX_HOME": str(self.codex_home)})
+        env = patch.dict(os.environ, {"HANDBACK_HOME": str(self.home), "CODEX_HOME": str(self.codex_home)})
         env.start()
         self.addCleanup(env.stop)
-        for key in ("AGENT_RELAY_LEAD", "AGENT_RELAY_WORKERS"):
+        for key in ("HANDBACK_LEAD", "HANDBACK_WORKERS"):
             os.environ.pop(key, None)
         self.state = ProjectState(self.root)
 
@@ -184,7 +184,7 @@ class SendSpawnTests(Base):
         current = self.state.load_request(request['id'])
         self.assertEqual(current['status'], 'completed')
         self.assertEqual(current['collector']['pid'], os.getpid())
-        from agent_relay.migration import migrate_state
+        from handback.migration import migrate_state
         with self.assertRaisesRegex(ValueError, 'Live collector PID'):
             migrate_state(self.home, self.home.parent / 'migrated', dry_run=True)
 
@@ -202,7 +202,7 @@ class SendSpawnTests(Base):
             with self.assertRaisesRegex(OSError, 'PID write failure'):
                 collector.spawn(self.state, request)
         collector.finish_request(self.state, request, {'outcome': 'completed', 'text': 'done'})
-        from agent_relay.migration import migrate_state
+        from handback.migration import migrate_state
         with self.assertRaisesRegex(ValueError, 'Ambiguous collector'):
             migrate_state(self.home, self.home.parent / 'migrated', dry_run=True)
 

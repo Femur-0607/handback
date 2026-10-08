@@ -10,8 +10,8 @@ import unittest
 from unittest import mock
 import uuid
 
-from agent_relay import migration
-from agent_relay.state import atomic_json, home_lock, state_warnings
+from handback import migration
+from handback.state import atomic_json, home_lock, state_warnings
 
 
 class MigrationTests(unittest.TestCase):
@@ -64,7 +64,7 @@ class MigrationTests(unittest.TestCase):
 
     def test_live_inbox_watcher_blocks_migration(self):
         import time
-        from agent_relay import watcher
+        from handback import watcher
         lease = watcher.lease_path(self.source / "projects" / ("a" * 64), "claude:lead")
         atomic_json(lease, {"recipient": "claude:lead", "pid": 1, "started": 0, "heartbeat": time.time()})
         with self.assertRaisesRegex(ValueError, "Live inbox watcher"):
@@ -252,7 +252,7 @@ class MigrationTests(unittest.TestCase):
 
     def test_shared_activity_lock_prevents_migration_process(self):
         script = """import sys
-from agent_relay.migration import migrate_state
+from handback.migration import migrate_state
 try:
     migrate_state(sys.argv[1], sys.argv[2], timeout=0.15)
 except TimeoutError:

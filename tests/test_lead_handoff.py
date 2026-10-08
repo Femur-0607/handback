@@ -8,8 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from agent_relay import cli, hooks
-from agent_relay.state import ProjectState
+from handback import cli, hooks
+from handback.state import ProjectState
 from tests.test_cli import FakeAdapter
 
 
@@ -21,11 +21,11 @@ class LeadHandoffTests(unittest.TestCase):
         self.root = directory / "project"
         self.root.mkdir()
         self.home = directory / "state"
-        env = patch.dict(os.environ, AGENT_RELAY_HOME=str(self.home),
+        env = patch.dict(os.environ, HANDBACK_HOME=str(self.home),
                          GIT_CEILING_DIRECTORIES=str(directory))
         env.start()
         self.addCleanup(env.stop)
-        for name in ("AGENT_RELAY_LEAD", "AGENT_RELAY_WORKERS"):
+        for name in ("HANDBACK_LEAD", "HANDBACK_WORKERS"):
             os.environ.pop(name, None)
         self.adapter = FakeAdapter()
         self.followed = []

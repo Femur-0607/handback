@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from agent_relay import inbox, watcher
+from handback import inbox, watcher
 
 
 class Clock:

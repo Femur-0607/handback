@@ -169,6 +169,31 @@ def _contains_handler(groups, owned_group):
                for group in groups)
 
 
+def legacy_handler(handler, agent, event):
+    """Recognize only the old installer's explicit Python hook invocation."""
+    if not isinstance(handler, dict) or handler.get("type") != "command":
+        return False
+    try:
+        args = handler.get("args")
+        if args is None:
+            tokens = shlex.split(handler.get("command", ""), posix=False)
+            args = [token.strip("\"'") for token in tokens[1:]]
+        else:
+            args = list(args)
+        if args[:2] == ["-X", "utf8"]:
+            args = args[2:]
+        if args[:2] == ["-m", "agent_relay"]:
+            args = args[2:]
+        elif args and args[0].replace("\\", "/").rsplit("/", 1)[-1] == "agent_relay.py":
+            args = args[1:]
+        else:
+            return False
+        return (len(args) == 7 and args[:5] == ["hook", "--agent", agent, "--event", event]
+                and args[5] == "--state-home" and bool(args[6]))
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
 def _prepare(action, agents, script_path, home, config_paths, manifest):
     next_manifest = deepcopy(manifest)
     next_manifest.pop("transaction_pending", None)
@@ -189,6 +214,14 @@ def _prepare(action, agents, script_path, home, config_paths, manifest):
             groups = _hook_groups(after, event, path)
             originally_present = event in before.get("hooks", {})
             event_owned = [entry for entry in previous if entry["event"] == event]
+            # Adopt intact legacy installer groups even when using a fresh state home.
+            # Mixed/edited matcher groups remain user-owned.
+            for group in groups:
+                handlers = group.get("hooks", [])
+                if (set(group) == {"hooks"} and len(handlers) == 1
+                        and legacy_handler(handlers[0], agent, event)
+                        and not any(entry["group"] == group for entry in event_owned)):
+                    event_owned.append({"event": event, "group": deepcopy(group), "event_existed": True})
             wanted, invocation = _spec(agent, event, script_path, home) if action == "install" else (None, None)
             for entry in event_owned:
                 originally_present = entry.get("event_existed", True)
