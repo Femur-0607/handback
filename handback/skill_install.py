@@ -8,6 +8,7 @@ import re
 import shutil
 
 from .invocation import command_text
+from .discovery import codex_bundled_candidates
 
 
 def render(agent):
@@ -66,7 +67,8 @@ def install(target_home=None, dry_run=False):
         messages.append(f"installed: {target}")
 
     write("claude", home / ".claude/skills/handback/SKILL.md")
-    codex = find("codex", "OpenAI/Codex/bin/codex.exe")
+    candidates = codex_bundled_candidates(home if isolated else None)
+    codex = candidates[0] if candidates else (None if isolated else shutil.which("codex"))
     if codex:
         root = home / ".codex"
         if not isolated and os.environ.get("CODEX_HOME"):

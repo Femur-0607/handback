@@ -9,6 +9,40 @@ permissions:
   contents: read
 
 jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.13']
+    env:
+      PYTHONUTF8: '1'
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Check CLI help
+        run: python handback.py --help
+      - name: Preview installation in an isolated home
+        run: |
+          $fixtureRoot = Join-Path $env:RUNNER_TEMP ('handback-dry-run-' + [guid]::NewGuid().ToString('N'))
+          & .\install.ps1 -DryRun -TargetHome $fixtureRoot
+          if (Test-Path -LiteralPath $fixtureRoot) {
+            throw 'Dry-run unexpectedly created files in the target home.'
+          }
+
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -95,7 +129,7 @@ jobs:
                   raise SystemExit('Dry-run unexpectedly created the target home')
 
   publish:
-    needs: [build, smoke]
+    needs: [test, build, smoke]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15

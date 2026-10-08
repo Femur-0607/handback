@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from handback import cli, hooks
+from handback import cli, collector, config, hooks, inbox, router
 from handback.adapters import antigravity as agy
 from handback.adapters.base import AdapterError, AdapterUnavailable
 from handback.state import ProjectState
@@ -150,6 +150,53 @@ class ProjectAndHookConfigTests(Base):
 
 
 class ObservationTests(Base):
+    def pending_request(self, **changes):
+        state = ProjectState(self.root)
+        request = {"id": "ab" * 16, "root": str(self.root), "marker": "[relay abababab]",
+                   "agent": "antigravity", "thread": "pending-x", "handle": "antigravity:pending-x",
+                   "status": "dispatching", **changes}
+        state.save_request(request)
+        agy._write_json(state.path / "antigravity" / request["id"] / "job.json", {
+            "request_id": request["id"],
+            "args": ["new-conversation", "--title=test", "--model=flash", request["marker"] + " go"]})
+        return state, request
+
+    def test_early_preinvocation_and_stop_keep_other_hook_confirmation_delay(self):
+        state, request = self.pending_request()
+        self.transcript(step(0, "USER_INPUT", request["marker"]), step(1, "PLANNER_RESPONSE", "done"))
+        agy._write_json(self.gemini / "config/hooks.json", {
+            "other": {"Stop": [{"command": "other", "timeout": 20}]}})
+        stop_at = CompletionContractTests.t0 + 5
+        with patch.object(router, "spawn_external") as spawn, patch.object(agy.time, "time", return_value=stop_at):
+            hooks.process("antigravity", "PreInvocation", {"conversationId": CONVERSATION}, home=self.relay)
+            hooks.process("antigravity", "Stop", {"conversationId": CONVERSATION, "fullyIdle": True}, home=self.relay)
+        self.assertEqual(spawn.call_count, 1)
+        self.assertEqual([r["event"] for r in agy._observations(self.relay, CONVERSATION)], ["PreInvocation", "Stop"])
+        self.assertEqual(state.load_request(request["id"])["thread"], CONVERSATION)
+        follower = self.collector(request["marker"])
+        self.now = stop_at + 21
+        self.assertIsNone(follower.poll())
+        self.now = stop_at + 23
+        self.assertEqual(follower.poll()["text"], "done")
+
+    def test_unowned_early_observations_do_not_bind_or_create_spool(self):
+        for case in ("unmarked", "assistant-marker", "no-job", "closed", "disabled"):
+            with self.subTest(case=case):
+                state, request = self.pending_request(status="completed" if case == "closed" else "dispatching")
+                conversation = "unowned-" + case
+                kind = "PLANNER_RESPONSE" if case == "assistant-marker" else "USER_INPUT"
+                content = "direct user input" if case == "unmarked" else request["marker"]
+                self.transcript(step(0, kind, content), conversation=conversation)
+                if case == "no-job":
+                    (state.path / "antigravity" / request["id"] / "job.json").unlink()
+                if case == "disabled":
+                    agy._write_json(self.relay / "config.json", {"hooks": {"antigravity": {"enabled": False}}})
+                with patch.object(router, "spawn_external") as spawn:
+                    hooks.process("antigravity", "Stop", {"conversationId": conversation, "fullyIdle": True}, home=self.relay)
+                spawn.assert_not_called()
+                self.assertFalse((agy.observation_dir(self.relay) / (conversation + ".jsonl")).exists())
+                self.assertEqual(state.load_request(request["id"])["thread"], "pending-x")
+
     def test_only_relay_conversations_are_recorded(self):
         payload = {"conversationId": CONVERSATION, "fullyIdle": True, "executionNum": 0, "transcriptPath": "x"}
         self.assertEqual(hooks.process("antigravity", "Stop", payload, home=self.relay), {})
@@ -302,7 +349,7 @@ class DeliveryTests(Base):
         self.state = ProjectState(self.root)
         self.request = {"id": "ab" * 16, "root": str(self.root), "marker": "[relay abababab]"}
 
-    def fake_app(self, stdout):
+    def fake_app(self, stdout, before_result=None):
         """Stand-in for Antigravity: run an enabled relay sidecar's job once."""
         def app():
             deadline = time.monotonic() + 10
@@ -312,6 +359,8 @@ class DeliveryTests(Base):
                     if name.startswith(agy.SIDECAR_PREFIX) and entry.get("enabled"):
                         spec = json.loads((self.gemini / "config" / "sidecars" / name / "sidecar.json").read_text(encoding="utf-8"))
                         job = spec["args"][spec["args"].index("--job") + 1]
+                        if before_result:
+                            before_result()
                         with patch.dict(os.environ, {"ANTIGRAVITY_AGENTAPI_EXE": "agentapi.exe",
                                                      "ANTIGRAVITY_PROJECT_ID": entry["projectId"]}), \
                                 patch.object(agy.subprocess, "run",
@@ -322,6 +371,40 @@ class DeliveryTests(Base):
         thread = threading.Thread(target=app)
         thread.start()
         self.addCleanup(thread.join)
+
+    def test_first_idle_stop_before_acceptance_is_collected_once(self):
+        agy._write_json(self.relay / "config.json", {"agents": {"antigravity": {"enabled": True}}})
+        config.use_topology(self.root, "codex:lead-thread", ["antigravity"], home=self.relay)
+        observed = []
+
+        def early_reply():
+            request = self.state.requests()[0]
+            self.transcript(step(0, "USER_INPUT", request["marker"] + " go"),
+                            step(1, "PLANNER_RESPONSE", "RELAY_OK"))
+            with patch.object(router, "spawn_external") as spawn:
+                hooks.process("antigravity", "Stop", {
+                    "conversationId": CONVERSATION, "fullyIdle": True,
+                    "executionNum": 0, "terminationReason": "NO_TOOL_CALL"}, home=self.relay)
+                observed.append((self.state.load_request(request["id"]), spawn.call_count))
+
+        self.fake_app(json.dumps({"response": {"newConversation": {"conversationId": CONVERSATION}}}), early_reply)
+        adapter = agy.AntigravityAdapter(delivery_timeout=10, gemini=self.gemini)
+        with patch.object(cli, "get_adapter", return_value=adapter):
+            request, code = cli.submit(self.state, config.resolve(self.root),
+                                       "antigravity:pending-x", "go", "Lead")
+        self.assertEqual(code, 0)
+        result = adapter.incremental_collector(request, self.relay).poll()
+        self.assertIsNotNone(result, "the first fully idle Stop was lost before agentapi acceptance")
+        self.assertEqual((result["outcome"], result["text"]), ("completed", "RELAY_OK"))
+        self.assertEqual(len(agy._observations(self.relay, CONVERSATION)), 1)
+        early, spawns = observed[0]
+        self.assertEqual((early["thread"], spawns), (CONVERSATION, 1))
+        self.assertEqual(request["provisional_handle"], "antigravity:pending-x")
+        self.assertEqual(self.state.threads()["antigravity:pending-x"]["bound_to"], "antigravity:" + CONVERSATION)
+        collector._finish_request(self.state, request, result)
+        collector._finish_request(self.state, request, result)
+        self.assertEqual(len(inbox.pending(self.state.path / "inbox", "codex:lead-thread")), 1)
+        self.assertEqual(inbox.pending(self.state.path / "inbox", "antigravity:pending-x"), [])
 
     def test_first_send_creates_conversation_and_cleans_up(self):
         self.fake_app(json.dumps({"response": {"newConversation": {"conversationId": CONVERSATION}}}))
@@ -336,6 +419,18 @@ class DeliveryTests(Base):
         self.assertFalse((self.gemini / "config" / "sidecars" / (agy.SIDECAR_PREFIX + self.request["id"][:12])).exists())
         self.assertTrue((agy.observation_dir(self.state.home) / (CONVERSATION + ".jsonl")).exists())
         self.assertTrue(any((self.state.home / "antigravity" / "backups").iterdir()))
+
+    def test_known_conversation_is_observed_before_sidecar_acceptance(self):
+        def early_reply():
+            self.transcript(message(0, self.request["marker"]), step(1, "PLANNER_RESPONSE", "RELAY_OK"))
+            agy.record_observation(self.relay, {"conversationId": CONVERSATION, "fullyIdle": True}, "Stop")
+
+        self.fake_app('{"ok": true}', early_reply)
+        adapter = agy.AntigravityAdapter(delivery_timeout=10, gemini=self.gemini)
+        self.assertTrue(adapter.deliver(CONVERSATION, {"body": self.request["marker"]},
+                                       state=self.state, request=self.request)["accepted"])
+        self.assertEqual(self.collector(self.request["marker"]).poll()["text"], "RELAY_OK")
+        self.assertEqual(len(agy._observations(self.relay, CONVERSATION)), 1)
 
     def test_unrun_sidecar_is_unknown_and_disabled(self):
         adapter = agy.AntigravityAdapter(delivery_timeout=0.3, gemini=self.gemini)

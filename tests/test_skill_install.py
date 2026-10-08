@@ -7,10 +7,48 @@ import tempfile
 import sys
 from unittest import mock
 from handback import skill_install
+from handback.adapters import codex
 import unittest
 
 
 class SkillInstallTests(unittest.TestCase):
+    def test_versioned_codex_bundle_is_shared_with_adapter_discovery(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as tmp:
+            root = Path(tmp)
+            executable = root / "AppData/Local/OpenAI/Codex/bin/version-1/codex.exe"
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            with mock.patch.object(Path, "home", return_value=root), \
+                    mock.patch.dict(os.environ, {"USERPROFILE": str(root),
+                                                 "LOCALAPPDATA": str(root / "sandbox")}, clear=True), \
+                    mock.patch.object(skill_install.shutil, "which", return_value=None), \
+                    mock.patch.object(codex, "_version", return_value="codex-cli test"):
+                self.assertEqual(Path(codex.resolve_codex()), executable)
+                messages = skill_install.install(dry_run=True)
+            self.assertTrue(any("dry-run: codex" in line for line in messages), messages)
+            self.assertFalse((root / ".codex").exists())
+
+    def test_versioned_codex_is_detected_only_inside_target_home_without_execution(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as tmp:
+            root = Path(tmp)
+            target = root / "target"
+            local = root / "host-local"
+            host_exe = local / "OpenAI/Codex/bin/host-version/codex.exe"
+            host_exe.parent.mkdir(parents=True)
+            host_exe.touch()
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local), "CODEX_HOME": str(root / "host-codex")}), \
+                    mock.patch.object(skill_install.shutil, "which", side_effect=AssertionError("host PATH consulted")), \
+                    mock.patch.object(subprocess, "run", side_effect=AssertionError("discovery executed an app")):
+                self.assertIn("skip: codex app not detected", skill_install.install(target, dry_run=True))
+                self.assertFalse(target.exists())
+                executable = target / "AppData/Local/OpenAI/Codex/bin/fixture-version/codex.exe"
+                executable.parent.mkdir(parents=True)
+                executable.touch()
+                messages = skill_install.install(target, dry_run=True)
+            self.assertTrue(any("dry-run: codex" in line for line in messages), messages)
+            self.assertFalse((target / ".codex").exists())
+            self.assertFalse((root / "host-codex").exists())
+
     @unittest.skipUnless(os.name == 'nt' and shutil.which('powershell'), 'PowerShell installer')
     def test_placeholder_and_existing_backup(self):
         repo = Path(__file__).absolute().parent.parent

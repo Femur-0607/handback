@@ -223,6 +223,23 @@ def observe_lead(home, conversation):
     path.touch(exist_ok=True)
 
 
+def bind_conversation(state, request, conversation):
+    """Bind a first send under the caller's project lock; repeated binding is inert."""
+    if not isinstance(conversation, str) or not conversation or any(c in conversation for c in "/\\:.\0"):
+        raise AdapterError("invalid Antigravity conversation id")
+    if request.get("thread") == conversation:
+        return
+    if not request.get("thread", "").startswith("pending-"):
+        raise AdapterError("Antigravity request is already bound to another conversation")
+    provisional = request["handle"]
+    real = "antigravity:" + conversation
+    previous = state.threads().get(provisional, {})
+    state.register_thread({**previous, "handle": provisional, "bound_to": real})
+    state.register_thread({**previous, "handle": real, "id": conversation,
+                           "provisional_handle": provisional, "created_utc": utcnow()})
+    request.update(provisional_handle=provisional, handle=real, thread=conversation)
+
+
 def _epoch(value):
     """Transcript created_at (second resolution, UTC) as epoch seconds, or None."""
     if not isinstance(value, str):
@@ -615,6 +632,9 @@ class AntigravityAdapter(BaseAdapter):
 
         settled = False
         try:
+            if not thread.startswith("pending-"):
+                # A known conversation can stop before agentapi returns too.
+                observe_lead(state.home, thread)
             update_user_json(config, enable, backups)
             deadline = time.monotonic() + self.delivery_timeout
             while time.monotonic() < deadline and not (folder / "result.json").exists():
@@ -640,9 +660,7 @@ class AntigravityAdapter(BaseAdapter):
                     raise AdapterError("agentapi did not return a conversation id") from error
                 delivery["thread"] = conversation
             # Open the spool so the relay hook records observations for this conversation.
-            spool = observation_dir(state.home) / ((delivery.get("thread") or thread) + ".jsonl")
-            spool.parent.mkdir(parents=True, exist_ok=True)
-            spool.touch()
+            observe_lead(state.home, delivery.get("thread") or thread)
             return delivery
         finally:
             def settle(value):

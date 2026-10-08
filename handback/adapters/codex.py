@@ -4,7 +4,6 @@ The JSONL fallback is intentionally separate from the unverified app hook path.
 It consumes complete UTF-8 lines in binary mode, so CRLF and partial writes cannot
 change the byte offset or attach a later user's answer to a relay request.
 """
-import glob
 import json
 import os
 from pathlib import Path
@@ -16,6 +15,7 @@ import threading
 import time
 
 from .base import AdapterError, AdapterUnavailable, BaseAdapter
+from ..discovery import codex_bundled_candidates as _bundled_candidates
 
 REPLY_EVENTS = {"task_complete"}
 FAIL_EVENTS = {"turn_aborted", "error"}
@@ -33,25 +33,6 @@ def _version(executable):
         return result.stdout.strip() if result.returncode == 0 else ""
     except (OSError, subprocess.TimeoutExpired):
         return ""
-
-
-def _bundled_candidates():
-    roots = []
-    if os.environ.get("LOCALAPPDATA"):
-        roots.append(Path(os.environ["LOCALAPPDATA"]))
-    # App-container shells may redirect LOCALAPPDATA away from real installations.
-    for profile in (os.environ.get("USERPROFILE"), str(Path.home())):
-        if profile:
-            roots.append(Path(profile) / "AppData" / "Local")
-    candidates = []
-    for root in roots:
-        candidates.extend(glob.glob(str(root / "OpenAI" / "Codex" / "bin" / "*" / "codex.exe")))
-    if sys.platform == "darwin":
-        for app in (Path("/Applications/Codex.app"), Path.home() / "Applications/Codex.app"):
-            candidates.extend(str(path) for path in (app / "Contents/Resources/codex",
-                                                     app / "Contents/Resources/codex.exe") if path.is_file())
-    unique = {os.path.normcase(os.path.abspath(path)): path for path in candidates if os.path.isfile(path)}
-    return sorted(unique.values(), key=os.path.getmtime, reverse=True)
 
 
 def resolve_codex(executable=None):

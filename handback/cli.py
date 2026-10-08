@@ -177,12 +177,8 @@ def submit(state, resolved, target, body, label, execution=None):
         request["delivery"] = delivery
         if delivery.get("thread"):
             # The first send created the worker conversation: rebind to its real handle.
-            real = agent + ":" + delivery["thread"]
-            request.update(provisional_handle=request["handle"], handle=real, thread=delivery["thread"])
-            previous = state.threads().get(target, {})
-            state.register_thread({**previous, "handle": target, "bound_to": real})
-            state.register_thread({**previous, "handle": real, "id": delivery["thread"],
-                                   "provisional_handle": target, "created_utc": utcnow()})
+            from .adapters.antigravity import bind_conversation
+            bind_conversation(state, request, delivery["thread"])
         state.save_request(request)
     return request, 0 if delivery.get("accepted") else 4
 

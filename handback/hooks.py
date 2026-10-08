@@ -409,6 +409,68 @@ def _log_file_error(context, project, error):
         _log_error(context, context.agent, context.event, error)
 
 
+def _bind_antigravity_observation(conversation, context):
+    """Recognize a first reply before agentapi has returned its conversation ID.
+
+    Only a saved, dispatched new-conversation job and its marked first input
+    authorize a spool. Bind before recording/starting the router so an early
+    Stop is usable by collectors immediately, without replaying that Stop.
+    """
+    from .adapters.antigravity import bind_conversation, observe_lead, observation_dir, transcript_path
+    if (not _identifier(conversation) or any(c in conversation for c in "/\\.")
+            or (observation_dir(context.home) / (conversation + ".jsonl")).exists()):
+        return
+    path = transcript_path(conversation)
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_STATE_BYTES)
+    except FileNotFoundError:
+        return
+    context.remaining()
+    first_input = None
+    for line in raw.splitlines(keepends=True):
+        if not line.endswith(b"\n"):
+            break  # Do not recognize partial transcript records.
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and record.get("type") == "USER_INPUT":
+            first_input = record.get("content")
+            break
+    if not isinstance(first_input, str):
+        return
+    for project in _projects(context):
+        for request in _requests(project, context):
+            marker = request.get("marker")
+            if (request.get("agent") != "antigravity"
+                    or request.get("status") not in {"dispatching", "delivery_unknown"}
+                    or not str(request.get("thread", "")).startswith("pending-")
+                    or request.get("handle") != "antigravity:" + request["thread"]
+                    or not isinstance(marker, str) or not marker or marker not in first_input):
+                continue
+            job = _read(project / "antigravity" / request["id"] / "job.json", context, {})
+            args = job.get("args") if isinstance(job, dict) else None
+            if (not isinstance(job, dict) or job.get("request_id") != request["id"] or not isinstance(args, list)
+                    or len(args) != 4 or args[0] != "new-conversation"
+                    or not isinstance(args[-1], str) or marker not in args[-1]):
+                continue
+            state = _state(request.get("root"), project, context)
+            if state is None or not _managed_enabled(state, "antigravity", context):
+                continue
+            context.managed_path = project
+            with state.lock(timeout=min(0.2, context.remaining())):
+                current = _read(project / "requests" / (request["id"] + ".json"), context)
+                if (not isinstance(current, dict) or current.get("status") not in OPEN_STATES
+                        or current.get("marker") != marker
+                        or current.get("thread") not in (request["thread"], conversation)):
+                    continue
+                bind_conversation(state, current, conversation)
+                state.save_request(current)
+                observe_lead(context.home, conversation)
+            return
+
+
 def process(agent, event, payload, home=None):
     """Return Claude hook JSON or None; all hook failures are silent to the host."""
     context = None
@@ -421,8 +483,9 @@ def process(agent, event, payload, home=None):
                 context = _Context(home, agent, canonical)
                 if moved_destination(context.home) is not None:
                     return {}
-                record_observation(context.home, payload, canonical)
                 conversation = payload.get("conversationId")
+                _bind_antigravity_observation(conversation, context)
+                record_observation(context.home, payload, canonical)
                 if not _identifier(conversation):
                     return {}
                 recipient = "antigravity:" + conversation
