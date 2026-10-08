@@ -9,6 +9,10 @@ from .state import ProjectState
 
 
 AGENTS = ("claude", "codex", "antigravity")
+ROLES = ("lead", "worker")
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+EXECUTION_KEYS = ("model", "reasoning_effort")
+_UNSET = object()
 SUPPORTED_COMBINATIONS = ("Supported: Claude Lead -> Codex and/or Antigravity; "
                           "Codex Lead -> Antigravity only.")
 DEFAULTS = {
@@ -36,7 +40,99 @@ def _read_object(path):
             raise ValueError(f"Invalid agent settings for {agent}: {path}")
         if "enabled" in settings and not isinstance(settings["enabled"], bool):
             raise ValueError(f"agents.{agent}.enabled must be a boolean: {path}")
+        _validate_execution(settings, f"agents.{agent}")
     return value
+
+
+def _validate_execution(settings, path):
+    """Validate execution fields without interpreting arbitrary agent metadata."""
+    for key in EXECUTION_KEYS:
+        value = settings.get(key)
+        if value is not None and (not isinstance(value, str) or not value.strip() or
+                                  any(char in value for char in "\n\r\0")):
+            raise ValueError(f"{path}.{key} must be a nonempty string or null")
+    effort = settings.get("reasoning_effort")
+    if effort is not None and effort not in REASONING_EFFORTS:
+        raise ValueError(f"{path}.reasoning_effort must be one of: " + ", ".join(REASONING_EFFORTS))
+    for role in ROLES:
+        if role in settings:
+            if not isinstance(settings[role], dict):
+                raise ValueError(f"{path}.{role} must be an object")
+            _validate_execution(settings[role], f"{path}.{role}")
+
+
+def _execution_layer(agents):
+    """Mutable topology may select execution defaults, never agent availability."""
+    if not isinstance(agents, dict):
+        raise ValueError("topology.json agents must be an object")
+    layer = {}
+    for agent, settings in agents.items():
+        if agent not in AGENTS or not isinstance(settings, dict):
+            raise ValueError(f"Invalid topology execution settings for {agent}")
+        _validate_execution(settings, f"agents.{agent}")
+        layer[agent] = {key: settings[key] for key in EXECUTION_KEYS if key in settings}
+        for role in ROLES:
+            if role in settings:
+                layer[agent][role] = {key: settings[role][key] for key in EXECUTION_KEYS
+                                      if key in settings[role]}
+    return layer
+
+
+def execution_settings(values, agent, role="worker", thread=None):
+    """Select shared < role < saved thread settings; null inherits its fallback."""
+    if agent not in AGENTS or role not in ROLES:
+        raise ValueError("execution settings require a known agent and lead/worker role")
+    settings = values.get("agents", {}).get(agent, {})
+    _validate_execution(settings, f"agents.{agent}")
+    saved = (thread or {}).get("execution", {})
+    if not isinstance(saved, dict):
+        raise ValueError("thread.execution must be an object")
+    _validate_execution(saved, "thread.execution")
+    selected = dict.fromkeys(EXECUTION_KEYS)
+    for layer in (settings, settings.get(role, {}), saved):
+        for key in EXECUTION_KEYS:
+            if layer.get(key) is not None:
+                selected[key] = layer[key]
+    if agent == "claude" and any(selected.values()):
+        raise ValueError("Claude model/reasoning control is unavailable; select it in Claude")
+    if agent == "antigravity" and selected["reasoning_effort"] is not None:
+        raise ValueError("Antigravity reasoning_effort control is unsupported")
+    return selected
+
+
+def configure_execution(root, agent, role, *, model=_UNSET, reasoning_effort=_UNSET, home=None):
+    """Save project execution defaults outside the checkout; null restores inheritance."""
+    if agent not in AGENTS or role not in ROLES:
+        raise ValueError("configure requires a known agent and lead/worker role")
+    changes = {key: value for key, value in (("model", model), ("reasoning_effort", reasoning_effort))
+               if value is not _UNSET}
+    if not changes:
+        raise ValueError("configure requires model/reasoning settings or an explicit clear flag")
+    _validate_execution(changes, f"agents.{agent}.{role}")
+    state = ProjectState(root, home=home)
+
+    def checked():
+        resolved = resolve(root, home=state.home, validate=False)
+        policy = resolved["policy"]
+        if not policy["user_enabled"].get(agent, False):
+            raise ValueError(f"Agent {agent} is disabled in user configuration")
+        if agent not in policy["allowed_agents"]:
+            raise ValueError(f"Agent {agent} is not allowed by project configuration")
+        if not policy["project_enabled"].get(agent, True):
+            raise ValueError(f"Agent {agent} is disabled in project configuration")
+        candidate = deepcopy(resolved["values"])
+        candidate.setdefault("agents", {}).setdefault(agent, {}).setdefault(role, {}).update(changes)
+        execution_settings(candidate, agent, role)
+        return resolved
+
+    checked()  # Reject invalid selections before creating mutable state.
+    with state.lock():
+        checked()
+        previous = state.read_json("topology.json", {})
+        previous.setdefault("agents", {}).setdefault(agent, {}).setdefault(role, {}).update(changes)
+        previous.setdefault("root", str(state.root))
+        state.write_json("topology.json", previous)
+    return resolve(root, home=state.home, validate=False)
 
 
 def _merge(target, layer, sources, source, prefix=""):
@@ -119,9 +215,10 @@ def resolve(root, home=None, overrides=None, validate=True):
     project_enabled = {agent: project.get("agents", {}).get(agent, {}).get("enabled", True)
                        for agent in AGENTS}
     values, sources = {}, {}
+    topology_layer = {key: topology[key] for key in ("lead", "workers", "fallback") if key in topology}
+    topology_layer["agents"] = _execution_layer(topology.get("agents", {}))
     for layer, source in ((DEFAULTS, "builtin"), (user, "user"), (project, "project"),
-                          ({key: topology[key] for key in ("lead", "workers", "fallback") if key in topology},
-                           "topology")):
+                          (topology_layer, "topology")):
         _merge(values, layer, sources, source)
     environment = {}
     if "HANDBACK_LEAD" in os.environ:

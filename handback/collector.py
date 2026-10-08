@@ -20,7 +20,7 @@ import sys
 import time
 import uuid
 
-from . import envelope, inbox
+from . import config, envelope, inbox
 from .state import atomic_json, home_lock
 from .invocation import entry_args
 
@@ -71,6 +71,18 @@ def _finish_request(state, request, result):
         # have rebound the request since (Antigravity provisional handle).
         sent_to = current.get("provisional_handle") or current["handle"]
         inbox.acknowledge(state.path / "inbox", current["outgoing_id"], sent_to)
+        execution = current.get("execution")
+        if isinstance(execution, dict) and any(execution.values()):
+            # Marked-turn completion proves submission even when the queue
+            # response was lost. Save once while this request is still open;
+            # rereading an old completion must not roll back a later selection.
+            agent, _, native_id = current["handle"].partition(":")
+            settings = config.execution_settings({}, agent, thread={"execution": execution})
+            thread = state.threads().get(current["handle"], {})
+            state.register_thread({"agent": agent, "id": native_id, "role": "worker",
+                                   "root": str(state.root), **thread,
+                                   "handle": current["handle"], "execution": settings,
+                                   "execution_request": current["id"]})
         current.update(status=result["outcome"], result=result, reply_id=mail["id"],
                        completed_utc=utcnow())
         state.save_request(current)
@@ -139,10 +151,12 @@ def _spawn(state, request, timeout, python):
 class WatchCollector:
     """Follow open requests addressed to one recipient from inside ``inbox watch``."""
 
-    def __init__(self, state, recipient, adapter_for, log=None, clock=time.monotonic):
+    def __init__(self, state, recipient, adapter_for, log=None, clock=time.monotonic,
+                 lead_adapter_for=None):
         self.state = state
         self.recipient = recipient
         self.adapter_for = adapter_for
+        self.lead_adapter_for = lead_adapter_for
         self.followers = {}
         self.unsupported = set()
         self.log = log
@@ -177,7 +191,9 @@ class WatchCollector:
         """Publish any newly confirmed results; never raises to the watch loop."""
         try:
             from .router import route_pending
-            route_pending(self.state, self.recipient, self.adapter_for)
+            # Worker collectors and Lead result delivery have distinct execution
+            # settings. The router resolves its actual recipient when omitted.
+            route_pending(self.state, self.recipient, self.lead_adapter_for)
         except Exception as error:
             self._note("delivery", error)
         try:

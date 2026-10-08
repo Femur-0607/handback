@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from handback.config import resolve, use_topology, validate_topology
+from handback.config import configure_execution, execution_settings, resolve, use_topology, validate_topology
 from handback.state import ProjectState, atomic_json
 
 
@@ -154,6 +154,69 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid configuration"):
             use_topology(self.root, "claude", ["codex"], home=self.home)
         self.assertEqual((self.home / "config.json").read_text(), "{")
+
+    def test_execution_uses_shared_role_and_saved_thread_settings(self):
+        self.user({"agents": {"codex": {"model": "shared", "reasoning_effort": "high",
+                                        "lead": {"model": "lead"}, "worker": {"reasoning_effort": "ultra"}}}})
+        values = resolve(self.root, home=self.home)["values"]
+        self.assertEqual(execution_settings(values, "codex", "lead"),
+                         {"model": "lead", "reasoning_effort": "high"})
+        self.assertEqual(execution_settings(values, "codex"),
+                         {"model": "shared", "reasoning_effort": "ultra"})
+        self.assertEqual(execution_settings(values, "codex", thread={"execution": {
+            "model": "saved", "reasoning_effort": "low"}}),
+                         {"model": "saved", "reasoning_effort": "low"})
+
+    def test_configure_persists_external_role_settings_and_clear_inherits(self):
+        self.project({"agents": {"codex": {"model": "shared", "reasoning_effort": "high",
+                                           "worker": {"model": "project-worker"}}}})
+        before = (self.root / ".handback.json").read_bytes()
+        result = configure_execution(self.root, "codex", "worker", model="selected",
+                                     reasoning_effort="ultra", home=self.home)
+        self.assertEqual(execution_settings(result["values"], "codex"),
+                         {"model": "selected", "reasoning_effort": "ultra"})
+        self.assertEqual(result["sources"]["agents.codex.worker.reasoning_effort"], "topology")
+        result = configure_execution(self.root, "codex", "worker", model=None,
+                                     reasoning_effort=None, home=self.home)
+        self.assertEqual(execution_settings(result["values"], "codex"),
+                         {"model": "shared", "reasoning_effort": "high"})
+        self.assertEqual((self.root / ".handback.json").read_bytes(), before)
+        self.assertEqual(ProjectState(self.root, home=self.home).read_json("topology.json")["agents"]
+                         ["codex"]["worker"], {"model": None, "reasoning_effort": None})
+
+    def test_topology_execution_layer_cannot_change_agent_availability_or_executable(self):
+        self.user({"agents": {"codex": {"enabled": False, "executable": "trusted"}}})
+        state = ProjectState(self.root, home=self.home)
+        state.write_json("topology.json", {"agents": {"codex": {"enabled": True,
+                         "executable": "untrusted", "worker": {"reasoning_effort": "ultra"}}}})
+        result = resolve(self.root, home=self.home, validate=False)
+        self.assertFalse(result["values"]["agents"]["codex"]["enabled"])
+        self.assertEqual(result["values"]["agents"]["codex"]["executable"], "trusted")
+        self.assertEqual(execution_settings(result["values"], "codex")["reasoning_effort"], "ultra")
+
+    def test_configure_rejects_disabled_unsupported_or_invalid_before_writing(self):
+        state = ProjectState(self.root, home=self.home)
+        cases = (("codex", "worker", {"model": " "}, "nonempty"),
+                 ("codex", "worker", {"reasoning_effort": "auto"}, "must be one"),
+                 ("claude", "lead", {"model": "opus"}, "unavailable"),
+                 ("antigravity", "worker", {"model": "flash"}, "disabled"))
+        for agent, role, fields, error in cases:
+            with self.subTest(agent=agent, fields=fields), self.assertRaisesRegex(ValueError, error):
+                configure_execution(self.root, agent, role, home=self.home, **fields)
+        self.assertFalse(state.path.exists())
+        self.user({"agents": {"antigravity": {"enabled": True}}})
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            configure_execution(self.root, "antigravity", "worker", reasoning_effort="high", home=self.home)
+        self.assertFalse(state.path.exists())
+
+    def test_configure_preserves_topology_and_metadata(self):
+        state = ProjectState(self.root, home=self.home)
+        state.write_json("topology.json", {"lead": "claude:old", "workers": ["codex"],
+                                          "revision_note": "keep"})
+        configure_execution(self.root, "codex", "lead", model="lead-model", home=self.home)
+        saved = state.read_json("topology.json")
+        self.assertEqual((saved["lead"], saved["workers"], saved["revision_note"]),
+                         ("claude:old", ["codex"], "keep"))
 
 
 if __name__ == "__main__":

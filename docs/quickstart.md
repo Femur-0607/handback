@@ -143,9 +143,25 @@ If a result's **Lead delivery** is `delivery_unknown`, first check whether the L
 
 After a Codex update, run `python handback.py selftest` and `doctor`, then repeat a deliberately small live task if appropriate. `selftest` probes Codex queue, app-server, and transcript capabilities; it is not a guarantee of future compatibility. Antigravity `selftest --agent antigravity` currently performs detection only and exits 5 because runtime self-test coverage is unimplemented.
 
+## Optional role-specific model and reasoning settings
+
+Set Codex Lead and worker defaults independently before creating their conversations:
+
+```powershell
+python handback.py configure --root "$relayRoot" --agent codex --role lead --model "<model-id>" --reasoning-effort ultra
+python handback.py configure --root "$relayRoot" --agent codex --role worker --model "<model-id>" --reasoning-effort high
+python handback.py status --root "$relayRoot"
+```
+
+These project defaults are saved outside the checkout. In the dashboard, open a project row's context menu → **모델·추론 설정** → the role to edit. Blank fields inherit shared or native settings. CLI clearing uses `configure --clear-model` and/or `--clear-reasoning-effort` for that agent and role.
+
+`new` can override the defaults with `--model` and `--reasoning-effort`. Codex saves the effective selection for the conversation, and subsequent relay `send` turns retain the stored selection. An explicit selection on Codex `send` changes the saved selection; actual next-turn application in a conversation already loaded by the desktop app remains unverified because its runtime settings can be cached. Later default edits apply to new conversations; they do not overwrite existing saved conversation settings. Model support for `ultra` and other effort values depends on the installed Codex build and selected model. App-entered user messages remain subject to the app's own settings. See the [settings verification record](verification/2026-10-09-role-model-settings.md) for the checks performed without a model turn.
+
+Shared JSON defaults use `agents.codex.model` and `agents.codex.reasoning_effort` in `<state-home>/config.json` or `.handback.json`; role objects are `agents.codex.lead` and `agents.codex.worker`. See the [Korean manual](usage.ko.md#리드워커-모델과-추론-강도) for precedence and a JSON example. Claude Lead model/reasoning settings are selected in Claude. Antigravity supports a model selection only when creating a new conversation, as described below.
+
 ## Optional Antigravity setup
 
-Before selecting Antigravity, register the working project in its app and merge the following into `<state-home>/config.json`. The examples below continue the first test with `$relayRoot`; for your own project, use its absolute path instead. Preserve any existing settings. The default model is `flash`; optional alternatives are `flash_lite` and `pro`.
+Before selecting Antigravity, register the working project in its app and merge the following into `<state-home>/config.json`. The examples below continue the first test with `$relayRoot`; for your own project, use its absolute path instead. Preserve any existing settings. The default model is `flash`; optional alternatives are `flash_lite` and `pro`. Select a project worker default with `configure --root "$relayRoot" --agent antigravity --role worker --model pro`, or use `new --model pro`. The current agentapi interface has no reasoning-effort option or existing-conversation model-change option; these selections are rejected rather than ignored.
 
 ```json
 {

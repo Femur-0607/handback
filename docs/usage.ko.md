@@ -110,6 +110,40 @@ python handback.py new --role lead --worker codex --cwd "<absolute-checkout>" --
 
 Lead 초기 지시는 사용자가 그 대화에 입력합니다. `send --to <Lead>` 또는 `new --role lead --text/--file`로 보내지 않습니다. 워커는 다른 워커에게 재위임하지 않고 할당받은 대화에 결과를 답합니다.
 
+### 리드·워커 모델과 추론 강도
+
+Codex 리드와 워커의 기본 모델·추론 강도를 프로젝트별로 따로 저장할 수 있습니다. 현황판에서는 프로젝트 줄 우클릭 → **모델·추론 설정** → 현재 조합의 해당 역할을 선택합니다. 입력란을 비우면 그 역할의 선택값을 지우고 공통 설정을 상속합니다.
+
+```powershell
+python handback.py configure --root "<absolute-checkout>" --agent codex --role lead --model "<model-id>" --reasoning-effort ultra
+python handback.py configure --root "<absolute-checkout>" --agent codex --role worker --model "<model-id>" --reasoning-effort high
+# 선택한 역할의 추론 강도만 상속으로 되돌림
+python handback.py configure --root "<absolute-checkout>" --agent codex --role worker --clear-reasoning-effort
+```
+
+- `configure`는 저장소 밖의 프로젝트 상태에 역할 기본값을 저장합니다. `--clear-model`·`--clear-reasoning-effort`는 각각 역할 선택값을 해제합니다. 공통값이 없으면 Codex 자체 설정을 사용합니다.
+- `new --model "<model-id>" --reasoning-effort ultra`는 새 대화의 역할 기본값을 덮어씁니다. 선택된 모델·강도를 대화에 저장하여 이후 handback 전송에도 유지합니다. Codex `send`에서도 같은 옵션으로 기존 워커의 저장된 선택값을 바꿀 수 있습니다.
+- 우선순위는 명령 옵션 → 저장된 대화 설정 → 역할 기본값 → 공통 에이전트 설정 → Codex 자체 설정입니다. 역할 기본값을 바꿔도 이미 저장된 대화의 선택값은 유지됩니다. `status`로 설정값과 출처를 확인할 수 있습니다.
+- 추론 강도는 `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` 중에서 고릅니다. 실제 사용 가능 여부는 모델과 설치된 Codex 버전에 달려 있습니다. relay는 생성·전송 전에 Codex 자체 대화 설정에 선택값을 저장합니다. 앱에 직접 입력하는 사용자 턴의 동작은 해당 앱이 제어합니다.
+- Antigravity 워커는 새 대화 모델 `flash_lite`·`flash`·`pro`를 선택할 수 있습니다. 현재 agentapi 인터페이스에는 추론 강도나 기존 대화 모델 변경 옵션이 없어 이 선택은 거부합니다. Claude 리드의 모델·추론 설정은 Claude 앱에서 변경합니다.
+
+이미 Codex 앱에 로드된 대화는 실행 중 설정을 보관할 수 있습니다. `send`로 새 값을 저장한 뒤 실제 다음 턴에 반영되는지는 아직 검증하지 못했습니다. 새 대화 설정이 프로세스를 다시 열어도 복원되는 것은 모델 실행 없이 확인했습니다. [설정 전달 검증 기록](verification/2026-10-09-role-model-settings.md)은 확인한 범위와 남은 한계를 구분합니다.
+
+공통 기본값은 사용자 `<state-home>/config.json` 또는 프로젝트 `.handback.json`의 `agents.codex.model`·`agents.codex.reasoning_effort`에 둡니다. 역할 기본값은 같은 에이전트 안의 `lead`·`worker` 객체에 저장하며 필드 이름은 같습니다. 아래는 사용자 또는 프로젝트 설정에 병합하는 예입니다.
+
+```json
+{
+  "agents": {
+    "codex": {
+      "reasoning_effort": "ultra",
+      "lead": { "model": "<lead-model-id>" },
+      "worker": { "model": "<worker-model-id>", "reasoning_effort": "high" }
+    },
+    "antigravity": { "worker": { "model": "pro" } }
+  }
+}
+```
+
 ### 현황판
 
 ```powershell
@@ -122,11 +156,11 @@ python handback.py dashboard --autostart on
 
 - 위젯 클릭: 패널 열기·닫기. 패널 밖 클릭 또는 Esc로 닫기. 진행·미확인 숫자는 워커 대화를 열거나 선택 메뉴를 표시
 - 패널의 프로젝트 이름 클릭: 진행 중인 워커 대화와 최근 미확인 결과 5개를 펼침. 결과 줄을 클릭하면 전체 본문 창이 열림
-- 프로젝트 줄 우클릭: 위로 올리기·아래로 내리기·숨기기, 미확인 결과 모두 확인 처리, handback 등록 해제
+- 프로젝트 줄 우클릭: 위로 올리기·아래로 내리기·숨기기, 모델·추론 설정, 미확인 결과 모두 확인 처리, handback 등록 해제
 - 빈 곳 우클릭 → 보기 설정: 작업표시줄 모드·펼친 패널 고정 선택, 패널 표시 줄 수(2줄·3줄·전부, 기본 3줄), 숨긴 프로젝트 다시 표시, 순서 초기화
 - 위젯 드래그: 작업표시줄을 따라 가로로 이동하고 위치 저장. 고정 패널은 자유롭게 이동. 패널의 `+N개 더 보기`로 나머지 프로젝트 표시
 
-순서·숨김·패널 줄 수·모드·위젯의 가로 위치는 상태 홈의 `dashboard.json`에 저장합니다. relay 상태를 바꾸는 동작은 확인 창을 거친 두 가지뿐입니다.
+순서·숨김·패널 줄 수·모드·위젯의 가로 위치는 상태 홈의 `dashboard.json`에 저장합니다. 모델·추론 설정은 별도 편집창에서 저장하며, 다음 두 동작은 확인 창을 거칩니다.
 
 - **모두 확인 처리**: `inbox ack`와 같이 그 프로젝트의 결과·오류를 ACK합니다. 내용은 수신함에 남고, 리더의 Monitor·복구 훅이 다시 전달하지 않습니다.
 - **handback 등록 해제**: 진행 중 요청이 없을 때만 그 프로젝트 상태 폴더를 상태 홈 `released/`로 옮깁니다(삭제 아님). 그 프로젝트에서 relay를 다시 쓰면 새로 등록됩니다.
@@ -208,7 +242,7 @@ python handback.py inbox redeliver --root "<absolute-checkout>" --id "<message-i
 
 - 샌드박스 안에서는 queue 상태 DB에 접근할 수 없어 Lead 반환을 `pending`으로 둡니다. relay가 연 Antigravity 워커의 유휴 Stop 훅은 외부 라우터를 기동해 누락된 수집기와 대기·확정 실패 전달을 복구합니다. Codex Lead는 Antigravity 워커만 지원합니다.
 - 워커 완료의 근거는 rollout의 `task_complete`입니다. 관찰 훅의 Stop만으로 완료 처리하지 않습니다. Codex Lead 복구는 정확한 Lead의 `UserPromptSubmit`에 `additionalContext`를 넣으며 SessionStart는 사용하지 않습니다.
-- 새 워커의 `--sandbox`는 기본 `workspace-write`, 선택적으로 `read-only`입니다. `--add-dir`는 Codex용 추가 쓰기 경로입니다. 모델·effort 설정은 아직 실제 스레드 생성에 적용하지 않습니다.
+- 새 워커의 `--sandbox`는 기본 `workspace-write`, 선택적으로 `read-only`입니다. `--add-dir`는 Codex용 추가 쓰기 경로입니다. 모델·추론 선택은 생성과 relay 전송 전에 저장합니다. 이미 앱에 로드된 대화의 변경 적용 한계와 대화별 유지 규칙은 위의 [설정 설명](#리드워커-모델과-추론-강도)을 따릅니다.
 - 일부 Windows 샌드박스에서 상대 경로 resolve 오류를 확인했습니다. `--root`·`--cwd`·브리프는 절대 경로를 사용합니다. 실행 파일은 `HANDBACK_CODEX`, 사용자 `agents.codex.executable`, 앱 번들, PATH 순서로 탐색하고 기록은 `CODEX_HOME` 또는 `~/.codex`에서 읽습니다. `python handback.py codex`로 실행 파일 경로를 확인합니다.
 
 ### Antigravity

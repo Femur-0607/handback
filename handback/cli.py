@@ -31,15 +31,16 @@ def output(value):
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
-def get_adapter(agent, values=None):
+def get_adapter(agent, values=None, role="worker", thread=None):
     settings = (values or {}).get("agents", {}).get(agent, {})
+    execution = config.execution_settings(values or {}, agent, role, thread)
     executable = os.environ.get("HANDBACK_" + agent.upper()) or settings.get("executable")
     if agent == "codex":
-        return CodexAdapter(executable=executable)
+        return CodexAdapter(executable=executable, **execution)
     if agent == "claude":
         return ClaudeAdapter(executable=executable)
     if agent == "antigravity":
-        return AntigravityAdapter(executable=executable, model=settings.get("model"),
+        return AntigravityAdapter(executable=executable, model=execution["model"],
                                   delivery_timeout=settings.get("delivery_timeout", 60))
     raise ValueError("unknown agent: " + agent)
 
@@ -70,7 +71,34 @@ def require_worker(resolved, agent):
     config.validate_topology(resolved, values["lead"], [agent], values["fallback"])
 
 
-def submit(state, resolved, target, body, label):
+def _execution_metadata(adapter, selected):
+    """Use transport-resolved native defaults when available, including first creation."""
+    effective = getattr(adapter, "execution_settings", None)
+    saved = {}
+    for key in config.EXECUTION_KEYS:
+        native = effective.get(key) if isinstance(effective, dict) else getattr(adapter, key, None)
+        saved[key] = native if isinstance(native, str) and native else selected.get(key)
+    return saved
+
+
+def execution_overrides(args):
+    return {key: getattr(args, key) for key in config.EXECUTION_KEYS
+            if getattr(args, key, None) is not None}
+
+
+def _save_thread_execution(state, request, settings):
+    current = state.threads().get(request["handle"], {})
+    if (request.get("status") in {"completed", "failed"} and
+            current.get("execution_request") not in (None, request["id"])):
+        return  # A later accepted turn already owns the thread's selection.
+    if current or any(settings.values()):
+        state.register_thread({"agent": request["agent"], "id": request["thread"], "role": "worker",
+                               "root": str(state.root), "created_utc": utcnow(), **current,
+                               "handle": request["handle"], "execution": settings,
+                               "execution_request": request["id"]})
+
+
+def submit(state, resolved, target, body, label, execution=None):
     target, agent, native_id = handle(target)
     # A provisional handle (Antigravity creates the conversation on first send)
     # resolves to its conversation once that first send has bound it.
@@ -78,7 +106,16 @@ def submit(state, resolved, target, body, label):
     if bound:
         target, agent, native_id = handle(bound)
     require_worker(resolved, agent)
-    adapter = get_adapter(agent, resolved["values"])
+    registered = state.threads().get(target, {})
+    saved_execution = registered.get("execution", {})
+    if not isinstance(saved_execution, dict):
+        raise ValueError("thread.execution must be an object")
+    selected_thread = {**registered, "execution": {**saved_execution, **(execution or {})}}
+    if (agent == "antigravity" and (execution or {}).get("model") is not None and
+            not native_id.startswith("pending-")):
+        raise ValueError("Antigravity model can only be selected when creating a conversation")
+    selected = config.execution_settings(resolved["values"], agent, "worker", selected_thread)
+    adapter = get_adapter(agent, resolved["values"], thread=selected_thread)
     request_id = uuid.uuid4().hex
     marker = "[relay " + request_id[:8] + "]"
     return_to = lead_handle(resolved["values"])
@@ -89,7 +126,8 @@ def submit(state, resolved, target, body, label):
     request = {"schema": 1, "id": request_id, "marker": marker, "thread": native_id,
                "handle": target, "agent": agent, "return_to": return_to,
                "outgoing_id": outgoing["id"], "created_utc": utcnow(),
-               "status": "prepared", "hop": 0, "root": str(state.root)}
+               "status": "prepared", "hop": 0, "root": str(state.root),
+               "execution": selected}
     with state.lock():
         if any(item.get("handle") == target and item.get("status") in OPEN_STATES
                for item in state.requests()):
@@ -114,7 +152,10 @@ def submit(state, resolved, target, body, label):
     except Exception as error:
         with state.lock():
             request = state.load_request(request_id)
+            request["execution"] = _execution_metadata(adapter, selected)
             if request.get("status") in {"completed", "failed"}:
+                _save_thread_execution(state, request, request["execution"])
+                state.save_request(request)
                 return request, 0
             request["status"] = "delivery_unknown"
             request["error"] = str(error)
@@ -122,7 +163,14 @@ def submit(state, resolved, target, body, label):
         return request, 4
     with state.lock():
         request = state.load_request(request_id)
+        # Retain the transport's effective selection even when queue acceptance
+        # is unknown; a later correlated completion can confirm its use.
+        saved = _execution_metadata(adapter, selected)
+        request["execution"] = saved
+        if delivery.get("accepted") or request.get("status") in {"completed", "failed"}:
+            _save_thread_execution(state, request, saved)
         if request.get("status") in {"completed", "failed"}:
+            state.save_request(request)
             return request, 0
         request["status"] = ("accepted" if delivery.get("accepted") else
                              "delivery_unknown" if delivery.get("unknown") else "send_failed")
@@ -178,7 +226,7 @@ def collect(state, request, timeout, return_file, values, summary=None):
             output({**summary, "status": "send_failed"})
         print("Request was not accepted by the worker.", file=sys.stderr)
         return 4
-    adapter = get_adapter(request["agent"], values)
+    adapter = get_adapter(request["agent"], values, thread=state.threads().get(request.get("handle")))
     result = adapter.fallback_collect(request, timeout=timeout)
     completed = finish_request(state, request, result)
     summary = result_identity(completed, summary)
@@ -222,7 +270,10 @@ def cmd_new(args):
         require_worker(resolved, worker)
     if worker == "antigravity" and args.sandbox == "read-only":
         warn_read_only()
-    adapter = get_adapter(worker, resolved["values"])
+    role = "lead" if is_lead else "worker"
+    selected_thread = {"execution": execution_overrides(args)}
+    selected = config.execution_settings(resolved["values"], worker, role, selected_thread)
+    adapter = get_adapter(worker, resolved["values"], role=role, thread=selected_thread)
     extra = {"writable_roots": args.add_dir} if args.add_dir else {}
     if is_lead and worker == "codex":
         if args.sandbox != "workspace-write":
@@ -245,7 +296,7 @@ def cmd_new(args):
         native_id = delivery["thread"]
     state.register_thread({"handle": worker + ":" + native_id, "agent": worker,
                            "id": native_id, "name": args.name,
-                           "role": "lead" if is_lead else "worker",
+                           "role": role, "execution": _execution_metadata(adapter, selected),
                            "root": str(Path(args.cwd).resolve()), "created_utc": utcnow()})
     if is_lead:
         config.use_topology(args.cwd, worker + ":" + native_id, resolved["values"]["workers"])
@@ -256,6 +307,8 @@ def cmd_new(args):
         send_args.thread = None
         send_args.no_collect = False
         send_args.collect_timeout = collector.DEFAULT_COLLECT_TIMEOUT
+        # Creation selections are already saved. Sending uses that snapshot.
+        send_args.model = send_args.reasoning_effort = None
         return cmd_send(send_args, created={"created_handle": send_args.to})
     print(worker + ":" + native_id if args.worker else native_id)
     return 0
@@ -289,7 +342,8 @@ def cmd_send(args, created=None):
                 "do not modify files", "no file changes", "파일을 수정하지")):
             warn_read_only()
     state = ProjectState(args.root)
-    request, code = submit(state, resolved, args.to or args.thread, body, args.label)
+    request, code = submit(state, resolved, args.to or args.thread, body, args.label,
+                           execution=execution_overrides(args))
     if getattr(args, "on_request", None):
         args.on_request(request)
     summary = ({**created, "handle": request["handle"], "id": request["thread"],
@@ -473,6 +527,9 @@ def build_parser():
     new.add_argument("--cwd", required=True)
     new.add_argument("--name", required=True)
     new.add_argument("--role", choices=["lead", "worker"], default="worker")
+    new.add_argument("--model", help="model for this thread; saved for later turns")
+    new.add_argument("--reasoning-effort", choices=config.REASONING_EFFORTS,
+                     help="Codex reasoning effort for this thread")
     new.add_argument("--workers", help="worker agents for a new Lead; Codex Lead defaults to antigravity")
     new.add_argument("--worker", choices=["auto", "codex", "claude", "antigravity"])
     new.add_argument("--sandbox", default="workspace-write", choices=["read-only", "workspace-write"])
@@ -487,6 +544,9 @@ def build_parser():
     new.add_argument("--return-file")
     new.add_argument("--label", default=os.environ.get("HANDBACK_LABEL", "the Lead"))
     send = sub.add_parser("send")
+    send.add_argument("--model", help="override this thread's saved model after accepted delivery")
+    send.add_argument("--reasoning-effort", choices=config.REASONING_EFFORTS,
+                      help="override this thread's saved Codex reasoning effort")
     target = send.add_mutually_exclusive_group(required=True)
     target.add_argument("--thread")
     target.add_argument("--to")
@@ -514,6 +574,16 @@ def build_parser():
     dashboard = sub.add_parser("dashboard", help="status strip above the taskbar")
     dashboard.add_argument("--once", action="store_true", help="print the snapshot as JSON instead")
     dashboard.add_argument("--autostart", choices=["on", "off"], help="add or remove the Windows Startup shortcut")
+    configure = sub.add_parser("configure", help="save project Lead/worker model defaults")
+    configure.add_argument("--root", default=".")
+    configure.add_argument("--agent", choices=config.AGENTS, required=True)
+    configure.add_argument("--role", choices=config.ROLES, required=True)
+    model_selection = configure.add_mutually_exclusive_group()
+    model_selection.add_argument("--model", default=config._UNSET)
+    model_selection.add_argument("--clear-model", action="store_true", help="inherit the shared/native model")
+    effort_selection = configure.add_mutually_exclusive_group()
+    effort_selection.add_argument("--reasoning-effort", choices=config.REASONING_EFFORTS, default=config._UNSET)
+    effort_selection.add_argument("--clear-reasoning-effort", action="store_true", help="inherit shared/native effort")
     for name in ("status", "doctor", "use"):
         command = sub.add_parser(name)
         command.add_argument("--root", default=".")
@@ -604,7 +674,7 @@ def main(argv=None):
         if args.command != "hook" and not (args.command == "doctor" and args.report):
             for warning in warnings:
                 print("Warning: " + warning, file=sys.stderr)
-        mutates = (args.command in {"try", "new", "send", "wait", "collect", "use", "route"}
+        mutates = (args.command in {"try", "new", "send", "wait", "collect", "use", "route", "configure"}
                    or args.command == "inbox" and args.inbox_command != "list"
                    or args.command in {"install-hooks", "uninstall-hooks", "cleanup-sidecars"} and not args.dry_run)
         if mutates:
@@ -703,6 +773,11 @@ def dispatch(args, parser):
         output(config.use_topology(args.root, args.lead,
                                    [x.strip() for x in args.workers.split(",") if x.strip()],
                                    args.fallback))
+        return 0
+    if args.command == "configure":
+        output(config.configure_execution(args.root, args.agent, args.role,
+                                           model=None if args.clear_model else args.model,
+                                           reasoning_effort=None if args.clear_reasoning_effort else args.reasoning_effort))
         return 0
     if args.command == "dashboard":
         from . import dashboard

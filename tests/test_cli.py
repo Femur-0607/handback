@@ -269,6 +269,145 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(self.state.requests()[0]["status"], "send_failed")
         self.assertEqual(len(self.adapter.deliveries), before)
 
+    def test_configure_cli_sets_and_clears_role_defaults(self):
+        code, raw, error = self.invoke("configure", "--agent", "codex", "--role", "worker",
+                                        "--model", "selected-model", "--reasoning-effort", "ultra")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(config.execution_settings(json.loads(raw)["values"], "codex"),
+                         {"model": "selected-model", "reasoning_effort": "ultra"})
+        code, raw, error = self.invoke("configure", "--agent", "codex", "--role", "worker",
+                                        "--clear-model", "--clear-reasoning-effort")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(config.execution_settings(json.loads(raw)["values"], "codex"),
+                         {"model": None, "reasoning_effort": None})
+
+    def test_new_execution_snapshot_survives_default_changes_and_initial_send(self):
+        config.configure_execution(self.root, "codex", "worker", model="default-model", reasoning_effort="high")
+        with patch.object(cli, "get_adapter", return_value=self.adapter) as factory:
+            code, raw, error = self.invoke_new("--model", "thread-model", "--reasoning-effort", "ultra",
+                                                "--text", "first", "--no-wait")
+        self.assertEqual(code, 0, error)
+        saved = self.state.threads()["codex:fake-thread"]["execution"]
+        self.assertEqual(saved, {"model": "thread-model", "reasoning_effort": "ultra"})
+        self.assertEqual(factory.call_args.kwargs["thread"]["execution"], saved)
+        request_id = json.loads(raw)["request_id"]
+        self.invoke("wait", "--request", request_id)
+        config.configure_execution(self.root, "codex", "worker", model="later-model", reasoning_effort="low")
+        with patch.object(cli, "get_adapter", return_value=self.adapter) as factory:
+            code, _, error = self.invoke("send", "--to", "codex:fake-thread", "--text", "later", "--no-wait")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(factory.call_args.kwargs["thread"]["execution"], saved)
+
+    def test_new_captures_transport_resolved_native_defaults(self):
+        self.adapter.execution_settings = {"model": "native-model", "reasoning_effort": "ultra"}
+        code, _, error = self.invoke_new()
+        self.assertEqual(code, 0, error)
+        self.assertEqual(self.state.threads()["codex:fake-thread"]["execution"], self.adapter.execution_settings)
+
+    def test_send_override_persists_only_after_unambiguous_acceptance(self):
+        original = {"model": "old", "reasoning_effort": "high"}
+        self.state.register_thread({"handle": "codex:worker", "agent": "codex", "id": "worker",
+                                    "name": "old name", "role": "worker", "execution": original})
+        self.adapter.delivery = {"accepted": False, "returncode": 1}
+        code, _, _ = self.invoke("send", "--to", "codex:worker", "--text", "task",
+                                  "--model", "new", "--reasoning-effort", "ultra", "--no-wait")
+        self.assertEqual(code, 4)
+        self.assertEqual(self.state.threads()["codex:worker"]["execution"], original)
+        self.adapter.delivery = {"accepted": True}
+
+        def deliver(thread, mail):
+            self.state.register_thread({"handle": "codex:worker", "name": "edited during delivery"})
+            return self.adapter.delivery
+
+        with patch.object(self.adapter, "deliver", side_effect=deliver):
+            code, _, error = self.invoke("send", "--to", "codex:worker", "--text", "task",
+                                          "--model", "new", "--reasoning-effort", "ultra", "--no-wait")
+        self.assertEqual(code, 0, error)
+        current = self.state.threads()["codex:worker"]
+        self.assertEqual(current["execution"], {"model": "new", "reasoning_effort": "ultra"})
+        self.assertEqual(current["name"], "edited during delivery")
+
+    def test_unknown_send_override_does_not_replace_saved_execution(self):
+        original = {"model": "old", "reasoning_effort": "high"}
+        self.state.register_thread({"handle": "codex:worker", "agent": "codex", "execution": original})
+        self.adapter.delivery = {"accepted": False, "unknown": True}
+        code, _, _ = self.invoke("send", "--to", "codex:worker", "--text", "task",
+                                  "--reasoning-effort", "ultra", "--no-wait")
+        self.assertEqual(code, 4)
+        self.assertEqual(self.state.threads()["codex:worker"]["execution"], original)
+        self.assertEqual(self.state.requests()[0]["execution"]["reasoning_effort"], "ultra")
+
+    def test_unknown_override_confirmed_by_wait_is_used_on_next_send(self):
+        original = {"model": "old", "reasoning_effort": "high"}
+        self.state.register_thread({"handle": "codex:worker", "agent": "codex", "execution": original})
+        self.adapter.delivery = {"accepted": False, "unknown": True}
+        self.invoke("send", "--to", "codex:worker", "--text", "task",
+                    "--reasoning-effort", "ultra", "--no-wait")
+        request = self.state.requests()[0]
+        self.assertEqual(self.invoke("wait", "--request", request["id"])[0], 0)
+        self.adapter.delivery = {"accepted": True}
+        with patch.object(cli, "get_adapter", return_value=self.adapter) as factory:
+            code, _, error = self.invoke("send", "--to", "codex:worker", "--text", "next", "--no-wait")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(factory.call_args.kwargs["thread"]["execution"],
+                         {"model": "old", "reasoning_effort": "ultra"})
+
+    def test_delayed_sender_response_cannot_rollback_later_execution(self):
+        later = {"model": "later", "reasoning_effort": "low"}
+
+        def deliver_and_complete(thread, mail):
+            request = self.state.load_request(mail["request_id"])
+            cli.finish_request(self.state, request, self.adapter.result)
+            self.state.register_thread({"handle": request["handle"], "execution": later,
+                                        "execution_request": "f" * 32})
+            return {"accepted": True}
+
+        with patch.object(self.adapter, "deliver", side_effect=deliver_and_complete):
+            code, _, error = self.invoke("send", "--to", "codex:worker", "--text", "task",
+                                          "--model", "first", "--reasoning-effort", "ultra", "--no-wait")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(self.state.threads()["codex:worker"]["execution"], later)
+
+    def test_fast_completion_is_enriched_with_resolved_native_execution(self):
+        self.adapter.execution_settings = {"model": "native-model", "reasoning_effort": "ultra"}
+
+        def deliver_and_complete(thread, mail):
+            cli.finish_request(self.state, self.state.load_request(mail["request_id"]), self.adapter.result)
+            return {"accepted": False, "unknown": True}
+
+        with patch.object(self.adapter, "deliver", side_effect=deliver_and_complete):
+            code, _, error = self.invoke("send", "--to", "codex:worker", "--text", "task",
+                                          "--reasoning-effort", "ultra", "--no-wait")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(self.state.threads()["codex:worker"]["execution"], self.adapter.execution_settings)
+
+    def test_existing_antigravity_model_override_is_rejected_before_delivery(self):
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "config.json").write_text('{"agents":{"antigravity":{"enabled":true}}}', encoding="utf-8")
+        config.use_topology(self.root, "claude:lead", ["antigravity"])
+        code, _, error = self.invoke("send", "--to", "antigravity:existing", "--text", "task",
+                                      "--model", "pro", "--no-wait")
+        self.assertEqual(code, 4)
+        self.assertIn("only be selected when creating", error)
+        self.assertEqual(self.adapter.deliveries, [])
+        self.assertEqual(self.state.requests(), [])
+
+
+class AdapterSelectionTests(unittest.TestCase):
+    def test_codex_adapter_receives_role_and_saved_thread_execution(self):
+        values = {"agents": {"codex": {"executable": "codex.exe", "model": "shared",
+                                       "lead": {"model": "lead", "reasoning_effort": "high"},
+                                       "worker": {"reasoning_effort": "ultra"}}}}
+        with patch.object(cli, "CodexAdapter") as adapter:
+            cli.get_adapter("codex", values, role="lead", thread={"execution": {"reasoning_effort": "low"}})
+        adapter.assert_called_once_with(executable="codex.exe", model="lead", reasoning_effort="low")
+
+    def test_unavailable_control_is_not_silently_ignored(self):
+        for agent, setting in (("claude", {"model": "opus"}),
+                                ("antigravity", {"reasoning_effort": "ultra"})):
+            with self.subTest(agent=agent), self.assertRaises(ValueError):
+                cli.get_adapter(agent, {"agents": {agent: setting}})
+
 
 if __name__ == "__main__":
     unittest.main()

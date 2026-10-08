@@ -83,6 +83,38 @@ class IncrementalRolloutTests(Base):
         self.assertEqual(follower.poll()["text"], "최종 답")
 
 
+class ExecutionRecoveryTests(Base):
+    def test_unknown_delivery_confirmed_completion_persists_execution_once(self):
+        request = self.accepted()
+        self.state.register_thread({"handle": request["handle"], "agent": "codex", "name": "worker",
+                                    "execution": {"model": "old", "reasoning_effort": "high"}})
+        request.update(status="delivery_unknown", execution={"model": "selected", "reasoning_effort": "ultra"})
+        self.state.save_request(request)
+        completed = collector.finish_request(self.state, request, {"outcome": "completed", "text": "confirmed"})
+        self.assertEqual(self.state.threads()[request["handle"]]["execution"], request["execution"])
+        self.assertEqual(self.state.threads()[request["handle"]]["name"], "worker")
+        later = {"model": "later", "reasoning_effort": "low"}
+        self.state.register_thread({"handle": request["handle"], "execution": later})
+        collector.finish_request(self.state, completed, {"outcome": "completed", "text": "replayed"})
+        self.assertEqual(self.state.threads()[request["handle"]]["execution"], later)
+
+    def test_unknown_delivery_timeout_does_not_change_execution(self):
+        request = self.accepted()
+        original = {"model": "old", "reasoning_effort": "high"}
+        self.state.register_thread({"handle": request["handle"], "execution": original})
+        request.update(status="delivery_unknown", execution={"model": "selected", "reasoning_effort": "ultra"})
+        self.state.save_request(request)
+        collector.finish_request(self.state, request, {"outcome": "timeout"})
+        self.assertEqual(self.state.threads()[request["handle"]]["execution"], original)
+
+    def test_correlated_failed_turn_confirms_execution_selection(self):
+        request = self.accepted()
+        request.update(status="delivery_unknown", execution={"model": "selected", "reasoning_effort": "ultra"})
+        self.state.save_request(request)
+        collector.finish_request(self.state, request, {"outcome": "failed", "text": "aborted marked turn"})
+        self.assertEqual(self.state.threads()[request["handle"]]["execution"], request["execution"])
+
+
 class WatchCollectorTests(Base):
     def watch_once(self, recipient="claude:lead", **kwargs):
         poll = collector.WatchCollector(self.state, recipient, lambda agent: codex.CodexAdapter(),

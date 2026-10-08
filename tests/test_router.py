@@ -243,6 +243,33 @@ with open(sys.argv[1], 'a+b') as stream:
         self.assertEqual(router.record(self.state, current["reply_id"])["recipient"], "codex:old")
         self.assertEqual(self.adapter.deliver_to_lead.call_args.args[0], "old")
 
+    def test_original_recipient_uses_saved_lead_execution_after_topology_switch(self):
+        saved = {"handle": "codex:old", "agent": "codex", "role": "lead",
+                 "execution": {"model": "old-model", "reasoning_effort": "ultra"}}
+        self.state.register_thread(saved)
+        config.use_topology(self.root, "claude:new", ["antigravity"], home=self.home)
+        config.configure_execution(self.root, "codex", "lead", model="new-model",
+                                    reasoning_effort="low", home=self.home)
+        mail = self.mail("codex:old")
+        with patch.object(cli, "get_adapter", return_value=self.adapter) as factory:
+            result = router.route(self.state, mail)
+        self.assertEqual(result["status"], "delivered")
+        self.assertEqual(factory.call_args.kwargs, {"role": "lead", "thread": saved})
+        self.assertEqual(self.adapter.deliver_to_lead.call_args.args[0], "old")
+
+    def test_watch_result_delivery_does_not_use_worker_factory(self):
+        saved = {"handle": "codex:old", "agent": "codex", "role": "lead",
+                 "execution": {"model": "lead-model", "reasoning_effort": "ultra"}}
+        self.state.register_thread(saved)
+        mail = self.mail("codex:old")
+        worker_factory = Mock(side_effect=AssertionError("worker factory used for Lead"))
+        watch = collector.WatchCollector(self.state, "codex:old", worker_factory)
+        with patch.object(cli, "get_adapter", return_value=self.adapter) as factory:
+            watch.poll()
+        self.assertEqual(router.record(self.state, mail["id"])["status"], "delivered")
+        worker_factory.assert_not_called()
+        self.assertEqual(factory.call_args.kwargs, {"role": "lead", "thread": saved})
+
     def test_acknowledged_result_is_never_injected(self):
         mail = self.mail()
         inbox.acknowledge(self.state.path / "inbox", mail["id"], mail["recipient"])

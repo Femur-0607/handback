@@ -1,8 +1,8 @@
 """Compact Windows taskbar status widget with an optional expanded panel.
 
-It never routes or changes topology. Display preferences live in its own
-dashboard.json; the only relay-state writes are user-confirmed actions:
-acknowledging a project's results and moving a project's state aside.
+It never routes or changes agent combinations. Display preferences live in
+dashboard.json; project actions acknowledge results, move state aside, or save
+explicitly selected model and reasoning defaults.
 """
 
 from datetime import datetime, timezone
@@ -18,7 +18,7 @@ import sys
 import tempfile
 import time
 
-from . import inbox
+from . import config, inbox
 from .collector import OPEN_STATES
 from .state import atomic_json, home_lock, state_home
 
@@ -42,6 +42,19 @@ def _read(path):
 def agent_name(handle):
     agent = str(handle).partition(":")[0]
     return AGENT_NAME.get(agent, agent or "?")
+
+
+def execution_targets(data):
+    """Role defaults are separate even when an agent appears in both roles."""
+    targets = []
+    lead = data.get("lead", "").partition(":")[0]
+    if lead:
+        targets.append({"agent": lead, "role": "lead", "label": "리드 · " + agent_name(lead),
+                        "enabled": lead in ("codex", "antigravity")})
+    for worker in data.get("workers", []):
+        targets.append({"agent": worker, "role": "worker", "label": "워커 · " + agent_name(worker),
+                        "enabled": worker in ("codex", "antigravity")})
+    return targets
 
 
 # Only schemes and IDs verified for relay-native conversation handles belong here.
@@ -1186,6 +1199,12 @@ class Strip:
         prefs = load_prefs(self.home)
         items = []
         if project:
+            data = next((row for row in self._rows if row["root"] == project), {})
+            execution = [{"label": target["label"], "enabled": target["enabled"],
+                          "tooltip": "Claude 앱에서 직접 설정합니다" if not target["enabled"] else "",
+                          "command": lambda target=target: self._execution_settings(
+                              project, target["agent"], target["role"])}
+                         for target in execution_targets(data)]
             items.extend([
                 {"label": "위로 올리기", "command": lambda: self._save(move(prefs, self.order, project, -1))},
                 {"label": "아래로 내리기", "command": lambda: self._save(move(prefs, self.order, project, 1))},
@@ -1195,6 +1214,8 @@ class Strip:
                  "enabled": bool(self.unread_counts.get(project, 0)),
                  "command": lambda: self._acknowledge(project)},
                 {"label": "handback 등록 해제…", "command": lambda: self._release_project(project)}, None])
+            if execution:
+                items.extend([{"label": "모델·추론 설정 ▶", "children": execution}, None])
         settings = [{"label": "표시 줄 수", "enabled": False}]
         for count, label in ((2, "2줄"), (3, "3줄"), (0, "전부")):
             settings.append({"label": ("✓ " if prefs["max_rows"] == count else "    ") + label,
@@ -1230,6 +1251,81 @@ class Strip:
         button.bind("<Leave>", lambda event: button.configure(bg="#2b2b2b"))
         button.bind("<Return>", lambda event: button.invoke())
         return button
+
+    def _execution_settings(self, project, agent, role):
+        self._close_menu()
+        previous = getattr(self, "_execution_window", None)
+        if previous is not None and previous.winfo_exists():
+            previous.destroy()
+        try:
+            values = config.resolve(project, home=self.home, validate=False)["values"]
+        except (OSError, ValueError, TimeoutError) as error:
+            self._dialog("설정 읽기 실패", str(error))
+            return
+        settings = values.get("agents", {}).get(agent, {})
+        selected = settings.get(role, {})
+        tk = self.tk
+        window = tk.Toplevel(self.root)
+        self._execution_window = window
+        window.withdraw()
+        window.title(f"{self.names.get(project, Path(project).name)} · 모델·추론 설정")
+        window.configure(bg=self.BG)
+        window.resizable(False, False)
+        window.attributes("-topmost", True)
+        window.transient(self.root)
+        frame = tk.Frame(window, bg=self.BG, padx=18, pady=16)
+        frame.pack(fill="both", expand=True)
+        role_label = "리드" if role == "lead" else "워커"
+        tk.Label(frame, text=f"{role_label} · {agent_name(agent)}", bg=self.BG, fg=self.YELLOW,
+                 font=("Segoe UI Semibold", 11)).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        entries = {}
+        fields = [("model", "모델 ID")]
+        if agent == "codex":
+            fields.append(("reasoning_effort", "추론 강도"))
+        for row, (key, label) in enumerate(fields, 1):
+            tk.Label(frame, text=label, bg=self.BG, fg=self.FG,
+                     font=self.font).grid(row=row, column=0, sticky="w", padx=(0, 14), pady=6)
+            entry = tk.Entry(frame, width=34, bg="#2b2b2b", fg=self.FG,
+                             insertbackground=self.FG, relief="flat", font=self.font,
+                             highlightthickness=1, highlightbackground="#555555", highlightcolor=self.YELLOW)
+            entry.grid(row=row, column=1, sticky="ew", pady=6, ipady=5)
+            entry.insert(0, selected.get(key) or "")
+            entries[key] = entry
+        notes = "빈 값은 공통 설정·앱 기본값을 상속합니다.\n새 대화의 기본값으로 사용하며, 기존 대화는 저장된 선택값을 유지합니다."
+        if agent == "codex":
+            notes += "\n추론 강도는 선택한 모델이 지원하는 값을 입력합니다(예: ultra)."
+        else:
+            notes += "\nAntigravity 모델은 대화의 첫 생성 시 적용됩니다."
+        tk.Label(frame, text=notes, bg=self.BG, fg=self.DIM, font=self.font, wraplength=430,
+                 justify="left").grid(row=len(fields) + 1, column=0, columnspan=2, sticky="w", pady=(12, 4))
+        error_text = tk.StringVar(window)
+        tk.Label(frame, textvariable=error_text, bg=self.BG, fg="#f28b82", font=self.font,
+                 wraplength=430, justify="left").grid(row=len(fields) + 2, column=0, columnspan=2, sticky="w")
+        footer = tk.Frame(frame, bg=self.BG)
+        footer.grid(row=len(fields) + 3, column=0, columnspan=2, sticky="e", pady=(12, 0))
+
+        def save():
+            requested = {key: entry.get().strip() or None for key, entry in entries.items()}
+            try:
+                config.configure_execution(project, agent, role, home=self.home, **requested)
+            except (OSError, ValueError, TimeoutError) as error:
+                error_text.set(str(error))
+                return
+            window.destroy()
+            self.refresh(reschedule=False)
+
+        self._button(footer, "저장", save).pack(side="right", padx=(8, 0))
+        self._button(footer, "취소", window.destroy).pack(side="right")
+        window.bind("<Escape>", lambda event: window.destroy())
+        window.bind("<Return>", lambda event: save())
+        window.update_idletasks()
+        x, y, width, height = popup_position(self.root.winfo_rootx(), self.root.winfo_rooty(),
+                                           window.winfo_reqwidth(), window.winfo_reqheight(),
+                                           _monitor_area(self.root, self.root.winfo_rootx(), self.root.winfo_rooty()))
+        window.geometry(f"{width}x{height}+{x}+{y}")
+        _dark_titlebar(window)
+        window.deiconify()
+        entries["model"].focus_set()
 
     def _dialog(self, title, message, parent=None, confirm=False):
         self.tooltip.hide()

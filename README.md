@@ -189,6 +189,21 @@ For automatic results in a Claude conversation, have the Lead run `inbox watch` 
 
 For Antigravity, register **your working project** in its app, enable its adapter, and install its relay hooks before selecting it. Follow the [Antigravity setup](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md#optional-antigravity-setup); the Codex-only test above does not configure that combination.
 
+## Choose models and reasoning for each role
+
+Codex Lead and worker defaults can be set separately for each project. The dashboard exposes the current combination's settings from a project row's context menu → **모델·추론 설정**. From a terminal:
+
+```powershell
+handback configure --root "<absolute-project-path>" --agent codex --role lead --model "<model-id>" --reasoning-effort ultra
+handback configure --root "<absolute-project-path>" --agent codex --role worker --model "<model-id>" --reasoning-effort high
+```
+
+These defaults apply to new relay-created conversations. `new --model ... --reasoning-effort ...` overrides the selected role for one new conversation; Codex `send` accepts the same options and records the selection for subsequent relay turns. The native settings are persisted before queueing; changing the actual next turn of a conversation already loaded in the desktop app remains unverified because the app can retain runtime settings. Existing saved conversation settings take precedence over later role-default changes. Use `--clear-model` or `--clear-reasoning-effort` with `configure` to remove that role's override and inherit the shared agent setting or Codex's native configuration.
+
+Role settings are saved outside the repository in project state. Shared defaults can also be set in `<state-home>/config.json` or project `.handback.json` using `agents.codex.model` and `agents.codex.reasoning_effort`; role overrides use `agents.codex.lead` and `agents.codex.worker` objects with the same fields. Relay command options take precedence over saved conversation settings, followed by role defaults, shared defaults, and native Codex configuration. Recognized effort values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; availability depends on the selected model and installed Codex build.
+
+Antigravity workers support `--model flash_lite|flash|pro` for new conversations, including `configure --agent antigravity --role worker --model pro`. Its current agentapi interface exposes no reasoning option or model change for an existing conversation. Claude Lead settings remain in the Claude app. Settings for user messages entered directly in an app are controlled by that app; relay options describe relay creation and delivery.
+
 ## Delivery and recovery
 
 Submission, completion, Lead delivery, and ACK are separate events. An asynchronous submission returning success means the request was accepted. It does not mean the task finished.

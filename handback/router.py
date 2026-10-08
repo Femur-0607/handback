@@ -75,7 +75,10 @@ def route(state, mail, *, explicit=False, adapter_for=None):
                 from .cli import get_adapter
                 from .config import resolve
                 values = resolve(state.root, home=state.home, validate=False)["values"]
-                adapter_for = lambda name: get_adapter(name, values)
+                # A queued result belongs to its original recipient, even after
+                # topology switches to a different Lead or different defaults.
+                thread = state.threads().get(mail["recipient"])
+                adapter_for = lambda name: get_adapter(name, values, role="lead", thread=thread)
             entry.update(status="delivery_unknown", attempts=entry["attempts"] + 1)
             atomic_json(state._path(path), entry)
             try:

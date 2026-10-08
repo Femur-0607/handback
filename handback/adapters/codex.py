@@ -134,25 +134,35 @@ class AppServer:
                 return reply["result"]
 
     def initialize(self):
-        self.call("initialize", {"clientInfo": {"name": "handback", "title": "handback", "version": "1"}})
+        self.call("initialize", {"clientInfo": {"name": "handback", "title": "handback", "version": "1"},
+                                 "capabilities": {"experimentalApi": True}})
         self.call("initialized", {}, notify=True)
 
     def close(self):
+        graceful = True
         try:
             if self.proc.stdin:
                 self.proc.stdin.close()
         except (OSError, ValueError):
             pass
-        if self.proc.poll() is None:
-            self.proc.terminate()
+        exit_code = self.proc.poll()
+        if exit_code is None:
+            # EOF lets the server flush asynchronous thread settings to the
+            # native index. Immediate terminate loses the first turn's effort.
             try:
-                self.proc.wait(timeout=5)
+                exit_code = self.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=5)
+                graceful = False
+                self.proc.terminate()
+                try:
+                    exit_code = self.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    exit_code = self.proc.wait(timeout=5)
         self._reader.join(timeout=1)
         if self.proc.stdout:
             self.proc.stdout.close()
+        return graceful and exit_code == 0
 
 
 def open_in_app(thread_id):
@@ -346,8 +356,55 @@ def wait_reply(thread, marker, return_file, timeout):
 class CodexAdapter(BaseAdapter):
     name = "codex"
 
-    def __init__(self, executable=None):
+    def __init__(self, executable=None, model=None, reasoning_effort=None):
         self.executable = executable
+        for label, value in (("model", model), ("reasoning_effort", reasoning_effort)):
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"{label} must be a nonempty string or None")
+        self.model = model
+        self.reasoning_effort = reasoning_effort
+        self.execution_settings = {key: value for key, value in
+                                   (("model", model), ("reasoning_effort", reasoning_effort))
+                                   if value is not None}
+        self._thread_settings = {}
+
+    def _resolve_settings(self, server, cwd, existing=None):
+        """Resolve installed Codex settings, including cwd-specific config layers.
+
+        Native thread settings take precedence over today's defaults when sending
+        to an existing conversation. Catalog values are dynamic; in particular,
+        neither the supported efforts nor the model's default is hard-coded.
+        """
+        existing = existing or {}
+        config = server.call("config/read", {"cwd": os.path.abspath(cwd), "includeLayers": False})["config"]
+        model = self.model or existing.get("model") or config.get("model")
+        effort = self.reasoning_effort or existing.get("reasoningEffort") or config.get("model_reasoning_effort")
+        models = []
+        cursor = None
+        seen_cursors = set()
+        while True:
+            params = {"limit": 100, "includeHidden": True}
+            if cursor is not None:
+                params["cursor"] = cursor
+            page = server.call("model/list", params)
+            models.extend(page["data"])
+            cursor = page.get("nextCursor")
+            if not cursor:
+                break
+            if cursor in seen_cursors:
+                raise AdapterError("Codex model/list repeated a pagination cursor")
+            seen_cursors.add(cursor)
+        selected = next((item for item in models if model in (item.get("id"), item.get("model"))), None) if model else \
+            next((item for item in models if item.get("isDefault")), None)
+        if selected is None:
+            raise AdapterError(f"Codex model is not advertised by the installed client: {model or '(default)'}")
+        model = model or selected["model"]
+        effort = effort or selected.get("defaultReasoningEffort")
+        supported = [item["reasoningEffort"] for item in selected.get("supportedReasoningEfforts", [])]
+        if not effort or effort not in supported:
+            raise AdapterError(f"Codex model {model} does not support reasoning effort {effort!r}; "
+                               f"supported: {', '.join(supported) or '(none)'}")
+        return {"model": model, "reasoning_effort": effort}
 
     def detect(self):
         info = {"agent": self.name, "installed": False, "executable": None, "version": None,
@@ -372,10 +429,24 @@ class CodexAdapter(BaseAdapter):
         server = AppServer(resolve_codex(self.executable), str(root))
         try:
             server.initialize()
-            thread_id = server.call("thread/start", params)["thread"]["id"]
+            settings = self._resolve_settings(server, root)
+            params["model"] = settings["model"]
+            params.setdefault("config", {})["model_reasoning_effort"] = settings["reasoning_effort"]
+            started = server.call("thread/start", params)
+            thread_id = started["thread"]["id"]
+            # Prefer the server's effective settings (it may normalize a model alias).
+            self.execution_settings = {"model": started.get("model") or settings["model"],
+                                       "reasoning_effort": started.get("reasoningEffort") or settings["reasoning_effort"]}
+            self._thread_settings[thread_id] = dict(self.execution_settings)
             server.call("thread/name/set", {"threadId": thread_id, "name": name})
+            # thread/start reports the chosen settings, but naming a new thread
+            # alone does not persist its model/effort in the native thread index.
+            server.call("thread/settings/update", {"threadId": thread_id,
+                        "model": self.execution_settings["model"], "effort": self.execution_settings["reasoning_effort"]})
         finally:
-            server.close()
+            clean_shutdown = server.close()
+        if clean_shutdown is False:
+            raise AdapterError(f"Codex app-server did not exit cleanly; settings persistence for thread {thread_id} is unconfirmed")
         if open_app:
             open_in_app(thread_id)
         return thread_id
@@ -386,8 +457,30 @@ class CodexAdapter(BaseAdapter):
             raise ValueError("envelope.body must contain the marked message text")
         thread = str(thread).removeprefix("codex:")
         try:
-            result = subprocess.run([resolve_codex(self.executable), "queue", "--thread", thread,
-                                     "--message", body], capture_output=True, text=True, encoding="utf-8",
+            executable = resolve_codex(self.executable)
+            settings = self._thread_settings.get(thread)
+            if settings is None:
+                server = AppServer(executable, os.getcwd())
+                try:
+                    server.initialize()
+                    existing = server.call("thread/read", {"threadId": thread, "includeTurns": False})["thread"]
+                    settings = self._resolve_settings(server, existing.get("cwd") or os.getcwd(), existing)
+                    if existing.get("model") != settings["model"] or existing.get("reasoningEffort") != settings["reasoning_effort"]:
+                        # A metadata-only resume restores this conversation's
+                        # saved permissions; no sandbox/approval override is sent.
+                        server.call("thread/resume", {"threadId": thread, "excludeTurns": True})
+                        server.call("thread/settings/update", {"threadId": thread,
+                                    "model": settings["model"], "effort": settings["reasoning_effort"]})
+                finally:
+                    clean_shutdown = server.close()
+                if clean_shutdown is False:
+                    raise AdapterError("Codex app-server did not exit cleanly; settings persistence was not confirmed before queueing")
+                self._thread_settings[thread] = dict(settings)
+            self.execution_settings = dict(settings)
+            # queue's shared --model/-c options are ignored by thread/queue/add.
+            # Keep its usual desktop route after persisting native settings.
+            result = subprocess.run([executable, "queue", "--thread", thread, "--message", body],
+                                    capture_output=True, text=True, encoding="utf-8",
                                     errors="replace", timeout=30, **_process_options())
             return {"accepted": result.returncode == 0, "stdout": result.stdout, "stderr": result.stderr,
                     "returncode": result.returncode}
@@ -395,7 +488,7 @@ class CodexAdapter(BaseAdapter):
             # Queue acceptance is ambiguous. The caller must keep ownership and must not retry.
             return {"accepted": False, "unknown": True, "stdout": "", "stderr": "codex queue timed out; delivery is unknown; do not re-send",
                     "returncode": None}
-        except OSError as exc:
+        except (AdapterError, OSError) as exc:
             return {"accepted": False, "stdout": "", "stderr": str(exc), "returncode": None}
 
     def deliver_to_lead(self, thread, text, state=None):

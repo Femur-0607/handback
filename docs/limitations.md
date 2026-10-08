@@ -141,3 +141,16 @@ handback inbox ack --root "<absolute-project-path>" --for "claude:<old-session-i
 
 - **Operating tip:** ACK results after review to reduce unread bodies retained in the snapshot, and close the optional dashboard when its refresh cost is undesirable; relay delegation does not require it. The inbox scan still reads stored envelopes before filtering ACKed messages, so ACK does not remove historical read/scan cost.
 - **Current feature:** `dashboard --once` produces one snapshot instead of a continuously refreshing GUI. The [README measurements](../README.md#optional-dashboard) describe specific short checks, not a memory cap or long-duration stability guarantee.
+
+## 10. Model and reasoning controls depend on the agent
+
+**Symptom:** A role default does not change an existing conversation, or an agent rejects a model/reasoning choice.
+
+**Cause:** Conversation selections are retained ahead of role defaults. Codex native settings are stored before queueing, but a desktop session that already loaded the conversation can retain its runtime configuration. The available controls also differ between agents: Antigravity's current agentapi supports a model only for `new-conversation`. Claude Lead settings are owned by Claude.
+
+**Fix or workaround:**
+
+- **Current feature:** Configure new Codex Lead defaults using `configure --root "<absolute-project-path>" --agent codex --role lead --model "<model-id>" --reasoning-effort ultra`; select `--role worker` for worker defaults. `--clear-model` and `--clear-reasoning-effort` restore inheritance for that role. Existing saved conversation selections take precedence; an explicit Codex `send` selection updates the stored native and relay settings.
+- **Operating tip:** Choose a model and effort supported by the installed Codex build. Recognizing `ultra` as a setting does not guarantee every model supports it. Relay settings cover relay creation and delivery; user turns entered directly in the app follow the app's own settings.
+- **Current feature:** Select `flash_lite`, `flash`, or `pro` before creating an Antigravity worker. Reasoning selection and model changes on an existing Antigravity conversation are rejected because the current delivery interface cannot apply them. Change Claude Lead settings in Claude.
+- **Verification limit:** Automated tests cover selection, precedence, persistence, and transport parameters. Isolated app-server checks confirmed native settings restoration across processes without executing a model turn. Actual next-turn application after changing settings on a conversation already loaded by the desktop app remains unverified; the checks also do not prove live model effort or direct app-entered turn behavior. The [settings verification record](verification/2026-10-09-role-model-settings.md) documents this scope; the earlier live-integration record predates these controls.
