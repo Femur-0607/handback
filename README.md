@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/assets/handback-logo.png" alt="handback" width="420"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/Femur-0607/handback/main/docs/assets/handback-logo.png" alt="handback" width="420"></p>
 
 https://github.com/user-attachments/assets/b9927ffd-ec73-4980-a128-65842894e269
 
@@ -10,7 +10,7 @@ A local tool for handing work between coding-agent apps and bringing the results
 
 **Experimental · Windows verified · Python 3.10+ · One computer, one OS user**
 
-[First task](#try-your-first-task) · [Use-your-own-project guide](#use-it-on-your-own-project) · [Detailed setup](docs/quickstart.md) · [한국어 사용 설명서](docs/usage.ko.md)
+[First task](#try-your-first-task) · [Use-your-own-project guide](#use-it-on-your-own-project) · [Detailed setup](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) · [한국어 사용 설명서](https://github.com/Femur-0607/handback/blob/main/docs/usage.ko.md)
 
 ## What is handback?
 
@@ -54,7 +54,7 @@ You can also run these steps from a terminal. The first example below uses termi
 
 Start with **Claude Lead → Codex worker**. Claude workers, Codex Lead → Codex worker, Antigravity Lead, and automatic quota fallback are unsupported.
 
-Windows has live integration coverage. macOS and Linux are unverified. App queue, transcript, and hook contracts can change with updates; see the [verification summary](docs/verification/README.md) for tested behavior and remaining gaps.
+Windows has live integration coverage. macOS and Linux are unverified. App queue, transcript, and hook contracts can change with updates; see the [verification summary](https://github.com/Femur-0607/handback/blob/main/docs/verification/README.md) for tested behavior and remaining gaps.
 
 ## Install
 
@@ -113,7 +113,7 @@ python "$relayScript" doctor --root "$relayRoot"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -DryRun
 ```
 
-If you downloaded an archive, open its extracted `handback` folder in PowerShell and continue from `$relayRoot = ...`. No `pip install` is required. Review the diagnostic output and planned installation paths. `doctor` checks app availability; it does not prove a task can complete. See [setup and troubleshooting](docs/quickstart.md) if it reports a missing app or an existing-state warning.
+If you downloaded an archive, open its extracted `handback` folder in PowerShell and continue from `$relayRoot = ...`. No `pip install` is required. Review the diagnostic output and planned installation paths. `doctor` checks app availability; it does not prove a task can complete. See [setup and troubleshooting](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) if it reports a missing app or an existing-state warning.
 
 ### 2. Install the skills and select the Lead inbox
 
@@ -185,9 +185,9 @@ Collect its result, review the findings, summarize them here, and ACK the result
 
 For terminal commands, use `--cwd "$projectRoot"` when creating a worker and `--root "$projectRoot"` for topology, status, waiting, and inbox commands. The worker works on that project. Use one worker conversation per unit of work and run units sequentially when they share a checkout. Send corrections to the same worker only after its previous request finishes.
 
-For automatic results in a Claude conversation, have the Lead run `inbox watch` through its **Monitor** tool. A watcher in an ordinary terminal prints only to that terminal. Started with `--idle-exit 1200`, the watcher stops after 20 idle minutes; re-arm Monitor only while requests are open. If Monitor is unavailable, use explicit `wait` and `inbox list` commands. Fresh skill auto-loading and global recovery hook loading remain incompletely verified; the [detailed setup guide](docs/quickstart.md) covers these limits and the exact watcher command.
+For automatic results in a Claude conversation, have the Lead run `inbox watch` through its **Monitor** tool. A watcher in an ordinary terminal prints only to that terminal. Started with `--idle-exit 1200`, the watcher stops after 20 idle minutes; re-arm Monitor only while requests are open. If Monitor is unavailable, use explicit `wait` and `inbox list` commands. Fresh skill auto-loading and global recovery hook loading remain incompletely verified; the [detailed setup guide](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) covers these limits and the exact watcher command.
 
-For Antigravity, register **your working project** in its app, enable its adapter, and install its relay hooks before selecting it. Follow the [Antigravity setup](docs/quickstart.md#optional-antigravity-setup); the Codex-only test above does not configure that combination.
+For Antigravity, register **your working project** in its app, enable its adapter, and install its relay hooks before selecting it. Follow the [Antigravity setup](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md#optional-antigravity-setup); the Codex-only test above does not configure that combination.
 
 ## Delivery and recovery
 
@@ -208,7 +208,7 @@ Use the same project, Lead inbox, and state home as the original request. For th
 
 `doctor` prints OK/WARN/FAIL checks and one next step for each warning/failure (exit 5 for FAIL, 0 otherwise). `doctor --json` preserves the original JSON interface; `explain --json` provides the timeline as JSON. For an issue, copy the redacted block from `doctor --report`. `status --stats --days 30` summarizes local request outcomes, latency, additional delivery attempts, and unACKed results without telemetry. Collection timeouts, recovery via `wait`, and explicit redeliveries are not independently recorded and cannot be counted reliably.
 
-The [detailed guide](docs/quickstart.md) covers timeouts, replay, custom state homes, cleanup, and uninstall; the [Korean manual](docs/usage.ko.md) describes the full command set and adapter limits.
+The [detailed guide](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) covers timeouts, replay, custom state homes, cleanup, and uninstall; the [Korean manual](https://github.com/Femur-0607/handback/blob/main/docs/usage.ko.md) describes the full command set and adapter limits.
 
 ## Optional dashboard
 
@@ -227,7 +227,7 @@ The optional dashboard was measured on **October 8, 2026**, using Windows, Pytho
 
 The large-inbox figure measures Python allocations, not total process memory, and timing can vary with concurrent filesystem activity. Refreshes scan stored history and load unread message bodies; showing fewer rows does not cap that work. Usage therefore depends on the amount of stored data and the environment. These short checks do not establish a memory limit or guarantee leak-free operation over hours or days.
 
-[Menu regression tests](tests/test_dashboard_gui.py) cover repeated menu creation, callback cleanup, current settings, and closing the dashboard. They use hidden Tk windows and skip when Tk or a display is unavailable.
+[Menu regression tests](https://github.com/Femur-0607/handback/blob/main/tests/test_dashboard_gui.py) cover repeated menu creation, callback cleanup, current settings, and closing the dashboard. They use hidden Tk windows and skip when Tk or a display is unavailable.
 
 </details>
 
@@ -237,7 +237,7 @@ The large-inbox figure measures Python allocations, not total process memory, an
 - Replacing the Lead preserves old requests' return addresses; explicitly read and ACK the old inbox.
 - Windows has live verification; operation is local to one computer and OS user, with restricted agent combinations.
 - App updates, uncertain delivery, and Monitor expiry require deliberate diagnostics and recovery; Antigravity cannot enforce read-only access.
-- Shared-checkout work should be sequential, and dashboard scan cost grows with history. See [known limitations and workarounds](docs/limitations.md) for details and commands.
+- Shared-checkout work should be sequential, and dashboard scan cost grows with history. See [known limitations and workarounds](https://github.com/Femur-0607/handback/blob/main/docs/limitations.md) for details and commands.
 
 ## Development
 
@@ -247,11 +247,11 @@ Implementation lives in `handback/`, the CLI entry point is `handback.py`, and t
 python -m unittest
 ```
 
-Unit tests use isolated fixtures. They do not establish compatibility with a current app build; live integration results are tracked separately in the [verification summary](docs/verification/README.md). See [Contributing](CONTRIBUTING.md) for test and bug-report requirements.
+Unit tests use isolated fixtures. They do not establish compatibility with a current app build; live integration results are tracked separately in the [verification summary](https://github.com/Femur-0607/handback/blob/main/docs/verification/README.md). See [Contributing](https://github.com/Femur-0607/handback/blob/main/CONTRIBUTING.md) for test and bug-report requirements.
 
 ## License
 
-[MIT](LICENSE). The license covers this repository's code; the agent applications are separately installed and retain their own licenses and terms.
+[MIT](https://github.com/Femur-0607/handback/blob/main/LICENSE). The license covers this repository's code; the agent applications are separately installed and retain their own licenses and terms.
 
 ## Migrating a previous local installation
 
