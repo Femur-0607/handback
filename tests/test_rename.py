@@ -59,6 +59,24 @@ class RenameTests(unittest.TestCase):
         self.assertEqual((target / 'config.json').read_bytes(), original)
         self.assertTrue((source / 'MOVED.json').exists())
 
+    def test_chained_moved_stores_do_not_warn_or_block(self):
+        msix = self.root / 'AppData/Local/Packages/Claude_x/LocalCache/Local/agent-relay'
+        old, target = self.root / '.agent-relay', self.root / '.handback'
+        msix.mkdir(parents=True)
+        (msix / 'projects').mkdir()
+        (msix / 'config.json').write_text('{}', encoding='utf-8')
+        quiet = contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO())
+        with patch.dict(os.environ, {'HANDBACK_HOME': str(old)}), quiet[0], quiet[1]:
+            self.assertEqual(cli.main(['migrate-state', '--from', str(msix)]), 0)
+        with patch.dict(os.environ, {'HANDBACK_HOME': str(target)}), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(['migrate-state', '--from', str(old)]), 0)
+        with patch.dict(os.environ, {'USERPROFILE': str(self.root)}, clear=True), \
+                patch.object(state.sys, 'platform', 'win32'):
+            self.assertEqual(state.state_home(), target)
+            self.assertEqual(state_transition.legacy_homes(), [])
+            state_transition.require_migrated_default()
+
     def test_legacy_project_policy_warns_and_current_wins(self):
         legacy = self.root / '.agent-relay.json'
         legacy.write_text('{"allowed_agents":["claude"]}')

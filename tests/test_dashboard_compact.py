@@ -1,13 +1,37 @@
 from types import SimpleNamespace
 import gc
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from handback import dashboard
 from tests.test_dashboard_gui import DashboardMenuTests
 
 
 class CompactPureTests(unittest.TestCase):
+    @unittest.skipUnless(dashboard.sys.platform == "win32", "Windows z-order")
+    def test_zorder_only_repairs_taskbar_occlusion_without_activation(self):
+        import ctypes
+        widget = Mock()
+        widget.winfo_id.return_value = 11
+        user = Mock()
+        user.GetAncestor.return_value = 12
+        user.FindWindowW.return_value = 20
+        with patch.object(ctypes.windll, "user32", user):
+            widget.winfo_ismapped.return_value = False
+            dashboard.keep_above_taskbar(widget)
+            user.GetAncestor.assert_not_called()
+            widget.winfo_ismapped.return_value = True
+            user.GetWindow.side_effect = [30, 20]
+            dashboard.keep_above_taskbar(widget)
+            user.SetWindowPos.assert_called_once_with(12, -1, 0, 0, 0, 0, 0x13)
+            user.SetWindowPos.reset_mock()
+            user.GetWindow.side_effect = [30, 0]
+            dashboard.keep_above_taskbar(widget)
+            user.SetWindowPos.assert_not_called()
+            user.FindWindowW.return_value = None
+            dashboard.keep_above_taskbar(widget)
+            user.SetWindowPos.assert_not_called()
+
     def test_palette_dominant_shade_light_contrast_and_fallback(self):
         choose = dashboard.compact_palette
         self.assertEqual(choose()["bg"], "#1c1c1c")
@@ -71,6 +95,31 @@ class CompactPureTests(unittest.TestCase):
 
 
 class CompactGuiTests(DashboardMenuTests):
+    @unittest.skipUnless(dashboard.sys.platform == "win32", "Windows z-order")
+    def test_zorder_timer_is_singleton_across_ticks_refresh_and_mode_switches(self):
+        dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
+        with patch.object(dashboard, "keep_above_taskbar") as repair:
+            self.strip.render([])
+            baseline = len(self.commands())
+            for _ in range(100):
+                timer = self.strip._zorder_timer
+                # Run the registered Tcl callback as the event loop would, then
+                # remove the original scheduled event before its deadline.
+                callback = self.root.tk.call("after", "info", timer)[0]
+                self.root.tk.call(callback)
+                self.root.after_cancel(timer)
+                self.strip._sync_zorder_timer()
+                self.assertEqual(len(self.commands()), baseline)
+                self.assertEqual(len(self.root.tk.call("after", "info")), 1)
+            self.assertEqual(repair.call_count, 101)
+            dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "mode": "panel"}, self.home)
+            self.strip.render([])
+            self.assertIsNone(self.strip._zorder_timer)
+            self.assertEqual(len(self.root.tk.call("after", "info")), 0)
+            dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
+            self.strip.render([])
+            self.assertIsNotNone(self.strip._zorder_timer)
+
     # Reuse fixture helpers, without inheriting the panel tests in discovery.
     def handles(self):
         # Earlier tests can leave Python cycles owning destroyed Tk interpreters.
@@ -203,7 +252,8 @@ class CompactGuiTests(DashboardMenuTests):
         with patch.object(dashboard, "snapshot", return_value=self.sample_rows()):
             self.strip.refresh()
         self.strip._toggle_panel()
-        self.assertEqual(len(self.root.tk.call("after", "info")), 2)
+        self.assertEqual(len(self.root.tk.call("after", "info")),
+                         3 if dashboard.sys.platform == "win32" else 2)
         self.root.destroy()
         self.assertEqual(len(self.root.tk.call("after", "info")), 0)
 

@@ -32,14 +32,25 @@ def legacy_homes():
         seen.add(canonical)
         # A lock file alone is not meaningful state. A MOVED source is retained
         # intentionally and must not block use of its destination.
-        try:
-            if moved_destination(candidate) == selected:
-                continue
-        except (ValueError, OSError):
-            pass  # A corrupt marker is not evidence that this state was migrated.
+        if _moved_to(candidate, selected):
+            continue
         if any((candidate / name).exists() for name in ("config.json", "projects", "hook-install")):
             result.append(canonical)
     return result
+
+
+def _moved_to(home, selected, limit=8):
+    """Follow MOVED receipts, e.g. MSIX store -> ~/.agent-relay -> selected home."""
+    for _ in range(limit):
+        try:
+            home = moved_destination(home)
+        except (ValueError, OSError):
+            return False  # A corrupt marker is not evidence that this state was migrated.
+        if home is None:
+            return False
+        if home == selected:
+            return True
+    return False
 
 
 def legacy_warnings():

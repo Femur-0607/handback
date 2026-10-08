@@ -25,6 +25,7 @@ from .state import atomic_json, home_lock, state_home
 
 AGENT_NAME = {"claude": "Claude", "codex": "Codex", "antigravity": "Antigravity"}
 REFRESH_MS = 3000
+TASKBAR_ZORDER_MS = 750
 DETAIL_LIMIT = 5
 DEFAULT_PREFS = {"max_rows": 3, "order": [], "hidden": [], "mode": "taskbar", "compact_x": None}
 
@@ -382,6 +383,38 @@ def taskbar_info():
                 "auto_hide": auto_hide, "notification_left": notification}
     except (AttributeError, OSError):
         return None
+
+
+def keep_above_taskbar(widget):
+    """Repair Explorer's topmost ordering without activating or repainting Tk."""
+    if sys.platform != "win32" or not widget.winfo_ismapped():
+        return
+    import ctypes
+    from ctypes import wintypes
+    user = ctypes.windll.user32
+    user.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user.GetAncestor.restype = wintypes.HWND
+    user.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user.FindWindowW.restype = wintypes.HWND
+    user.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+    user.GetWindow.restype = wintypes.HWND
+    user.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                 ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    user.SetWindowPos.restype = wintypes.BOOL
+    hwnd = user.GetAncestor(widget.winfo_id(), 2)  # GA_ROOT: Tk's native wrapper.
+    taskbar = user.FindWindowW("Shell_TrayWnd", None)  # Re-find after Explorer restarts.
+    if not hwnd or not taskbar:
+        return
+    above = user.GetWindow(hwnd, 3)  # GW_HWNDPREV
+    # Bound traversal in case Explorer changes the order while it is being read.
+    for _ in range(256):
+        if not above:
+            break
+        if above == taskbar:
+            # HWND_TOPMOST; NOMOVE | NOSIZE | NOACTIVATE. No hide/show or redraw.
+            user.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+            break
+        above = user.GetWindow(above, 3)
 
 
 def compact_geometry(info, area, width, height, x=None):
@@ -757,6 +790,7 @@ class Strip:
         self.panel_frame = None
         self._outside_timer = None
         self._refresh_timer = None
+        self._zorder_timer = None
         self._mouse_down = False
         self._start = None
         self._rows = []
@@ -803,11 +837,24 @@ class Strip:
 
     def _destroyed(self, event):
         if event.widget == self.root:
-            for name in ("_outside_timer", "_refresh_timer"):
+            for name in ("_outside_timer", "_refresh_timer", "_zorder_timer"):
                 timer = getattr(self, name)
                 if timer is not None:
                     self.root.after_cancel(timer)
                     setattr(self, name, None)
+
+    def _sync_zorder_timer(self):
+        if self.mode == "taskbar" and sys.platform == "win32":
+            if self._zorder_timer is None:
+                self._watch_zorder()
+        elif self._zorder_timer is not None:
+            self.root.after_cancel(self._zorder_timer)
+            self._zorder_timer = None
+
+    def _watch_zorder(self):
+        self._zorder_timer = None
+        keep_above_taskbar(self.root)
+        self._zorder_timer = self.root.after(TASKBAR_ZORDER_MS, self._watch_zorder)
 
     def _label(self, text, row, column, fg=None, font=None, padx=(0, 10), project=None):
         label = self.tk.Label(self.frame, text=text, bg=self.BG, fg=fg or self.FG,
@@ -844,6 +891,7 @@ class Strip:
             self._collapse_panel()
             self.mode = prefs["mode"]
             self.anchor = None
+        self._sync_zorder_timer()
         if self.mode == "panel":
             self.root.attributes("-alpha", 0.93)
             self.frame.configure(bg=self.BG, padx=10, pady=6, highlightthickness=1)
