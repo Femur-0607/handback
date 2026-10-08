@@ -569,13 +569,15 @@ def clamp_compact(x, y, width, height, bounds):
     return (max(left, min(x, right - width)), max(top, min(y, bottom - height)), width, height)
 
 
-def compact_drag_geometry(info, monitor, virtual, x, y, width, height, dpi=96):
+def compact_drag_geometry(info, monitor, virtual, x, y, width, height, dpi=96, *, from_dock=False):
     """Snap the free widget's near edge to a horizontal taskbar, including overlap."""
     threshold = max(1, round(20 * dpi / 96))
     if info and info["edge"] in (1, 3) and not info["auto_hide"]:
         left, top, right, bottom = info["rect"]
         edge = y + height if info["edge"] == 3 else y
-        distance = max(top - edge, edge - bottom, 0)
+        # A gesture starting docked measures the pull from its attachment, not
+        # from the free widget's bottom edge. Keep that reference for the gesture.
+        distance = abs(y - top) if from_dock else max(top - edge, edge - bottom, 0)
         if right > left and bottom > top and x + width > left and x < right and distance <= threshold:
             return True, compact_geometry(info, monitor, width, height, x)
     # Constrain to the target monitor too, so disconnected/gapped desktops cannot lose the widget.
@@ -985,6 +987,11 @@ class Strip:
         self._dragging = False
         self._dragged = False
         self._compact_position = None
+        self._compact_view_key = None
+        self._compact_style_key = None
+        self._compact_font_key = None
+        self._compact_geometry = None
+        self._drag_from_dock = False
         self._taskbar_hwnd = None
         self._mouse_down = False
         self._start = None
@@ -1098,6 +1105,7 @@ class Strip:
             self._collapse_panel()
             self.mode = prefs["mode"]
             self.anchor = None
+            self._compact_view_key = self._compact_style_key = self._compact_font_key = None
         if not self._dragging:
             self.docked = prefs["docked"]
         self._sync_zorder_timer()
@@ -1117,8 +1125,6 @@ class Strip:
 
     def _render_compact(self, rows, prefs):
         self._close_menu()
-        for child in self.frame.winfo_children():
-            child.destroy()
         self.names = {row["root"]: row["name"] for row in rows}
         self.unread_counts = {row["root"]: len(row["unread"]) for row in rows}
         shown, _ = arrange(rows, {**prefs, "max_rows": 0})
@@ -1151,24 +1157,66 @@ class Strip:
             "bg": self.BG, "fg": self.FG, "dim": self.DIM, "green": self.GREEN, "yellow": self.YELLOW}
         bg = palette["bg"]
         padding, gap = max(1, round(7 * dpi / 96)), max(1, round(3 * dpi / 96))
-        # Samples already include the taskbar's transparency; avoid blending them twice.
-        self.root.attributes("-alpha", 1.0)
-        self.root.configure(bg=bg)
-        self.frame.configure(bg=bg, padx=padding, pady=0 if self.docked else 2,
-                             highlightthickness=0 if self.docked else 1,
-                             highlightbackground=DarkMenu.HOVER)
-        self.frame.pack_configure(fill="both", expand=True)
         # Negative Tk font sizes are pixels; derive them from this window's actual DPI.
         pixels = max(6, round(8 * dpi / 72))
-        self.compact_metrics.configure(size=-pixels)
-        if self.docked and info and info["edge"] in (1, 3) and not info["auto_hide"]:
-            available = info["rect"][3] - info["rect"][1]
+        available = (info["rect"][3] - info["rect"][1] if self.docked and info
+                     and info["edge"] in (1, 3) and not info["auto_hide"] else None)
+        font_key = (dpi, available)
+        if font_key != self._compact_font_key:
+            self.compact_metrics.configure(size=-pixels)
+            self._compact_font_key = font_key
+        if available is not None:
+            pixels = abs(int(self.compact_metrics.cget("size")))
             while self.compact_metrics.metrics("linespace") * 2 > available and pixels > 5:
                 pixels -= 1
                 self.compact_metrics.configure(size=-pixels)
         measure = self.compact_metrics.measure
         name_width = measure("프로젝트 이름 프로젝트")
         lines = compact_lines(rows, prefs, name_width, measure)
+        view_key = (self.docked, dpi, self.compact_metrics.cget("size"), tuple(palette.items()),
+                    tuple((line["row"]["root"], line["name"], line["running"], line["unread"], line["more"],
+                           bool(conversation_targets(line["row"], "running")),
+                           bool(conversation_targets(line["row"], "unread"))) for line in lines))
+        if view_key != self._compact_view_key:
+            self._render_compact_items(lines, palette, padding, gap)
+            self.root.update_idletasks()
+            self._compact_view_key = view_key
+        width = max(self.frame.winfo_reqwidth(), name_width + sum(measure(text) for text in
+                    ("● 99", "✉ 99", "+99")) + 3 * gap + 2 * padding)
+        self._compact_free_height = max(self.frame.winfo_reqheight(),
+                                        self.compact_metrics.metrics("linespace") * 2 + 6)
+        if self.docked:
+            geometry = compact_geometry(info, area, width, self._compact_free_height, px)
+        else:
+            x = px if px is not None else area[2] - width - 8
+            y = py if py is not None else area[3] - self._compact_free_height - 8
+            geometry = clamp_compact(*clamp_compact(x, y, width, self._compact_free_height, virtual), area)
+        self._compact_position = geometry[:2]
+        self._compact_geometry = geometry
+        actual = (self.root.winfo_x(), self.root.winfo_y(), self.root.winfo_width(), self.root.winfo_height())
+        if actual != geometry:
+            x, y, width, height = geometry
+            self.root.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _compact_targets(self, project, kind):
+        row = next((row for row in self._rows if row["root"] == project), None)
+        return conversation_targets(row, kind) if row is not None else []
+
+    def _render_compact_items(self, lines, palette, padding, gap):
+        bg = palette["bg"]
+        style_key = (self.docked, bg, padding)
+        if style_key != self._compact_style_key:
+            if self.root.attributes("-alpha") != 1.0:
+                self.root.attributes("-alpha", 1.0)
+            if self.root.cget("bg") != bg:
+                self.root.configure(bg=bg)
+            self.frame.configure(bg=bg, padx=padding, pady=0 if self.docked else 2,
+                                 highlightthickness=0 if self.docked else 1,
+                                 highlightbackground=DarkMenu.HOVER)
+            self.frame.pack_configure(fill="both", expand=True)
+            self._compact_style_key = style_key
+        for child in self.frame.winfo_children():
+            child.destroy()
         if not lines:
             self.tk.Label(self.frame, text="handback · 대기", bg=bg, fg=palette["dim"],
                           font=self.compact_metrics, bd=0, padx=0).pack(anchor="w", expand=True)
@@ -1186,24 +1234,10 @@ class Strip:
                     targets = conversation_targets(line["row"], key)
                     if targets:
                         label.configure(cursor="hand2")
-                        label.bind("<Button-1>", lambda event, targets=targets: self._conversations(event, targets))
+                        label.bind("<Button-1>", lambda event, project=line["row"]["root"], kind=key:
+                                   self._conversations(event, self._compact_targets(project, kind)))
                         # A release after a status click must not toggle the panel.
                         label.bind("<ButtonRelease-1>", lambda event: "break")
-        self.root.update_idletasks()
-        width = max(self.frame.winfo_reqwidth(), name_width + sum(measure(text) for text in
-                    ("● 99", "✉ 99", "+99")) + 3 * gap + 2 * padding)
-        self._compact_free_height = max(self.frame.winfo_reqheight(),
-                                        self.compact_metrics.metrics("linespace") * 2 + 6)
-        if self.docked:
-            geometry = compact_geometry(info, area, width, self._compact_free_height, px)
-        else:
-            x = px if px is not None else area[2] - width - 8
-            y = py if py is not None else area[3] - self._compact_free_height - 8
-            geometry = clamp_compact(*clamp_compact(x, y, width, self._compact_free_height, virtual), area)
-        self._compact_position = geometry[:2]
-        self._compact_geometry = geometry
-        x, y, width, height = geometry
-        self.root.geometry(f"{width}x{height}+{x}+{y}")
 
     def _collapse_panel(self):
         if self._outside_timer is not None:
@@ -1702,6 +1736,7 @@ class Strip:
     def _press(self, event):
         self._start = (event.x_root, event.y_root, self.root.winfo_x(), self.root.winfo_y())
         self._dragged = False
+        self._drag_from_dock = self.docked
 
     def _drag(self, event):
         if self._start is None:
@@ -1717,7 +1752,7 @@ class Strip:
             area = _monitor_area(self.root, event.x_root, event.y_root, full=True)
             docked, geometry = compact_drag_geometry(info, area, _virtual_area(self.root),
                 wx + event.x_root - x0, wy + event.y_root - y0, self.root.winfo_width(),
-                self._compact_free_height, _window_dpi(self.root))
+                self._compact_free_height, _window_dpi(self.root), from_dock=self._drag_from_dock)
             changed = docked != self.docked
             self.docked = docked
             self._compact_position = geometry[:2]

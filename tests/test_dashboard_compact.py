@@ -118,6 +118,17 @@ class CompactPureTests(unittest.TestCase):
         self.assertFalse(snap(top, monitor, virtual, 700, 69, 250, 32)[0])
         self.assertFalse(snap({**info, "auto_hide": True}, monitor, virtual, 700, 1040, 250, 32)[0])
 
+    def test_pull_from_dock_uses_attachment_threshold_for_entire_gesture(self):
+        monitor = (0, 0, 1920, 1080)
+        info = {"rect": (0, 1008, 1920, 1080), "edge": 3, "auto_hide": False}
+        for dpi, threshold in ((96, 20), (144, 30), (192, 40)):
+            for pull, expected in ((threshold, True), (threshold+1, False),
+                                   (threshold+10, False), (threshold-1, True)):
+                docked, geometry = dashboard.compact_drag_geometry(info, monitor, monitor,
+                    700, 1008-pull, 299, 48, dpi, from_dock=True)
+                self.assertEqual(docked, expected)
+                self.assertEqual(geometry[1], 1008 if expected else 1008-pull)
+
     def test_virtual_clamp_and_tray_without_room(self):
         clamp = dashboard.clamp_compact
         self.assertEqual(clamp(-9999, -9999, 250, 32, (-1920, -200, 1920, 1080)),
@@ -258,6 +269,81 @@ class CompactGuiTests(DashboardMenuTests):
             with patch.object(self.root, "winfo_ismapped", return_value=True):
                 self.strip.render(self.sample_rows())
             self.assertEqual(sample.call_count, 3)
+
+    def test_unchanged_visuals_do_not_rebuild_style_font_or_geometry(self):
+        import copy
+        dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
+        rows = self.sample_rows()
+        with patch.object(dashboard, "taskbar_colors", return_value=[(32, 32, 32)]):
+            self.strip.render(rows)
+            self.root.deiconify()
+            self.root.update_idletasks()
+            children = self.strip.frame.winfo_children()
+            with patch.object(self.strip, "_render_compact_items", wraps=self.strip._render_compact_items) as items, \
+                    patch.object(self.root, "geometry", wraps=self.root.geometry) as geometry, \
+                    patch.object(self.root, "attributes", wraps=self.root.attributes) as alpha, \
+                    patch.object(self.root, "configure", wraps=self.root.configure) as root_style, \
+                    patch.object(self.strip.frame, "configure", wraps=self.strip.frame.configure) as frame_style, \
+                    patch.object(self.strip.compact_metrics, "configure", wraps=self.strip.compact_metrics.configure) as font:
+                for _ in range(50):
+                    rows = copy.deepcopy(rows)
+                    for row in rows:
+                        row["last_activity"] += 3
+                    self.strip.render(rows)
+                items.assert_not_called()
+                geometry.assert_not_called()
+                alpha.assert_not_called()
+                root_style.assert_not_called()
+                frame_style.assert_not_called()
+                font.assert_not_called()
+                self.assertEqual(self.strip.frame.winfo_children(), children)
+                rows[0]["running"].append({})
+                self.strip.render(rows)
+                items.assert_called_once()
+                geometry.assert_not_called()
+                alpha.assert_not_called()
+                root_style.assert_not_called()
+                frame_style.assert_not_called()
+                self.assertEqual(self.strip.frame.winfo_children()[0].winfo_children()[1].cget("text"), "● 2")
+
+    def test_retained_status_label_opens_current_conversation(self):
+        import copy
+        sampler = patch.object(dashboard, "taskbar_colors", return_value=[(32, 32, 32)])
+        sampler.start()
+        self.addCleanup(sampler.stop)
+        dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
+        rows = self.sample_rows()
+        rows[0]["running"][0]["handle"] = "codex:11111111-1111-1111-1111-111111111111"
+        self.strip.render(rows)
+        self.root.deiconify()
+        self.root.update()
+        status = self.strip.frame.winfo_children()[0].winfo_children()[1]
+        current = copy.deepcopy(rows)
+        current[0]["running"][0]["handle"] = "codex:22222222-2222-2222-2222-222222222222"
+        self.strip.render(current)
+        self.assertIs(status, self.strip.frame.winfo_children()[0].winfo_children()[1])
+        with patch.object(self.strip, "opener") as opener:
+            status.event_generate("<Button-1>")
+            status.event_generate("<ButtonRelease-1>")
+            self.root.update()
+            opener.assert_called_once_with("codex://threads/22222222-2222-2222-2222-222222222222")
+
+    def test_small_upward_dock_pull_undocks_and_returns_without_resnapping(self):
+        dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
+        self.strip.render(self.sample_rows())
+        self.root.deiconify()
+        self.root.update_idletasks()
+        x0, y0 = self.root.winfo_x()+10, self.root.winfo_y()+10
+        origin_y = self.root.winfo_y()
+        threshold = round(20 * dashboard._window_dpi(self.root) / 96)
+        self.strip._press(SimpleNamespace(x_root=x0, y_root=y0))
+        for pull, expected in ((threshold, True), (threshold+1, False),
+                               (threshold+10, False), (threshold-1, True)):
+            self.strip._drag(SimpleNamespace(x_root=x0, y_root=y0-pull))
+            self.root.update_idletasks()
+            self.assertEqual(self.strip.docked, expected)
+            self.assertEqual(self.root.winfo_y(), origin_y if expected else origin_y-pull)
+        self.strip._release(SimpleNamespace(x_root=x0, y_root=y0-threshold+1))
 
     def test_palette_skips_fullscreen_black_and_undocked_then_resamples_on_dock(self):
         dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
