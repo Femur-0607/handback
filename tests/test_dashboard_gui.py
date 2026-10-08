@@ -435,7 +435,7 @@ class DashboardMenuTests(unittest.TestCase):
         self.assertEqual(dashboard.inbox.pending(folder / "inbox"), [])
         self.assertTrue((folder / "inbox" / (message["id"] + ".json")).exists())
 
-    def test_escape_outside_focus_and_refresh_close(self):
+    def test_escape_outside_and_focus_close(self):
         menu = self.context_menu()
         menu.window.update()
         menu.window.event_generate("<Escape>")
@@ -447,9 +447,30 @@ class DashboardMenuTests(unittest.TestCase):
         with patch.object(menu.window, "focus_displayof", return_value=None):
             menu.check_focus()
         self.assertIsNone(self.strip._context_menu)
-        self.context_menu()
-        self.strip.refresh(reschedule=False)
-        self.assertIsNone(self.strip._context_menu)
+
+    def test_refresh_preserves_menu_submenu_selection_and_keyboard_focus(self):
+        for mode in ("taskbar", "panel"):
+            with self.subTest(mode=mode):
+                self.strip._close_menu()
+                dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "mode": mode}, self.home)
+                self.strip.render([])
+                menu = self.context_menu()
+                menu.select(self.entry(menu, "보기 설정 ▶"))
+                menu.open_child(keyboard=True)
+                child = menu.child
+                self.root.update()
+                focused, active = child.window.focus_get(), child.active
+                self.assertIsNotNone(focused)
+                for _ in range(2):
+                    self.strip.refresh(reschedule=False)
+                    self.root.update()
+                    self.assertIs(self.strip._context_menu, menu)
+                    self.assertIs(menu.child, child)
+                    self.assertEqual(child.active, active)
+                    self.assertEqual(child.window.focus_get(), focused)
+                child.window.event_generate("<Escape>")
+                self.root.update()
+                self.assertIsNone(self.strip._context_menu)
 
     def test_dark_dialog_returns_safe_default_yes_no_escape_and_close(self):
         self.root.deiconify()

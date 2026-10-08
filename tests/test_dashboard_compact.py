@@ -377,6 +377,16 @@ class CompactGuiTests(DashboardMenuTests):
             opener.assert_called_once_with("codex://threads/22222222-2222-2222-2222-222222222222")
 
     def test_small_upward_dock_pull_undocks_and_returns_without_resnapping(self):
+        # Exercise snapping even on an isolated desktop without Explorer's taskbar.
+        area = (0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight())
+        height = round(48 * dashboard._window_dpi(self.root) / 96)
+        info = {"rect": (0, area[3] - height, area[2], area[3]), "edge": 3,
+                "auto_hide": False, "notification_left": area[2] - 200}
+        for name, value in (("taskbar_info", info), ("_monitor_area", area),
+                            ("_monitor_rects", [area]), ("_virtual_area", area)):
+            fixture = patch.object(dashboard, name, return_value=value)
+            fixture.start()
+            self.addCleanup(fixture.stop)
         dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
         self.strip.render(self.sample_rows())
         self.root.deiconify()
@@ -673,9 +683,53 @@ class CompactGuiTests(DashboardMenuTests):
                         patch.object(dashboard, "_window_dpi", return_value=96 * scale):
                     self.strip.render(self.sample_rows())
                 self.assertLessEqual(self.strip.compact_metrics.metrics("linespace") * 2, height)
+                if scale == 1:
+                    self.assertGreaterEqual(abs(int(self.strip.compact_metrics.cget("size"))), 12)
                 self.assertEqual(self.strip._compact_geometry[-1], height)
         finally:
             self.root.tk.call("tk", "scaling", original)
+
+    def test_refresh_error_recovers_identical_content_without_periodic_repaint(self):
+        dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
+        rows = self.sample_rows()
+        def labels():
+            return [w.cget("text") for w in self.widgets(self.strip.frame) if isinstance(w, self.tk.Label)]
+        with patch.object(dashboard, "snapshot", return_value=rows):
+            self.strip.refresh(reschedule=False)
+        expected = labels()
+        for message in ("temporary read failure", "different read failure"):
+            with patch.object(dashboard, "snapshot", side_effect=ValueError(message)):
+                self.strip.refresh(reschedule=False)
+                self.assertEqual(labels(), ["읽기 오류: " + message])
+                error_label = self.strip.frame.winfo_children()[0]
+                self.strip.refresh(reschedule=False)
+                self.assertIs(self.strip.frame.winfo_children()[0], error_label)
+        with patch.object(dashboard, "snapshot", return_value=rows):
+            self.strip.refresh(reschedule=False)
+            self.assertEqual(labels(), expected)
+            widgets = self.widgets(self.strip.frame)
+            self.strip.refresh(reschedule=False)
+            self.assertEqual(self.widgets(self.strip.frame), widgets)
+
+    def test_keyboard_enter_space_toggle_panel_and_escape_closes(self):
+        dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
+        self.strip.render(self.sample_rows())
+        self.root.deiconify()
+        self.root.update()
+        for key in ("<Return>", "<space>"):
+            self.root.focus_force()
+            self.root.event_generate(key)
+            self.root.update()
+            self.assertIsNotNone(self.strip.panel)
+            self.strip.panel.event_generate(key)
+            self.root.update()
+            self.assertIsNone(self.strip.panel)
+        self.root.focus_force()
+        self.root.event_generate("<Return>")
+        self.root.update()
+        self.strip.panel.event_generate("<Escape>")
+        self.root.update()
+        self.assertIsNone(self.strip.panel)
 
     def test_destroy_cancels_refresh_and_outside_poll_callbacks(self):
         dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)

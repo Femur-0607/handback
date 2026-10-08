@@ -183,11 +183,25 @@ def release(root, home=None):
     fresh registration.
     """
     home = Path(home or state_home())
-    with home_lock(home):
+    # Every ProjectState.lock (including request creation) first holds a shared
+    # home lock. Exclusive ownership covers the check AND rename, and lives
+    # outside the moved directory, so project-lock ownership cannot split.
+    with home_lock(home, exclusive=True):
         folder = _folder_for(root, home)
-        row = project_row(folder) or {"running": []}
-        if row["running"]:
-            raise ValueError(f"진행 중인 요청 {len(row['running'])}개가 있어 해제할 수 없습니다")
+        running = 0
+        for path in (folder / "requests").glob("*.json"):
+            # Display filtering and forgiving reads must never hide active or
+            # damaged requests from this destructive state transition.
+            try:
+                with path.open(encoding="utf-8-sig") as stream:
+                    request = json.load(stream)
+            except (ValueError, UnicodeError) as error:
+                raise ValueError(f"요청 상태를 읽을 수 없어 해제할 수 없습니다: {path.name}") from error
+            if not isinstance(request, dict) or not isinstance(request.get("status"), str):
+                raise ValueError(f"요청 상태가 올바르지 않아 해제할 수 없습니다: {path.name}")
+            running += request["status"] in OPEN_STATES
+        if running:
+            raise ValueError(f"진행 중인 요청 {running}개가 있어 해제할 수 없습니다")
         stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         target = home / "released" / f"{folder.name}-{stamp}"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -207,6 +221,28 @@ def _folder_for(root, home):
 
 def prefs_path(home=None):
     return Path(home or state_home()) / "dashboard.json"
+
+
+def ui_error(error):
+    """Translate common UI failures while retaining unknown diagnostic details."""
+    message = str(error)
+    if ".reasoning_effort must be one of:" in message:
+        return "추론 강도는 다음 값 중 하나를 입력하세요: " + ", ".join(config.REASONING_EFFORTS)
+    if "must be a nonempty string or null" in message:
+        return "모델 ID와 추론 강도는 줄바꿈 없는 값을 입력하거나 비워 두세요."
+    if isinstance(error, TimeoutError):
+        return "다른 작업이 상태를 사용 중입니다. 잠시 후 다시 시도하세요.\n" + message
+    if isinstance(error, PermissionError):
+        return "파일 접근 권한이 없습니다.\n" + message
+    if isinstance(error, FileNotFoundError):
+        return "파일 또는 폴더를 찾을 수 없습니다.\n" + message
+    if message.startswith("Agent "):
+        for suffix, explanation in ((" is disabled in user configuration", "사용자 설정에서 비활성화되어 있습니다"),
+                                    (" is disabled in project configuration", "프로젝트 설정에서 비활성화되어 있습니다"),
+                                    (" is not allowed by project configuration", "프로젝트 설정에서 허용되지 않습니다")):
+            if message.endswith(suffix):
+                return agent_name(message[6:-len(suffix)]) + ": " + explanation
+    return message
 
 
 def load_prefs(home=None):
@@ -1053,6 +1089,7 @@ class Strip:
         self._dragged = False
         self._compact_position = None
         self._compact_view_key = None
+        self._render_error = None
         self._compact_style_key = None
         self._compact_font_key = None
         self._compact_geometry = None
@@ -1107,6 +1144,8 @@ class Strip:
         self.root.bind("<ButtonRelease-1>", self._release)
         self.root.bind("<Unmap>", self._drag_unmapped)
         self.root.bind("<Escape>", lambda event: self._collapse_panel())
+        self.root.bind("<Return>", self._keyboard_toggle_panel)
+        self.root.bind("<space>", self._keyboard_toggle_panel)
         self.root.bind("<Destroy>", self._destroyed, add="+")
 
     def _destroyed(self, event):
@@ -1199,7 +1238,6 @@ class Strip:
                     self.frame = original
 
     def _render_compact(self, rows, prefs):
-        self._close_menu()
         self.names = {row["root"]: row["name"] for row in rows}
         self.unread_counts = {row["root"]: len(row["unread"]) for row in rows}
         shown, _ = arrange(rows, {**prefs, "max_rows": 0})
@@ -1238,7 +1276,7 @@ class Strip:
         bg = palette["bg"]
         padding, gap = max(1, round(7 * dpi / 96)), max(1, round(3 * dpi / 96))
         # Negative Tk font sizes are pixels; derive them from this window's actual DPI.
-        pixels = max(6, round(8 * dpi / 72))
+        pixels = max(6, round(9 * dpi / 72))
         available = (info["rect"][3] - info["rect"][1] if self.docked and info
                      and info["edge"] in (1, 3) and not info["auto_hide"] else None)
         font_key = (dpi, available)
@@ -1332,6 +1370,10 @@ class Strip:
             self.panel.destroy()
             self.panel = self.panel_frame = None
 
+    def _keyboard_toggle_panel(self, event):
+        self._toggle_panel()
+        return "break"
+
     def _toggle_panel(self):
         if self.panel is not None:
             self._collapse_panel()
@@ -1347,6 +1389,8 @@ class Strip:
                                         highlightthickness=1, highlightbackground=DarkMenu.HOVER)
         self.panel_frame.pack()
         panel.bind("<Escape>", lambda event: self._collapse_panel())
+        panel.bind("<Return>", self._keyboard_toggle_panel)
+        panel.bind("<space>", self._keyboard_toggle_panel)
         panel.bind("<Button-3>", lambda event: self._menu(event, None))
         original = self.frame
         self.frame = self.panel_frame
@@ -1392,7 +1436,6 @@ class Strip:
         self._outside_timer = self.root.after(80, self._watch_outside)
 
     def _render_panel(self, rows):
-        self._close_menu()
         self.tooltip.hide()
         for child in self.frame.winfo_children():
             child.destroy()
@@ -1502,7 +1545,7 @@ class Strip:
             try:
                 self.opener(url)
             except (OSError, ValueError) as error:
-                self._dialog("대화 열기 실패", str(error))
+                self._dialog("대화 열기 실패", ui_error(error))
 
     def _conversations(self, event, targets):
         self._close_menu()
@@ -1595,7 +1638,7 @@ class Strip:
         try:
             values = config.resolve(project, home=self.home, validate=False)["values"]
         except (OSError, ValueError, TimeoutError) as error:
-            self._dialog("설정 읽기 실패", str(error))
+            self._dialog("설정 읽기 실패", ui_error(error))
             return
         settings = values.get("agents", {}).get(agent, {})
         selected = settings.get(role, {})
@@ -1638,13 +1681,33 @@ class Strip:
                  wraplength=430, justify="left").grid(row=len(fields) + 2, column=0, columnspan=2, sticky="w")
         footer = tk.Frame(frame, bg=self.BG)
         footer.grid(row=len(fields) + 3, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        failed_values = None
+
+        def fit():
+            window.update_idletasks()
+            x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
+            x, y, width, height = popup_position(x, y, window.winfo_reqwidth(), window.winfo_reqheight(),
+                                               _monitor_area(self.root, x, y))
+            window.geometry(f"{width}x{height}+{x}+{y}")
+
+        def clear_error(event):
+            requested = {key: entry.get().strip() or None for key, entry in entries.items()}
+            if error_text.get() and requested != failed_values:
+                error_text.set("")
+                fit()
+
+        for entry in entries.values():
+            entry.bind("<KeyRelease>", clear_error)
 
         def save():
+            nonlocal failed_values
             requested = {key: entry.get().strip() or None for key, entry in entries.items()}
             try:
                 config.configure_execution(project, agent, role, home=self.home, **requested)
             except (OSError, ValueError, TimeoutError) as error:
-                error_text.set(str(error))
+                failed_values = requested
+                error_text.set(ui_error(error))
+                fit()
                 return
             window.destroy()
             self.refresh(reschedule=False)
@@ -1653,11 +1716,7 @@ class Strip:
         self._button(footer, "취소", window.destroy).pack(side="right")
         window.bind("<Escape>", lambda event: window.destroy())
         window.bind("<Return>", lambda event: save())
-        window.update_idletasks()
-        x, y, width, height = popup_position(self.root.winfo_rootx(), self.root.winfo_rooty(),
-                                           window.winfo_reqwidth(), window.winfo_reqheight(),
-                                           _monitor_area(self.root, self.root.winfo_rootx(), self.root.winfo_rooty()))
-        window.geometry(f"{width}x{height}+{x}+{y}")
+        fit()
         _dark_titlebar(window)
         window.deiconify()
         entries["model"].focus_set()
@@ -1766,7 +1825,7 @@ class Strip:
         try:
             done = acknowledge_all(project, self.home)
         except (OSError, ValueError, TimeoutError) as error:
-            self._dialog("정리 실패", str(error), parent=parent or self.root)
+            self._dialog("정리 실패", ui_error(error), parent=parent or self.root)
             return False
         self.refresh(reschedule=False)
         self._dialog("정리 완료", f"{done}개를 확인 처리했습니다.", parent=parent or self.root)
@@ -1783,7 +1842,7 @@ class Strip:
         try:
             target = release(project, self.home)
         except (OSError, ValueError, TimeoutError) as error:
-            self._dialog("해제 실패", str(error), parent=self.root)
+            self._dialog("해제 실패", ui_error(error), parent=self.root)
             return
         self.refresh(reschedule=False)
         self._dialog("해제 완료", f"보관 위치:\n{target}", parent=self.root)
@@ -1963,13 +2022,19 @@ class Strip:
             self.root.after_cancel(self._refresh_timer)
             self._refresh_timer = None
         self.tooltip.hide()
-        self._close_menu()
         try:
+            if self._render_error is not None:
+                self._compact_view_key = None
             self.render(snapshot(self.home))
+            self._render_error = None
         except Exception as error:  # Keep the strip alive through partial writes.
-            for child in self.frame.winfo_children():
-                child.destroy()
-            self._label("읽기 오류: " + str(error)[:60], 0, 0, fg=self.YELLOW)
+            self._compact_view_key = None
+            message = "읽기 오류: " + ui_error(error)[:60]
+            if message != self._render_error:
+                for child in self.frame.winfo_children():
+                    child.destroy()
+                self._label(message, 0, 0, fg=self.YELLOW)
+            self._render_error = message
         if reschedule:
             self._refresh_timer = self.root.after(REFRESH_MS, self.refresh)
 

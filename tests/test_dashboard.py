@@ -1,10 +1,13 @@
 import json
+from contextlib import contextmanager
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
 from handback import dashboard, envelope, inbox
+from handback.state import ProjectState
 
 
 class DashboardTests(unittest.TestCase):
@@ -78,6 +81,99 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(folder.exists())
         with self.assertRaises(ValueError):
             dashboard.release(str(self.checkout / "nope"), self.home)
+
+    def test_release_does_not_archive_a_request_created_between_check_and_move(self):
+        folder = self.project("8" * 64, self.checkout)
+        identity = {"root": str(self.checkout), "checkout_root": str(self.checkout),
+                    "key": folder.name, "common_dir": None}
+        with patch("handback.state.project_identity", return_value=identity):
+            state = ProjectState(self.checkout, home=self.home)
+        request = {"id": "2" * 32, "status": "accepted"}
+        started, saved = threading.Event(), threading.Event()
+        errors, saved_before_move = [], []
+
+        def create_request():
+            started.set()
+            try:
+                state.save_request(request)
+                saved.set()
+            except Exception as error:
+                errors.append(error)
+
+        writer = threading.Thread(target=create_request)
+        rename = Path.rename
+
+        def race(path, target):
+            if path == folder:
+                writer.start()
+                self.assertTrue(started.wait(2))
+                saved_before_move.append(saved.wait(0.5))
+            return rename(path, target)
+
+        try:
+            with patch.object(Path, "rename", race):
+                archived = dashboard.release(str(self.checkout), self.home)
+        finally:
+            if writer.ident is not None:
+                writer.join(5)
+        self.assertFalse(writer.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(saved_before_move, [False], "Request writer crossed the archive transaction")
+        self.assertTrue(saved.is_set())
+        self.assertEqual(state.load_request(request["id"]), request)
+        self.assertFalse((archived / "requests" / (request["id"] + ".json")).exists())
+
+    def test_release_checks_requests_even_when_project_is_hidden_from_snapshot(self):
+        folder = self.project("7" * 64, self.checkout)
+        self.write(folder / "requests" / ("1" * 32 + ".json"), {"id": "1" * 32, "status": "accepted"})
+        with patch.object(dashboard.tempfile, "gettempdir", return_value=self.temp.name):
+            with self.assertRaisesRegex(ValueError, "진행 중인 요청"):
+                dashboard.release(str(self.checkout), self.home)
+        self.assertTrue(folder.exists())
+
+    def test_release_rechecks_request_created_while_waiting_for_ownership(self):
+        folder = self.project("5" * 64, self.checkout)
+        identity = {"root": str(self.checkout), "checkout_root": str(self.checkout),
+                    "key": folder.name, "common_dir": None}
+        with patch("handback.state.project_identity", return_value=identity):
+            state = ProjectState(self.checkout, home=self.home)
+        waiting, outcomes = threading.Event(), []
+        home_lock = dashboard.home_lock
+
+        @contextmanager
+        def observed_lock(*args, **kwargs):
+            waiting.set()
+            with home_lock(*args, **kwargs) as locked:
+                yield locked
+
+        def unregister():
+            try:
+                outcomes.append(dashboard.release(str(self.checkout), self.home))
+            except Exception as error:
+                outcomes.append(error)
+
+        worker = threading.Thread(target=unregister)
+        with patch.object(dashboard, "home_lock", observed_lock):
+            with state.lock():
+                worker.start()
+                self.assertTrue(waiting.wait(2))
+                state.save_request({"id": "3" * 32, "status": "accepted"})
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(outcomes), 1)
+        self.assertIsInstance(outcomes[0], ValueError)
+        self.assertIn("진행 중인 요청", str(outcomes[0]))
+        self.assertTrue(folder.exists())
+
+    def test_release_refuses_damaged_request_state(self):
+        folder = self.project("6" * 64, self.checkout)
+        path = folder / "requests" / ("1" * 32 + ".json")
+        for content in ('{"status":', 'null', '{}'):
+            with self.subTest(content=content):
+                path.write_text(content, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    dashboard.release(str(self.checkout), self.home)
+                self.assertTrue(folder.exists())
 
     def test_missing_and_temp_roots_are_hidden(self):
         self.project("b" * 64, Path(self.temp.name) / "gone")
