@@ -1,4 +1,5 @@
 from pathlib import Path
+import gc
 import tempfile
 import time
 from types import SimpleNamespace
@@ -6,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from handback import dashboard
+from tests import gui_resources
 
 
 class DashboardMenuTests(unittest.TestCase):
@@ -90,6 +92,11 @@ class DashboardMenuTests(unittest.TestCase):
                 len(self.commands()), len(self.menu_callbacks(menu)))
 
     def handles(self):
+        # Collect earlier Tk interpreters and dispatch their native destruction
+        # messages before either sample. update_idletasks alone misses those.
+        gc.collect()
+        self.root.update()
+        self.root.update_idletasks()
         import sys
         if sys.platform != "win32":
             return (0, 0)
@@ -99,6 +106,27 @@ class DashboardMenuTests(unittest.TestCase):
         kernel.GetCurrentProcess.restype = wintypes.HANDLE
         user.GetGuiResources.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         return tuple(user.GetGuiResources(kernel.GetCurrentProcess(), kind) for kind in (0, 1))
+
+    def warm_gui(self, action):
+        # Run the measured lifecycle before taking its baseline, including native
+        # map/focus/destroy messages and the previously scheduled Tk idle work.
+        gc.collect()
+        self.root.update()
+        action()
+        ready = self.tk.BooleanVar(self.root)
+        self.root.after(50, lambda: ready.set(True))
+        self.root.wait_variable(ready)
+        self.root.update()
+
+    def assert_handles_unchanged(self, expected, windows, phase):
+        actual = self.handles()
+        increase = gui_resources.growth(expected, actual)
+        changes = gui_resources.difference(windows, gui_resources.windows())
+        # Delayed releases may lower GDI/USER counts, but any increase or HWND
+        # replacement is a failure, even when the total window count is stable.
+        if any(increase) or any(changes.values()):
+            self.fail(f"{phase}: GDI/USER {actual}, baseline {expected}, increase {increase}; "
+                      f"native HWND changes: {changes}")
 
     def sample_rows(self):
         return [{"root": str(i), "name": "긴 프로젝트 이름 " * 8 if i == 0 else f"project-{i}",

@@ -1,9 +1,9 @@
 from types import SimpleNamespace
-import gc
 import unittest
 from unittest.mock import Mock, patch
 
 from handback import dashboard
+from tests import gui_resources
 from tests.test_dashboard_gui import DashboardMenuTests
 
 
@@ -284,14 +284,6 @@ class CompactGuiTests(DashboardMenuTests):
                 self.root.update_idletasks()
                 self.assertEqual(self.root.state(), "withdrawn" if hidden else "normal")
                 self.assertEqual(len(self.root.tk.call("after", "info")), 1)
-
-    # Reuse fixture helpers, without inheriting the panel tests in discovery.
-    def handles(self):
-        # Earlier tests can leave Python cycles owning destroyed Tk interpreters.
-        # Collect them before BOTH samples so their later cleanup cannot skew equality.
-        gc.collect()
-        self.root.update_idletasks()
-        return super().handles()
 
     def test_sampled_background_and_scaled_padding_align_both_lines(self):
         dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
@@ -605,35 +597,45 @@ class CompactGuiTests(DashboardMenuTests):
         self.assertLessEqual(x + width, right)
         self.assertLessEqual(y + height, bottom)
 
-    def test_compact_500_refreshes_and_100_panel_cycles(self):
+    def test_compact_500_refreshes_and_200_panel_cycles(self):
         dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
         rows = self.sample_rows()
         self.root.deiconify()
-        baseline = handles = None
-        for i in range(500):
+
+        def resources():
+            return (len(self.widgets(self.root)), len(self.commands()), len(self.root.tk.call("after", "info")))
+
+        def refresh():
             self.strip.render(rows)
             self.root.update()
-            current = (len(self.widgets(self.root)), len(self.commands()), len(self.root.tk.call("after", "info")))
-            if baseline is None:
-                baseline = current
-            self.assertEqual(current, baseline)
-            if i == 99:
-                handles = self.handles()
-        self.assertEqual(self.handles(), handles)
-        for i in range(100):
+
+        def panel_cycle():
             self.strip._toggle_panel()
             panel = self.strip.panel
             self.assertIsNotNone(panel)
-            self.strip.render(rows)
+            refresh()  # Map/focus the panel before closing it, including native child HWNDs.
             self.assertIs(self.strip.panel, panel)
             self.assertLessEqual(panel.winfo_y() + panel.winfo_height(), self.root.winfo_y())
             self.strip._collapse_panel()
             self.root.update()
-            self.assertEqual((len(self.widgets(self.root)), len(self.commands()),
-                              len(self.root.tk.call("after", "info"))), baseline)
-            if i == 9:
-                handles = self.handles()
-        self.assertEqual(self.handles(), handles)
+
+        # Warm both measured lifecycles before establishing a single closed-panel
+        # baseline. Never move the baseline partway through the measured batches.
+        self.warm_gui(refresh)
+        self.warm_gui(panel_cycle)
+        handles = self.handles()
+        windows = gui_resources.windows()
+        baseline = resources()
+        for i in range(500):
+            refresh()
+            self.assertEqual(resources(), baseline)
+            if i in (99, 499):
+                self.assert_handles_unchanged(handles, windows, f"refresh {i + 1}")
+        for i in range(200):
+            panel_cycle()
+            self.assertEqual(resources(), baseline)
+            if i in (99, 199):
+                self.assert_handles_unchanged(handles, windows, f"panel {i + 1}")
 
     def test_click_drag_persistence_status_and_mode_switch(self):
         dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
