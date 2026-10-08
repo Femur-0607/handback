@@ -10,7 +10,7 @@ A local tool for handing work between coding-agent apps and bringing the results
 
 **Experimental · Windows verified · Python 3.10+ · One computer, one OS user**
 
-[First task](#try-your-first-task) · [Use-your-own-project guide](#use-it-on-your-own-project) · [Detailed setup](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) · [한국어 사용 설명서](https://github.com/Femur-0607/handback/blob/main/docs/usage.ko.md)
+[First task](https://github.com/Femur-0607/handback#try-your-first-task) · [Use-your-own-project guide](https://github.com/Femur-0607/handback#use-it-on-your-own-project) · [Detailed setup](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) · [한국어 사용 설명서](https://github.com/Femur-0607/handback/blob/main/docs/usage.ko.md) · [Changelog](https://github.com/Femur-0607/handback/blob/main/CHANGELOG.md)
 
 ## What is handback?
 
@@ -58,17 +58,22 @@ Windows has live integration coverage. macOS and Linux are unverified. App queue
 
 ## Install
 
-After the PyPI release (not published yet), install into an isolated tool environment:
+Install the published package from PyPI:
 
 ```sh
-uv tool install handback
-# Or, with Python already available:
-pipx install handback
+pip install handback
+```
+
+From a source checkout, use `pip install .` to install the package, or run `python handback.py` directly without installation. For an isolated tool environment, `uv tool install handback` or `pipx install handback` also works; use `.` in place of `handback` to install the checkout. uv can provision Python when needed.
+
+After installing the package, preview and install the agent skills:
+
+```sh
 handback install-skills --dry-run
 handback install-skills
 ```
 
-uv can provision Python when needed. From a source checkout today, use `uv tool install .` or `pipx install .`, then the same `handback` commands. No runtime dependencies are installed. The optional `handback-dashboard` GUI requires a Python build with Tk support.
+No runtime dependencies are installed. The optional `handback-dashboard` GUI requires a Python build with Tk support.
 
 `handback install-skills --dry-run --target-home <absolute-test-home>` previews an isolated installation without consulting host PATH or CODEX_HOME. Existing skills get timestamp backups. Claude is always installed; Codex and Antigravity require app detection, and Antigravity also requires a registered skill directory. Without `--target-home`, detection checks the known Windows app paths and PATH on all platforms.
 
@@ -227,7 +232,17 @@ The [detailed guide](https://github.com/Femur-0607/handback/blob/main/docs/quick
 
 ## Optional dashboard
 
-Run `pythonw dashboard.pyw` from the relay installation folder to see project activity, in-progress tasks, and unacknowledged results. The dashboard is optional; it is not required for delegation. `python handback.py dashboard --autostart on` starts the dashboard at Windows login, not the Lead or its Monitor.
+Run `handback-dashboard` after package installation, or `pythonw dashboard.pyw` from a source checkout. The compact two-line widget shows project names, running tasks, and unacknowledged results. It checks activity every three seconds and avoids repainting unchanged content.
+
+Drag the widget anywhere on screen. It snaps to a top or bottom Windows taskbar within about 20 pixels, scaled for display DPI; pull it away to undock. When docked, it matches the taskbar colour, stays clear of the notification area when there is enough space, and restores its position above the taskbar if Explorer covers it. The compact widget hides while a full-screen window covers its monitor, whether docked or floating, then returns when the window no longer covers it.
+
+- Click the widget to open or close the expanded panel. Click a project name in the panel to inspect running work and recent unread results.
+- Right-click → **보기 설정** to choose compact mode (**작업표시줄 모드**) or a pinned panel (**펼친 패널 고정**), change panel rows, restore hidden projects, or reset the order.
+- A project's context menu also offers **모델·추론 설정 ▶**, **미확인 결과 모두 확인 처리** (ACK all unread results), and **handback 등록 해제…** (move inactive project state to `released/` after confirmation). Display preferences, widget position, and docking state are saved in `<state-home>/dashboard.json`.
+
+Left/right and auto-hide taskbars do not support snapping. Multi-monitor placement and exclusive full-screen Direct3D behavior have unit-test coverage only. Conversation links open Codex threads; Claude and Antigravity links are disabled. See the [dashboard limitations](https://github.com/Femur-0607/handback/blob/main/docs/limitations.md#11-dashboard-placement-and-conversation-links).
+
+The dashboard is optional. `handback dashboard --once` prints a snapshot as JSON. `handback dashboard --autostart on` starts it at Windows login; `--autostart off` removes that shortcut. This does not start the Lead or its Monitor.
 
 <details>
 <summary>Dashboard memory measurements</summary>
@@ -277,6 +292,9 @@ used as the new state setting. `handback doctor` warns about legacy state and pr
 `handback migrate-state --from '<old-state-path>'`. Stop requests, collectors, and
 watchers before copying. Migration verifies copied bytes, retains the original files,
 and adds a `MOVED.json` receipt to prevent accidental writes to the old store.
+Chained receipts are recognized when checking legacy stores, including an old
+MSIX location moved through `.agent-relay` to `.handback`; keep `HANDBACK_HOME`
+pointing to the final state home. This check does not migrate data automatically.
 
 Reinstall hooks and skills with `handback install-hooks` and `handback install-skills`;
 legacy hooks are recognized and original skill files receive timestamp backups.

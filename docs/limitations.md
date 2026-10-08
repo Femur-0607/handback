@@ -154,3 +154,16 @@ handback inbox ack --root "<absolute-project-path>" --for "claude:<old-session-i
 - **Operating tip:** Choose a model and effort supported by the installed Codex build. Recognizing `ultra` as a setting does not guarantee every model supports it. Relay settings cover relay creation and delivery; user turns entered directly in the app follow the app's own settings.
 - **Current feature:** Select `flash_lite`, `flash`, or `pro` before creating an Antigravity worker. Reasoning selection and model changes on an existing Antigravity conversation are rejected because the current delivery interface cannot apply them. Change Claude Lead settings in Claude.
 - **Verification limit:** Automated tests cover selection, precedence, persistence, and transport parameters. Isolated app-server checks confirmed native settings restoration across processes without executing a model turn. Actual next-turn application after changing settings on a conversation already loaded by the desktop app remains unverified; the checks also do not prove live model effort or direct app-entered turn behavior. The [settings verification record](verification/2026-10-09-role-model-settings.md) documents this scope; the earlier live-integration record predates these controls.
+
+## 11. Dashboard placement and conversation links
+
+**Symptom:** The compact widget does not snap to a taskbar, or a conversation link is disabled.
+
+**Cause:** Snapping is implemented for top/bottom Windows taskbars with auto-hide turned off. Conversation links are implemented only for Codex thread handles. Multi-monitor placement and exclusive full-screen Direct3D behavior have unit-test coverage only; they have not been verified live.
+
+**Fix or workaround:**
+
+- **Current feature:** Drag the compact widget freely, within about 20 DPI-scaled pixels of a supported taskbar to dock, or away to undock. The widget saves its coordinates and docking state, clamps off-screen positions, and keeps clear of the notification area when enough space is available. Left/right and auto-hide taskbars do not support snapping; unavailable docking falls back to the bottom-right of the screen.
+- **Current feature:** When docked, the widget matches the taskbar colour and restores its position above Explorer when covered. Unchanged content is not periodically repainted, although activity is still checked every three seconds. A full-screen foreground window covering the widget's monitor hides the compact widget whether docked or floating; it returns when the window no longer covers it. Pinned expanded-panel mode does not use this automatic hiding.
+- **Operating tip:** For unsupported taskbar layouts, place the floating widget where it is useful or select **보기 설정 → 펼친 패널 고정**. Treat multi-monitor and exclusive full-screen behavior as unverified in a live environment.
+- **Current feature:** Codex conversation links open the selected thread. Claude and Antigravity links are disabled; open those conversations in their apps. Stored result bodies remain readable in the dashboard.

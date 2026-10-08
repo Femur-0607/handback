@@ -2,6 +2,8 @@
 
 ## One-command first task
 
+Install from PyPI with `pip install handback`. From a source checkout, `pip install .` installs the package; `python handback.py` also works without installation. Installed-package users can replace `python handback.py` with `handback` throughout this guide. The numbered walkthrough below uses a source checkout.
+
 After installing the package, run `handback try --root "<absolute-checkout>"` in a normal terminal. From source, use `python handback.py try`. It checks topology/policy and Codex detection, creates a read-only Codex worker, sends one reply-only task, verifies `RELAY_OK` and the saved request identity, and ACKs the result. No skills or hooks are installed by this command.
 
 `--lead claude:lead` selects the address only if no topology exists. Existing Codex-worker topology is reused; incompatible topology is preserved and a `use` command is printed. `--timeout` defaults to 300 seconds (`0` waits indefinitely); `--keep` leaves the result pending; `--json` emits structured output. Timeout (exit 3) and delivery failure/unknown (exit 4) print a `wait --request` recovery command without submitting again. Worker failure or a mismatched reply exits 2; configuration failures exit 5.
@@ -22,7 +24,7 @@ This is an experimental project. Windows has live integration coverage; macOS an
 
 ## Requirements and supported combinations
 
-- Windows, PowerShell, Git, and Python 3.10 or newer available as `python`. The relay uses the Python standard library; no `pip install` is needed.
+- Windows, PowerShell, and Python 3.10 or newer available as `python`; Git is needed only for cloning the source walkthrough. The relay has no runtime dependencies. The optional GUI needs Tk support.
 - Install and sign in to the apps used by your combination. The recommended first setup is **Claude Lead → Codex worker**. Start the apps before testing.
 - Claude Lead can use Codex, Antigravity, or both. Codex Lead supports Antigravity workers only.
 - Claude workers, Codex Lead → Codex worker, Antigravity Lead, and automatic `fallback next` are unsupported.
@@ -158,6 +160,18 @@ These project defaults are saved outside the checkout. In the dashboard, open a 
 `new` can override the defaults with `--model` and `--reasoning-effort`. Codex saves the effective selection for the conversation, and subsequent relay `send` turns retain the stored selection. An explicit selection on Codex `send` changes the saved selection; actual next-turn application in a conversation already loaded by the desktop app remains unverified because its runtime settings can be cached. Later default edits apply to new conversations; they do not overwrite existing saved conversation settings. Model support for `ultra` and other effort values depends on the installed Codex build and selected model. App-entered user messages remain subject to the app's own settings. See the [settings verification record](verification/2026-10-09-role-model-settings.md) for the checks performed without a model turn.
 
 Shared JSON defaults use `agents.codex.model` and `agents.codex.reasoning_effort` in `<state-home>/config.json` or `.handback.json`; role objects are `agents.codex.lead` and `agents.codex.worker`. See the [Korean manual](usage.ko.md#리드워커-모델과-추론-강도) for precedence and a JSON example. Claude Lead model/reasoning settings are selected in Claude. Antigravity supports a model selection only when creating a new conversation, as described below.
+
+## Optional dashboard
+
+Run `handback-dashboard` after installing the package, or `pythonw dashboard.pyw` from the source checkout. The two-line widget shows project activity and unread results. Click it to toggle the expanded panel; drag it anywhere, toward a top/bottom taskbar to snap within about 20 DPI-scaled pixels, or away to undock. When docked, it matches the taskbar colour, avoids the notification area when space permits, and restores its position above the taskbar if covered. Activity is checked every three seconds without repainting unchanged widget content.
+
+Right-click → **보기 설정** to select compact mode (**작업표시줄 모드**) or a pinned expanded panel (**펼친 패널 고정**), choose panel rows, restore hidden projects, or reset the order. Project menus include model/reasoning settings, ACK of all unread results, and release of inactive project state. Preferences, widget coordinates, and docking state are saved in `<state-home>/dashboard.json`.
+
+- Left/right and auto-hide taskbars do not support snapping. If docking is unavailable, the widget falls back to the bottom-right of the screen; it can still be moved freely.
+- A full-screen window covering the widget's monitor hides the compact widget, docked or floating. This does not apply to pinned panel mode. Multi-monitor placement and exclusive full-screen Direct3D behavior have unit-test coverage only, without live verification.
+- Conversation links open Codex threads only; Claude and Antigravity links are disabled.
+
+`handback dashboard --once` prints a JSON snapshot. `handback dashboard --autostart on` adds a Windows login shortcut; `--autostart off` removes it. The dashboard is optional and does not start the Lead or Monitor. See the [dashboard limitations](limitations.md#11-dashboard-placement-and-conversation-links).
 
 ## Optional Antigravity setup
 
