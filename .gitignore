@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.relay-probe/
+
+# Local settings, raw evidence, and release preparation are never published.
+/.private/
+/.agent-relay.json
+/.env
+/.env.*
+!/.env.example
+/tests/tmp*/
+/tests/tempprobe*/
+/tests/dashboard-gui-test-*/
+
+# Python package build output
+/build/
+/dist/
+/*.egg-info/

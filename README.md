@@ -1,0 +1,252 @@
+<p align="center"><img src="docs/assets/handback-logo.png" alt="handback" width="420"></p>
+
+<p align="center"><a href="docs/assets/handback-promo.mp4">Watch the handback promo video</a></p>
+
+# agent-relay
+
+A local tool for handing work between coding-agent apps and bringing the results back to the conversation where you started.
+
+**Experimental · Windows verified · Python 3.10+ · One computer, one OS user**
+
+[First task](#try-your-first-task) · [Use-your-own-project guide](#use-it-on-your-own-project) · [Detailed setup](docs/quickstart.md) · [한국어 사용 설명서](docs/usage.ko.md)
+
+## What is agent-relay?
+
+agent-relay connects coding agents running on your computer. You work with one main conversation, called the **Lead**, and let it send a defined task to another conversation, called a **worker**. The relay creates the worker conversation, sends the task, and saves its reply in a local inbox for the Lead to review.
+
+For example, you can discuss a change with Claude, have a Codex worker inspect the relevant code, and review its findings back in Claude. The apps perform the reasoning and coding; agent-relay handles task delivery, result collection, and recovery.
+
+It runs as an installed Python package or directly from this repository, using only Python's standard library. You need the supported agent apps installed and signed in. Everything is scoped to one computer and one OS user, and no other project repository is required.
+
+## When to use it / when not to
+
+Use it to hand bounded tasks between **different agent apps** when results must survive interruptions without duplicate submission. Within one app, prefer its built-in subagents. This tool is not for teams, multiple machines, or parallel writes to one checkout.
+
+Delegating heavy reading, investigation, and implementation to workers helps keep the Lead conversation small.
+
+## Why it exists
+
+agent-relay started from a simple wish: let the agent apps already on my computer talk to each other while I can still watch every conversation in the apps themselves. That is why a worker is a real conversation inside its own app, not a hidden subprocess. You can open it at any time and follow the work as it happens.
+
+Working across multiple coding agents creates repeated handoffs: send the task, remember which conversation is working on it, find the answer, and bring it back to the original discussion. If a conversation closes or a wait times out, it can also become unclear whether a task finished or should be sent again.
+
+agent-relay gives each request an identity and keeps its result on disk. The Lead can retrieve an existing request after an interruption and mark a reviewed result as handled. This makes the handoff easier to follow and reduces the risk of submitting the same work twice.
+
+It is intended for developers who already use multiple supported coding-agent apps and want to coordinate bounded tasks in their own projects. You still decide what work is allowed and review the results. A message from an agent is task information, never user authorization.
+
+## How a task moves
+
+1. **You give the Lead a goal and limits**, such as reviewing a module without changing files.
+2. **The Lead delegates a task to a worker.** The worker receives its own conversation and a brief describing the work.
+3. **The relay collects the reply into an inbox.** The saved result remains available if the Lead closes or collection is interrupted.
+4. **The Lead reviews the result and acknowledges it.** An acknowledgement, or **ACK**, marks it as handled so it stops replaying. The original message is retained.
+
+You can also run these steps from a terminal. The first example below uses terminal commands so you can check the complete handoff before relying on automatic reception in an app.
+
+## Supported combinations
+
+| Lead | Workers | Result reception |
+|---|---|---|
+| Claude | Codex, Antigravity, or both | Monitor and explicit inbox reads; session recovery hooks where available |
+| Codex | Antigravity only | External Codex queue, inbox, and ACK |
+
+Start with **Claude Lead → Codex worker**. Claude workers, Codex Lead → Codex worker, Antigravity Lead, and automatic quota fallback are unsupported.
+
+Windows has live integration coverage. macOS and Linux are unverified. App queue, transcript, and hook contracts can change with updates; see the [verification summary](docs/verification/README.md) for tested behavior and remaining gaps.
+
+## Install
+
+After the PyPI release (not published yet), install into an isolated tool environment:
+
+```sh
+uv tool install agent-relay
+# Or, with Python already available:
+pipx install agent-relay
+agent-relay install-skills --dry-run
+agent-relay install-skills
+```
+
+uv can provision Python when needed. From a source checkout today, use `uv tool install .` or `pipx install .`, then the same `agent-relay` commands. No runtime dependencies are installed. The optional `agent-relay-dashboard` GUI requires a Python build with Tk support.
+
+`agent-relay install-skills --dry-run --target-home <absolute-test-home>` previews an isolated installation without consulting host PATH or CODEX_HOME. Existing skills get timestamp backups. Claude is always installed; Codex and Antigravity require app detection, and Antigravity also requires a registered skill directory. Without `--target-home`, detection checks the known Windows app paths and PATH on all platforms.
+
+Packaged skills and hooks use the environment's absolute Python executable with `-m agent_relay`. A direct, uninstalled checkout uses its absolute entry script instead, so hooks and workers also run from other project directories. Keep that environment (or checkout) available, and reinstall skills/hooks if you move it. Existing hook ownership manifests still support removing or upgrading old script-based hooks.
+
+The source-only walkthrough below remains supported; `install.ps1` is a thin wrapper around `python agent_relay.py install-skills`. Package users can replace `python "$relayScript"` in later examples with `agent-relay`.
+
+## Try your first task
+
+Start with **Claude Lead → Codex worker**. Have these ready:
+
+- Windows, PowerShell, and Python 3.10 or newer available as `python`.
+- Git if you clone the repository, or an extracted source archive.
+- Claude and Codex installed and signed in; start the apps before testing.
+
+After installation, run this from your project in a normal terminal, outside an agent sandbox:
+
+```powershell
+agent-relay try
+# From an uninstalled source checkout:
+python agent_relay.py try
+```
+
+`try` checks configuration and Codex detection, creates one read-only worker, sends a reply-only task, verifies its saved `RELAY_OK` result and request identity, then ACKs it. It prints the worker handle, request ID, elapsed time, result, and ACK status. It does not install skills or hooks. App detection alone does not verify login or queue compatibility; the task checks the round trip.
+
+Use `--root <path>` for another project, `--lead claude:<session-id>` when selecting a new topology, `--timeout 300` for the wait limit (default; `0` waits indefinitely), `--keep` to leave the result unread, or `--json` for machine output. An existing topology with a Codex worker is reused; an incompatible one is left untouched with a suggested `use` command. On timeout or unknown delivery, run the printed `wait --request ...` command; never resubmit.
+
+<details>
+<summary>What `try` does, step by step (manual setup and recovery)</summary>
+
+The manual route below includes optional skill setup. Keep the same state home and PowerShell session throughout.
+
+### 1. Get the tool and check your setup
+
+```powershell
+git clone https://github.com/Femur-0607/agent-relay.git
+Set-Location agent-relay
+$relayRoot = (Get-Location).Path
+$relayScript = Join-Path $relayRoot 'agent_relay.py'
+python --version
+python "$relayScript" doctor --root "$relayRoot"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -DryRun
+```
+
+If you downloaded an archive, open its extracted `agent-relay` folder in PowerShell and continue from `$relayRoot = ...`. No `pip install` is required. Review the diagnostic output and planned installation paths. `doctor` checks app availability; it does not prove a task can complete. See [setup and troubleshooting](docs/quickstart.md) if it reports a missing app or an existing-state warning.
+
+### 2. Install the skills and select the Lead inbox
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+$leadAddress = "claude:lead"
+python "$relayScript" use --root "$relayRoot" --lead "$leadAddress" --workers codex
+python "$relayScript" status --root "$relayRoot"
+```
+
+Check that `status` shows the Claude Lead and Codex worker combination. `claude:lead` is an inbox address for this first test; you do not need to discover a real Claude session ID to read its results manually. Session-specific recovery hooks require a real session ID later.
+
+The installer writes agent skills and backs up existing skill files. It does not start the apps, a Lead conversation, or a watcher. Keep the checkout after installation because the installed skills refer to its files. The Windows default state home is `%USERPROFILE%\.agent-relay`; if you already set `AGENT_RELAY_HOME`, keep the same value throughout.
+
+### 3. Send one small task
+
+This command creates a real Codex worker conversation and sends one task:
+
+```powershell
+python "$relayScript" new --worker codex --cwd "$relayRoot" --name "relay first task" --sandbox read-only --text "Do not modify files or delegate. Reply with RELAY_OK in this conversation." --no-wait
+```
+
+Save the returned JSON, especially `request_id` and `handle`. With `--no-wait`, a successful exit means the task was accepted; its result may still be pending. A detached collector gathers the reply.
+
+### 4. Collect and review the answer
+
+Replace the placeholder with the `request_id` returned above:
+
+```powershell
+$requestId = "<request_id from the previous command>"
+python "$relayScript" wait --root "$relayRoot" --request "$requestId" --timeout 300
+python "$relayScript" inbox list --root "$relayRoot" --for "$leadAddress"
+```
+
+Check that the result belongs to this request and contains `RELAY_OK`. If waiting times out, keep this request ID and follow the recovery section below. Do not send the task again.
+
+### 5. Mark the result as handled
+
+Use the same request ID after reviewing its result:
+
+```powershell
+python "$relayScript" inbox ack --root "$relayRoot" --for "$leadAddress" --request "$requestId"
+python "$relayScript" inbox list --root "$relayRoot" --for "$leadAddress"
+```
+
+The handled result should disappear from the pending list while its original file stays on disk. You have now checked task submission, collection, review, and acknowledgement.
+
+</details>
+
+## Use it on your own project
+
+Install the relay once, then select the project you want to work on. **The relay installation folder and your working project are separate paths.** Keep `$relayScript` pointing to the installed tool, and set `$projectRoot` to your existing source folder:
+
+```powershell
+$projectRoot = (Resolve-Path "<path-to-your-existing-project>").Path
+python "$relayScript" use --root "$projectRoot" --lead "$leadAddress" --workers codex
+python "$relayScript" status --root "$projectRoot"
+```
+
+Open that project in your Lead app and confirm the installed `agent-relay` skill is available. Here is an example request to give a Claude Lead; replace both paths and the module name:
+
+```text
+Use the agent-relay skill for the project at <absolute-project-path>.
+The relay script is <absolute-relay-installation>/agent_relay.py.
+Use claude:lead as the Lead inbox and Codex as the worker.
+Ask one worker to review error handling in <module-path> without changing files.
+Collect its result, review the findings, summarize them here, and ACK the result after review.
+```
+
+For terminal commands, use `--cwd "$projectRoot"` when creating a worker and `--root "$projectRoot"` for topology, status, waiting, and inbox commands. The worker works on that project. Use one worker conversation per unit of work and run units sequentially when they share a checkout. Send corrections to the same worker only after its previous request finishes.
+
+For automatic results in a Claude conversation, have the Lead run `inbox watch` through its **Monitor** tool. A watcher in an ordinary terminal prints only to that terminal. Started with `--idle-exit 1200`, the watcher stops after 20 idle minutes; re-arm Monitor only while requests are open. If Monitor is unavailable, use explicit `wait` and `inbox list` commands. Fresh skill auto-loading and global recovery hook loading remain incompletely verified; the [detailed setup guide](docs/quickstart.md) covers these limits and the exact watcher command.
+
+For Antigravity, register **your working project** in its app, enable its adapter, and install its relay hooks before selecting it. Follow the [Antigravity setup](docs/quickstart.md#optional-antigravity-setup); the Codex-only test above does not configure that combination.
+
+## Delivery and recovery
+
+Submission, completion, Lead delivery, and ACK are separate events. An asynchronous submission returning success means the request was accepted. It does not mean the task finished.
+
+### Result did not come back
+
+Start with `doctor`, then `explain --request` for the saved request ID. Both are read-only; `explain` ends with one next action and never sends, collects, or ACKs:
+
+```powershell
+python "$relayScript" doctor --root "$projectRoot"
+python "$relayScript" explain --root "$projectRoot" --request "<saved-request-id>"
+python "$relayScript" wait --root "$projectRoot" --request "<saved-request-id>" --timeout 300
+python "$relayScript" inbox list --root "$projectRoot" --for "$leadAddress"
+```
+
+Use the same project, Lead inbox, and state home as the original request. For the first test above, use `$relayRoot` instead of `$projectRoot`. `wait` recovers the existing request without submitting it again. Reading a result does not ACK it.
+
+`doctor` prints OK/WARN/FAIL checks and one next step for each warning/failure (exit 5 for FAIL, 0 otherwise). `doctor --json` preserves the original JSON interface; `explain --json` provides the timeline as JSON. For an issue, copy the redacted block from `doctor --report`. `status --stats --days 30` summarizes local request outcomes, latency, additional delivery attempts, and unACKed results without telemetry. Collection timeouts, recovery via `wait`, and explicit redeliveries are not independently recorded and cannot be counted reliably.
+
+The [detailed guide](docs/quickstart.md) covers timeouts, replay, custom state homes, cleanup, and uninstall; the [Korean manual](docs/usage.ko.md) describes the full command set and adapter limits.
+
+## Optional dashboard
+
+Run `pythonw dashboard.pyw` from the relay installation folder to see project activity, in-progress tasks, and unacknowledged results. The dashboard is optional; it is not required for delegation. `python agent_relay.py dashboard --autostart on` starts the dashboard at Windows login, not the Lead or its Monitor.
+
+<details>
+<summary>Dashboard memory measurements</summary>
+
+The optional dashboard was measured on **October 8, 2026**, using Windows, Python 3.13.15, and Tk 8.6.15. These figures describe the dashboard process, excluding the separately running agent apps.
+
+| Check | Observed result | Conditions |
+|---|---|---|
+| GUI footprint | About **33 MiB working set** and **19 MiB private memory** | A fresh process with a hidden window, 5 projects, no unread results, normal 3-second refresh, and a 15-second observation |
+| Context-menu leak fix | Menu widgets, Tcl commands, Windows GUI resources, and handles stayed constant from 100 to 500 menu openings | Real Tk widgets with native popup display suppressed; the previous menu tree and its callbacks are destroyed before replacement |
+| Large unread inbox | About **60.3 MiB peak additional Python heap**; **2.7 seconds median per snapshot** | Snapshot only, without Tk: 1,000 unread results with 60 KiB bodies plus 1,000 completed requests; 5 timed runs |
+
+The large-inbox figure measures Python allocations, not total process memory, and timing can vary with concurrent filesystem activity. Refreshes scan stored history and load unread message bodies; showing fewer rows does not cap that work. Usage therefore depends on the amount of stored data and the environment. These short checks do not establish a memory limit or guarantee leak-free operation over hours or days.
+
+[Menu regression tests](tests/test_dashboard_gui.py) cover repeated menu creation, callback cleanup, current settings, and closing the dashboard. They use hidden Tk windows and skip when Tk or a display is unavailable.
+
+</details>
+
+## Limitations
+
+- Long-running Lead and reused worker conversations accumulate context; use bounded units and documented stage handoffs.
+- Replacing the Lead preserves old requests' return addresses; explicitly read and ACK the old inbox.
+- Windows has live verification; operation is local to one computer and OS user, with restricted agent combinations.
+- App updates, uncertain delivery, and Monitor expiry require deliberate diagnostics and recovery; Antigravity cannot enforce read-only access.
+- Shared-checkout work should be sequential, and dashboard scan cost grows with history. See [known limitations and workarounds](docs/limitations.md) for details and commands.
+
+## Development
+
+Implementation lives in `agent_relay/`, the CLI entry point is `agent_relay.py`, and tests are in `tests/`.
+
+```powershell
+python -m unittest
+```
+
+Unit tests use isolated fixtures. They do not establish compatibility with a current app build; live integration results are tracked separately in the [verification summary](docs/verification/README.md). See [Contributing](CONTRIBUTING.md) for test and bug-report requirements.
+
+## License
+
+[MIT](LICENSE). The license covers this repository's code; the agent applications are separately installed and retain their own licenses and terms.

@@ -1,0 +1,11 @@
+Generation mode: built-in image_gen (transparent_background=true)
+
+Use case: logo-brand.
+Asset type: one finished logo image for the header of an open-source project's GitHub README.
+Primary request: Design a catchy, distinctive logo for "handback", a developer tool that hands work to another coding agent and brings the result back.
+Subject: a charming white cartoon glove inspired by the early black-and-white rubber-hose animation era and the user's idea of early Mickey Mouse gloves. Give this hand its own silhouette: an open, slightly cupped palm in side/three-quarter view, gesturing to receive something back. Integrate one clean looping return arrow hovering just above the palm, so the glove and return action read as one compact symbol. Rounded, simple cartoon digits and a short rolled cuff; bold expressive silhouette, not an upright stop gesture.
+Style: exceptionally polished, flat inked graphic logo. Friendly retro cartoon charm combined with contemporary bold lowercase typography, crisp vector-like edges, confident thick strokes. Black and white only.
+Composition: one horizontal logo lockup, glove-and-arrow symbol on the left, wordmark on the right; centered on a wide canvas with balanced clear space, the design should occupy most of the canvas. Hand approximately 1.4 times the wordmark's cap-height. Do not make a presentation sheet or show multiple versions.
+Text (verbatim): "handback" — exactly h a n d b a c k, all lowercase, one word. Large, bold rounded sans-serif wordmark with carefully balanced spacing, playful but highly readable. No other text.
+Background: true alpha transparency. The glove is opaque white with black ink outlines. Give the full artwork, including the black wordmark and arrow, a narrow clean white sticker-like outer keyline so it remains readable on both light and dark README backgrounds. No filled rectangular backdrop.
+Constraints: original hand pose and lettering; no character face, mouse ears, Disney lettering, character body, existing company logos, watermark, slogan, gradients, 3D, shadows, distressed texture, ornamental stars, tiny details, or additional objects. Keep everything legible when displayed at 420 pixels wide. Output a finished high-resolution PNG logo.

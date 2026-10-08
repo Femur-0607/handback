@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-relay"
+dynamic = ["version"]
+description = "Local, durable relay between coding-agent apps"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = []
+
+[project.scripts]
+agent-relay = "agent_relay.cli:main"
+
+[project.gui-scripts]
+agent-relay-dashboard = "agent_relay.dashboard:main"
+
+[tool.setuptools.dynamic]
+# Explicit __init__ avoids confusing the package with the checkout launcher.
+version = {attr = "agent_relay.__init__.__version__"}
+
+[tool.setuptools.package-dir]
+agent_relay = "agent_relay"
+
+[tool.setuptools.packages.find]
+include = ["agent_relay*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+agent_relay = ["skills/SKILL.md", "skills/*/SKILL.md.in", "assets/*.png", "assets/*.ico"]
