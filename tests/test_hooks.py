@@ -345,6 +345,165 @@ class HookTests(unittest.TestCase):
             self.assertLess(time.monotonic() - start, 0.5)
         self.assertFalse(self.home.exists())
 
+    @contextlib.contextmanager
+    def scan_fixture(self, kind, records, receipts=None):
+        """Fixed enumeration order; only source reads are mocked, checkpoints are real."""
+        directory = self.state.path / kind
+        values = {directory / (record["id"] + ".json"): record for record in records}
+        names = [path.name for path in values]
+        values.update({directory / "acks" / (key + ".json"): value
+                       for key, value in (receipts or {}).items()})
+        original_read, original_entries = hooks._read, hooks._entries
+
+        def read(path, context, default=None, **kwargs):
+            path = Path(path)
+            if path in values:
+                context.remaining()
+                return values[path]
+            return original_read(path, context, default, **kwargs)
+
+        def entries(path):
+            return iter(names) if path == directory else original_entries(path)
+
+        with patch.object(hooks, "_entries", side_effect=entries), patch.object(hooks, "_read", side_effect=read):
+            yield
+
+    def test_large_ack_history_resumes_and_isolates_recipient(self):
+        self.state.write_json("topology.json", {"lead": "claude:lead-session", "root": str(self.root)})
+        template = envelope.make("request", "codex:worker", "claude:lead-session", "ACK HISTORY")
+        history = [{**template, "id": f"{index:032x}"} for index in range(4096)]
+        receipts = {m["id"]: {"id": m["id"], "recipient": m["recipient"]} for m in history}
+        target = {**template, "id": "e" * 32, "body": "LAST UNREAD"}
+        other = {**template, "id": "f" * 32, "recipient": "claude:other", "body": "OTHER PRIVATE"}
+        with self.scan_fixture("inbox", history + [target, other], receipts), patch.object(hooks, "SCAN_SECONDS", 60):
+            first = self.recover()["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("recovery scan incomplete", first)
+            self.assertNotIn("LAST UNREAD", first)
+            second = self.recover()["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("LAST UNREAD", second)
+            self.assertNotIn("OTHER PRIVATE", second)
+            self.assertNotIn("ACK HISTORY", second)
+            # This recipient starts at zero, regardless of the first one's cursor.
+            contexts = [hooks._Context(self.home), hooks._Context(self.home)]
+            self.assertEqual(list(hooks._unread(self.state.path, "claude:other", contexts[0])), [])
+            self.assertEqual([m["id"] for m in hooks._unread(self.state.path, "claude:other", contexts[1])],
+                             [other["id"]])
+            # Completing a pass wraps. Without an explicit ACK, mail is replayed.
+            self.recover()
+            self.assertIn("LAST UNREAD", self.recover()["hookSpecificOutput"]["additionalContext"])
+        self.assertFalse((self.state.path / "inbox/acks").exists())
+        log = (self.home / "hook-scans/limits.log").read_text(encoding="utf-8")
+        self.assertIn("kind=inbox reason=limit", log)
+        self.assertNotIn("PRIVATE", log)
+
+    def test_large_closed_request_history_resumes_watcher_lookup(self):
+        self.state.write_json("topology.json", {"lead": "claude:lead-session", "root": str(self.root)})
+        history = [{**self.request, "id": f"{index:032x}", "status": "completed"} for index in range(4096)]
+        other = {**self.request, "id": "e" * 32, "return_to": "claude:other"}
+        target = {**self.request, "id": "f" * 32}
+        with self.scan_fixture("requests", history + [other, target]), patch.object(hooks, "SCAN_SECONDS", 60):
+            first = self.recover()["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("recovery scan incomplete", first)
+            self.assertNotIn("no inbox watcher", first)
+            second = self.recover()["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("1 open request(s)", second)
+            self.assertIn("--for claude:lead-session", second.replace("'", ""))
+            self.assertNotIn("--for claude:other", second)
+
+    def test_request_cursors_are_scoped_to_session_event_and_purpose(self):
+        records = [{**self.request, "id": f"{index:032x}"} for index in range(3)]
+        def scan(session, event="Stop", purpose="observation"):
+            context = hooks._Context(self.home, "codex", event)
+            context.session = session
+            return [r["id"] for r in hooks._requests(self.state.path, context, purpose)]
+        with self.scan_fixture("requests", records), patch.object(hooks, "MAX_REQUESTS", 1):
+            self.assertEqual(scan("one"), [records[0]["id"]])
+            self.assertEqual(scan("two"), [records[0]["id"]])
+            self.assertEqual(scan("one", "UserPromptSubmit"), [records[0]["id"]])
+            self.assertEqual(scan("one", purpose="project-root"), [records[0]["id"]])
+            self.assertEqual(scan("one"), [records[1]["id"]])
+
+    def test_scan_budget_resumes_interrupted_read_without_losing_recovered_mail(self):
+        first = self.seed_lead()
+        last = inbox.put(self.state.path / "inbox", envelope.make(
+            "last", "codex:worker", first["recipient"], "LAST AFTER BUDGET", message_id="c" * 32))
+        original_read = hooks._read
+        directory = self.state.path / "inbox"
+        names = [first["id"] + ".json", last["id"] + ".json"]
+        original_entries = hooks._entries
+        def read(path, context, *args, **kwargs):
+            if path == directory / names[-1]:
+                raise hooks._BudgetExpired()
+            return original_read(path, context, *args, **kwargs)
+        with patch.object(hooks, "_entries", side_effect=lambda path:
+                          iter(names) if path == directory else original_entries(path)):
+            with patch.object(hooks, "_read", side_effect=read):
+                output = self.recover()["hookSpecificOutput"]["additionalContext"]
+            self.assertIn(first["body"], output)
+            self.assertIn("recovery scan incomplete", output)
+            self.assertNotIn(last["body"], output)
+            self.assertIn(last["body"], self.recover()["hookSpecificOutput"]["additionalContext"])
+        self.assertIn("reason=budget", (self.home / "hook-scans/limits.log").read_text(encoding="utf-8"))
+        self.assertEqual(len(inbox.pending(directory, first["recipient"])), 2)
+
+    def test_time_budget_advances_requests_and_leaves_time_for_next_lookup(self):
+        records = [{**self.request, "id": f"{index:032x}"} for index in range(5)]
+        clock = [0.0]
+        with self.scan_fixture("requests", records):
+            fixture_read = hooks._read
+            def read(path, context, *args, **kwargs):
+                if Path(path).parent == self.state.path / "requests":
+                    clock[0] += 0.3
+                return fixture_read(path, context, *args, **kwargs)
+            with patch.object(hooks.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(hooks, "_read", side_effect=read):
+                seen = []
+                for _ in range(4):
+                    context = hooks._Context(self.home, "claude", "SessionStart")
+                    seen.extend(r["id"] for r in hooks._requests(self.state.path, context))
+                    self.assertGreater(context.remaining(), 0)
+                self.assertIn(records[-1]["id"], seen)
+
+    def test_context_overflow_does_not_skip_the_unreported_message(self):
+        self.seed_lead()
+        directory = self.state.path / "inbox"
+        for index in range(hooks.MAX_CONTEXT_MESSAGES + 2):
+            inbox.put(directory, envelope.make(str(index), "codex:worker", "claude:lead-session", "body"))
+        reported = set()
+        for _ in range(3):
+            text = self.recover()["hookSpecificOutput"]["additionalContext"]
+            reported.update(json.loads(line)["id"] for line in text.splitlines() if line.startswith("{"))
+        self.assertEqual(reported, {m["id"] for m in inbox.pending(directory, "claude:lead-session")})
+
+    def test_checkpoint_failure_is_visible_and_does_not_discard_mail(self):
+        self.seed_lead()
+        with patch.object(hooks, "MAX_CONTEXT_MESSAGES", 0), \
+                patch.object(hooks, "atomic_json", side_effect=OSError("SECRET")):
+            output = self.recover()["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("checkpoint failure", output)
+        self.assertNotIn("SECRET", output)
+        self.assertTrue(inbox.pending(self.state.path / "inbox", "claude:lead-session"))
+
+    def test_damaged_or_stale_checkpoint_restarts_from_original_state(self):
+        records = [{**self.request, "id": f"{index:032x}"} for index in range(2)]
+        with self.scan_fixture("requests", records), patch.object(hooks, "MAX_REQUESTS", 1):
+            def scan():
+                return list(hooks._requests(self.state.path, hooks._Context(self.home)))
+            scan()
+            checkpoint = next((self.home / "hook-scans").glob("*.json"))
+            checkpoint.write_text("{broken", encoding="utf-8")
+            self.assertEqual(scan()[0]["id"], records[0]["id"])
+            atomic_json(checkpoint, {"offset": 999})
+            self.assertEqual(scan(), [])  # EOF resets a cursor beyond a shrunken directory.
+            self.assertEqual(scan()[0]["id"], records[0]["id"])
+
+    def test_later_recovery_budget_expiry_keeps_earlier_mail(self):
+        mail = self.seed_lead()
+        with patch.object(hooks, "_watch_hint", side_effect=hooks._BudgetExpired):
+            output = self.recover()["hookSpecificOutput"]["additionalContext"]
+        self.assertIn(mail["body"], output)
+        self.assertIn("recovery scan incomplete", output)
+
 
 if __name__ == "__main__":
     unittest.main()
