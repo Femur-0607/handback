@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [0.2.4] - 2026-10-09
+
+### Changed
+
+- The compact dashboard widget drags freely over the taskbar and to the monitor
+  edges, from anywhere including status counts. It docks only when released
+  inside a top or bottom taskbar with at least half of it overlapping. Floating
+  widgets have rounded corners and an outline on Windows.
+- Long expanded panels scroll, including pinned panels. `+N` turns yellow when
+  the remaining projects have unread results. Unchanged tooltips and scroll
+  positions survive refresh.
+
+### Fixed
+
+- The dashboard shows state read errors instead of an empty project list.
+- The recovery hook resumes bounded directory scans from a per-scope checkpoint
+  instead of restarting at the 4096-entry cap, so later entries are no longer
+  skipped on every call. Incomplete scans are reported in the hook context and
+  `hook-scans/limits.log`.
+
 ## [0.2.3] - 2026-10-09
 
 ### Fixed
@@ -87,6 +107,7 @@ All notable changes to this project are documented here. This file follows the
 - The release version check imports the checkout when run from a temporary
   directory.
 
+[0.2.4]: https://github.com/Femur-0607/handback/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/Femur-0607/handback/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Femur-0607/handback/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Femur-0607/handback/compare/v0.2.0...v0.2.1
