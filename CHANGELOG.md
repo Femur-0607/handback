@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [0.2.3] - 2026-10-09
+
+### Fixed
+
+- A collected result is kept until it is published. A transient failure while
+  saving the result mail or request state no longer stops the watcher from
+  completing the request, and the worker is never asked again.
+- `doctor` reports a missing Codex executable or `queue --thread` support as a
+  failure only when Codex is the selected Lead or a worker. Otherwise these
+  checks are advisory warnings.
+- On Windows, reading relay state retries briefly when another process is
+  replacing the same file, instead of failing the router or collector.
+
 ## [0.2.2] - 2026-10-09
 
 ### Fixed
@@ -74,6 +87,7 @@ All notable changes to this project are documented here. This file follows the
 - The release version check imports the checkout when run from a temporary
   directory.
 
+[0.2.3]: https://github.com/Femur-0607/handback/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Femur-0607/handback/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Femur-0607/handback/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Femur-0607/handback/releases/tag/v0.2.0
