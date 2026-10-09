@@ -158,6 +158,9 @@ class WatchCollector:
         self.adapter_for = adapter_for
         self.lead_adapter_for = lead_adapter_for
         self.followers = {}
+        # Polling consumes source records. Retain confirmed results until their
+        # publication succeeds; a new process still recovers from the source.
+        self.pending_results = {}
         self.unsupported = set()
         self.log = log
         self.clock = clock
@@ -217,22 +220,27 @@ class WatchCollector:
             if self.signatures.get(request_id) != signature:
                 self.retries.pop(request_id, None)
                 self.followers.pop(request_id, None)
+                self.pending_results.pop(request_id, None)
                 self.unsupported.discard(request_id)
                 self.signatures[request_id] = signature
             if request_id in self.unsupported or self.clock() < self.retries.get(request_id, {}).get("after", 0):
                 continue
             try:
-                follower = self.followers.get(request_id)
-                if follower is None:
-                    adapter = self.adapter_for(request.get("agent"))
-                    make = getattr(adapter, "incremental_collector", None)
-                    if make is None:
-                        self.unsupported.add(request_id)
-                        continue
-                    follower = self.followers[request_id] = (
-                        make(request, relay_home=self.state.home) if getattr(adapter, "needs_context", False)
-                        else make(request))
-                result = follower.poll()
+                result = self.pending_results.get(request_id)
+                if result is None:
+                    follower = self.followers.get(request_id)
+                    if follower is None:
+                        adapter = self.adapter_for(request.get("agent"))
+                        make = getattr(adapter, "incremental_collector", None)
+                        if make is None:
+                            self.unsupported.add(request_id)
+                            continue
+                        follower = self.followers[request_id] = (
+                            make(request, relay_home=self.state.home) if getattr(adapter, "needs_context", False)
+                            else make(request))
+                    result = follower.poll()
+                    if result is not None:
+                        self.pending_results[request_id] = result
                 if result is not None:
                     finish_request(self.state, request, result)
                     live.discard(request_id)
@@ -244,4 +252,5 @@ class WatchCollector:
         for request_id in set(self.signatures) - live:
             self.signatures.pop(request_id, None)
             self.retries.pop(request_id, None)
+            self.pending_results.pop(request_id, None)
             self.unsupported.discard(request_id)

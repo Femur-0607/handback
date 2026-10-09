@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from handback import cli, collector, envelope, inbox
-from handback.adapters import codex
+from handback.adapters import antigravity, codex
 from handback.state import ProjectState
 
 
@@ -54,12 +54,12 @@ class Base(unittest.TestCase):
         path.touch()
         return path
 
-    def accepted(self, thread="t1", return_to="claude:lead"):
+    def accepted(self, thread="t1", return_to="claude:lead", agent="codex"):
         request_id = os.urandom(16).hex()
         outgoing = inbox.put(self.state.path / "inbox", envelope.make(
-            request_id, return_to, "codex:" + thread, "[relay x] work", kind="request"))
+            request_id, return_to, agent + ":" + thread, "[relay x] work", kind="request"))
         request = {"schema": 1, "id": request_id, "marker": "[relay " + request_id[:8] + "]",
-                   "thread": thread, "handle": "codex:" + thread, "agent": "codex",
+                   "thread": thread, "handle": agent + ":" + thread, "agent": agent,
                    "return_to": return_to, "outgoing_id": outgoing["id"],
                    "created_utc": "2026-10-07T00:00:00+00:00", "status": "accepted", "hop": 0,
                    "root": str(self.state.root)}
@@ -317,15 +317,218 @@ class RetryTests(Base):
             self.assertEqual(read.call_count, 2)
 
 class FinishRetryTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.now = [0]
+        self.adapter = codex.CodexAdapter()
+
+    def completed_rollout(self, thread="t1"):
+        request = self.accepted(thread=thread)
+        path = self.rollout(thread)
+        append(path, event("task_started", turn_id="u1"), user(request["marker"], "u1"),
+               event("task_complete", turn_id="u1", last_agent_message="저장할 결과"))
+        return request, path
+
+    def watcher(self):
+        return collector.WatchCollector(self.state, "claude:lead", lambda a: self.adapter,
+                                        clock=lambda: self.now[0])
+
+    def fail_once(self, phase):
+        target, name, error = {
+            "finish": (collector, "finish_request", OSError("publication failed")),
+            "lock": (self.state, "lock", TimeoutError("relay lock busy")),
+            "mail": (inbox, "put", PermissionError("mail write denied")),
+            "request": (self.state, "save_request", PermissionError("request write denied")),
+        }[phase]
+        original = getattr(target, name)
+        failed = False
+
+        def attempt(*args, **kwargs):
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise error
+            return original(*args, **kwargs)
+
+        return patch.object(target, name, side_effect=attempt)
+
+    def assert_completed_once(self, request):
+        current = self.state.load_request(request["id"])
+        self.assertEqual(current["status"], "completed")
+        self.assertEqual(current["id"], request["id"])
+        self.assertEqual(current["return_to"], request["return_to"])
+        self.assertEqual(current["result"]["text"], "저장할 결과")
+        mail = inbox.pending(self.state.path / "inbox", request["return_to"], request["id"],
+                             include_acknowledged=True)
+        self.assertEqual(len(mail), 1)
+        self.assertEqual((mail[0]["id"], mail[0]["kind"], mail[0]["body"]),
+                         (current["reply_id"], "result", "저장할 결과"))
+        self.assertFalse(inbox._is_acknowledged(self.state.path / "inbox", mail[0]))
+        return mail[0]
+
+    def check_publication_retry(self, phase):
+        request, path = self.completed_rollout()
+        watch = self.watcher()
+        with self.fail_once(phase), patch.object(self.adapter, "deliver") as deliver:
+            watch.poll()
+            self.assertEqual(self.state.load_request(request["id"])["status"], "accepted")
+            follower = watch.followers[request["id"]]
+            self.assertIsInstance(follower, codex.RolloutCollector)
+            self.assertEqual(follower.tailer.offset, path.stat().st_size)
+            # A request save failure happens AFTER durable mail publication.
+            partial = inbox.pending(self.state.path / "inbox", "claude:lead", request["id"])
+            self.assertEqual(len(partial), int(phase == "request"))
+            with patch.object(follower, "poll", wraps=follower.poll) as poll:
+                self.now[0] = 1
+                watch.poll()
+                self.assertEqual(watch.retries[request["id"]]["count"], 1)
+                self.now[0] = 2
+                watch.poll()
+                self.assert_completed_once(request)
+                poll.assert_not_called()
+            deliver.assert_not_called()
+        self.assertEqual(watch.pending_results, {})
+        self.assertEqual(watch.followers, {})
+        self.assertEqual(watch.retries, {})
+        # Success and a subsequent watch do not implicitly ACK the result.
+        watch.poll()
+        mail = self.assert_completed_once(request)
+        inbox.acknowledge(self.state.path / "inbox", mail["id"], request["return_to"])
+        self.watcher().poll()
+        self.assertEqual(inbox.pending(self.state.path / "inbox", "claude:lead", request["id"]), [])
+        self.assertEqual(len(inbox.pending(self.state.path / "inbox", "claude:lead", request["id"],
+                                           include_acknowledged=True)), 1)
+
+    def test_consumed_completion_retries_finish_without_new_records(self):
+        self.check_publication_retry("finish")
+
+    def test_consumed_completion_recovers_after_lock_timeout(self):
+        self.check_publication_retry("lock")
+
+    def test_consumed_completion_recovers_after_mail_write_failure(self):
+        self.check_publication_retry("mail")
+
+    def test_consumed_completion_recovers_after_request_write_failure(self):
+        self.check_publication_retry("request")
+
+    def test_new_watcher_recovers_from_source_after_each_publication_failure(self):
+        for phase in ("finish", "lock", "mail", "request"):
+            with self.subTest(phase=phase):
+                request, _ = self.completed_rollout(phase)
+                watch = self.watcher()
+                with self.fail_once(phase):
+                    watch.poll()
+                self.assertEqual(self.state.load_request(request["id"])["status"], "accepted")
+                # No cached result or tailer is transferred to the replacement.
+                del watch
+                self.watcher().poll()
+                self.assert_completed_once(request)
+
     def test_publication_failure_keeps_failure_count(self):
-        self.accepted()
-        now = [0]
-        follower = SimpleNamespace(poll=lambda: {'outcome': 'completed', 'text': 'reply'})
-        adapter = SimpleNamespace(incremental_collector=lambda r: follower)
-        watch = collector.WatchCollector(self.state, 'claude:lead', lambda a: adapter, clock=lambda: now[0])
+        request, _ = self.completed_rollout()
+        watch = self.watcher()
         with patch.object(collector, 'finish_request', side_effect=ValueError('ACK mismatch')) as finish:
             for second in range(15):
-                now[0] = second
+                self.now[0] = second
                 watch.poll()
             self.assertEqual(finish.call_count, 4)
-            self.assertEqual(next(iter(watch.retries.values()))['delay'], 16)
+            self.assertEqual(watch.retries[request["id"]]['delay'], 16)
+        self.now[0] = 30
+        watch.poll()
+        self.assert_completed_once(request)
+
+    def test_another_collector_completion_discards_pending_result(self):
+        request, _ = self.completed_rollout()
+        watch = self.watcher()
+        with self.fail_once("finish"):
+            watch.poll()
+        collector.finish_request(self.state, request, codex.collect_reply(request["thread"], request["marker"], 1))
+        with patch.object(collector, "finish_request") as finish:
+            watch.poll()
+            finish.assert_not_called()
+        self.assert_completed_once(request)
+        self.assertEqual(watch.pending_results, {})
+        self.assertEqual(watch.followers, {})
+        self.assertEqual(watch.retries, {})
+
+    def test_changed_request_signature_discards_stale_result(self):
+        request, _ = self.completed_rollout()
+        watch = self.watcher()
+        with self.fail_once("finish"):
+            watch.poll()
+        request["marker"] = "[relay different]"
+        self.state.save_request(request)
+        self.now[0] = 2
+        watch.poll()
+        self.assertEqual(self.state.load_request(request["id"])["status"], "accepted")
+        self.assertEqual(inbox.pending(self.state.path / "inbox", "claude:lead"), [])
+        self.assertEqual(watch.pending_results, {})
+
+
+class AntigravityFinishRetryTests(Base):
+    def check_retained_result(self, settled):
+        request = self.accepted(agent="antigravity")
+        gemini = Path(self.temp.name) / "gemini"
+        path = antigravity.transcript_path(request["thread"], gemini)
+        path.parent.mkdir(parents=True)
+        # The first poll stops at the later user input. A second poll would read
+        # that user's answer and replace the marked turn's candidate.
+        append(path,
+               {"type": "USER_INPUT", "content": request["marker"], "created_at": "2026-10-07T09:00:00Z"},
+               {"type": "PLANNER_RESPONSE", "status": "DONE", "content": "original"},
+               {"type": "USER_INPUT", "content": "unmarked input", "created_at": "2026-10-07T09:01:00Z"},
+               {"type": "PLANNER_RESPONSE", "status": "DONE", "content": "other turn"})
+        observations = antigravity.observation_dir(self.home) / (request["thread"] + ".jsonl")
+        observations.parent.mkdir(parents=True)
+        start = 1791363600
+        if settled:
+            append(observations, {"event": "Stop", "at": start + 5, "fullyIdle": True})
+        append(observations, {"event": "Stop", "at": start + 65, "fullyIdle": True})
+        adapter = antigravity.AntigravityAdapter(gemini=gemini)
+        now = [0]
+        watch = collector.WatchCollector(self.state, "claude:lead", lambda a: adapter, clock=lambda: now[0])
+        with patch.object(collector, "finish_request", side_effect=PermissionError("publication denied")):
+            watch.poll()
+        follower = watch.followers[request["id"]]
+        self.assertIsInstance(follower, antigravity.TranscriptCollector)
+        self.assertLess(follower.tailer.offset, path.stat().st_size)
+        now[0] = 2
+        watch.poll()
+        current = self.state.load_request(request["id"])
+        self.assertEqual(current["status"], "completed" if settled else "failed")
+        if settled:
+            self.assertEqual(current["result"]["text"], "original")
+        else:
+            self.assertIn("A later input arrived", current["result"]["error"])
+        mail = inbox.pending(self.state.path / "inbox", "claude:lead", request["id"])
+        self.assertEqual(len(mail), 1)
+        self.assertEqual(mail[0]["kind"], "result" if settled else "error")
+        self.assertEqual(watch.pending_results, {})
+
+    def test_settled_completion_is_retained_before_later_transcript_records(self):
+        self.check_retained_result(settled=True)
+
+    def test_failed_completion_is_retained_before_later_transcript_records(self):
+        self.check_retained_result(settled=False)
+
+
+class CollectRecoveryTests(Base):
+    def test_wait_and_detached_entrypoint_reread_source_after_publication_error(self):
+        for command in ("wait", "collect"):
+            with self.subTest(command=command):
+                request = self.accepted(thread=command)
+                append(self.rollout(command), event("task_started", turn_id="u1"), user(request["marker"], "u1"),
+                       event("task_complete", turn_id="u1", last_agent_message="recovered"))
+                args = [command, "--root", str(self.root), "--request", request["id"], "--timeout", "1"]
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                        patch.object(codex.CodexAdapter, "deliver") as deliver:
+                    with patch.object(cli, "finish_request", side_effect=PermissionError("publication denied")):
+                        self.assertEqual(cli.main(args), 5)
+                    self.assertEqual(self.state.load_request(request["id"])["status"], "accepted")
+                    self.assertIn("publication denied", err.getvalue())
+                    self.assertEqual(cli.main(args), 0)
+                    deliver.assert_not_called()
+                self.assertEqual(self.state.load_request(request["id"])["status"], "completed")
+                mail = inbox.pending(self.state.path / "inbox", "claude:lead", request["id"])
+                self.assertEqual([m["body"] for m in mail], ["recovered"])
