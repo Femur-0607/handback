@@ -4,6 +4,8 @@ This is a privacy-reviewed summary of development checks recorded on October 7â€
 
 The [October 9 role model/reasoning settings record](2026-10-09-role-model-settings.md) documents isolated native persistence and desktop source checks performed without a model turn, including the remaining limit for conversations already loaded in the app.
 
+The [October 9 Claude Lead â†’ Codex worker record](2026-10-09-claude-lead-codex-worker.md) documents three real delegations from a Claude desktop Lead to new Codex worker threads, including the first observation of the Claude recovery hook running in the desktop app.
+
 ## Recorded environment
 
 The live integration checks ran on Windows, on one computer under one user account. The October 7 preflight report recorded `codex-cli 0.153.4` from `codex --version` and Claude CLI `2.1.292` from `claude --version`. Those observations do not establish the versions used in every later run. This summary does not establish exact Windows, Python, or Antigravity build versions.
