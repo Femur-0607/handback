@@ -1,5 +1,6 @@
 import concurrent.futures
 import contextlib
+import errno
 import io
 import json
 import os
@@ -64,6 +65,33 @@ class RouterTests(unittest.TestCase):
             self.assertEqual(first.result(3)["status"], "delivered")
         self.assertEqual(self.adapter.deliver_to_lead.call_count, 1)
         self.assertEqual(len(inbox.pending(self.state.path / "inbox")), 1)
+
+    def test_busy_route_retries_record_read_without_replaying_delivery(self):
+        mail = self.mail()
+        path = self.state.path / "inbox/delivered" / (mail["id"] + ".json")
+        original_open = Path.open
+        for status in ("delivery_unknown", "delivered"):
+            with self.subTest(status=status):
+                entry = {"id": mail["id"], "status": status, "attempts": 1}
+                atomic_json(path, entry)
+                reads = []
+
+                def open_record(candidate, *args, **kwargs):
+                    if candidate == path:
+                        reads.append(candidate)
+                        if len(reads) == 1:
+                            raise PermissionError(errno.EACCES, "sharing violation")
+                    return original_open(candidate, *args, **kwargs)
+
+                with patch.object(self.state, "lock", side_effect=TimeoutError("delivery busy")), \
+                        patch.object(Path, "open", open_record), \
+                        patch("handback.state.sys.platform", "win32"), \
+                        patch("handback.state.time.sleep"):
+                    self.assertEqual(self.route(mail), entry)
+                self.assertEqual(len(reads), 2)
+                self.assertEqual(self.route(mail), entry)
+                self.adapter.deliver_to_lead.assert_not_called()
+                self.assertEqual(len(inbox.pending(self.state.path / "inbox")), 1)
 
     def test_sandbox_pending_then_external_delivery(self):
         mail = self.mail()

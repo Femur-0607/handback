@@ -88,13 +88,20 @@ def atomic_json(path, data):
 
 
 def _read_json(path, default):
-    try:
-        with Path(path).open(encoding="utf-8-sig") as stream:
-            return json.load(stream)
-    except FileNotFoundError:
-        return _MISSING if default is _MISSING else deepcopy(default)
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise ValueError(f"Invalid JSON state in {path}: {error}") from error
+    for attempt in range(6):
+        try:
+            with Path(path).open(encoding="utf-8-sig") as stream:
+                return json.load(stream)
+        except FileNotFoundError:
+            return _MISSING if default is _MISSING else deepcopy(default)
+        except PermissionError:
+            # Windows can deny an open briefly while another process replaces
+            # the file. Retry reads only; never treat unreadable state as absent.
+            if sys.platform != "win32" or attempt == 5:
+                raise
+            time.sleep(0.01 * 2 ** attempt)
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"Invalid JSON state in {path}: {error}") from error
 
 
 def _request_id(value):

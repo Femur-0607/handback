@@ -188,7 +188,25 @@ class SendSpawnTests(Base):
     def test_detached_collector_process_publishes_after_completion(self):
         request = self.accepted()
         path = self.rollout("t1")
-        info = collector.spawn(self.state, request, timeout=60)
+        children = []
+        popen = collector.subprocess.Popen
+
+        def stop(child):
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+
+        def start(*args, **kwargs):
+            child = popen(*args, **kwargs)
+            children.append(child)
+            # Reap this exact child before the temporary directory even if spawn
+            # fails to publish its PID or an assertion fails below.
+            self.addCleanup(stop, child)
+            return child
+
+        with patch.object(collector.subprocess, "Popen", side_effect=start):
+            info = collector.spawn(self.state, request, timeout=60)
+        self.assertEqual(len(children), 1)
         self.assertEqual(self.state.load_request(request["id"])["collector"]["pid"], info["pid"])
         time.sleep(1)
         self.assertEqual(inbox.pending(self.state.path / "inbox", "claude:lead"), [])
@@ -199,8 +217,8 @@ class SendSpawnTests(Base):
             time.sleep(0.2)
         mail = inbox.pending(self.state.path / "inbox", "claude:lead")
         self.assertEqual([m["body"] for m in mail], ["분리 수집"], Path(info["log"]).read_text(encoding="utf-8"))
-        while time.monotonic() < deadline and "exit=0" not in Path(info["log"]).read_text(encoding="utf-8"):
-            time.sleep(0.2)
+        # The exit log is flushed before interpreter shutdown closes stdout.
+        self.assertEqual(children[0].wait(timeout=10), 0, Path(info["log"]).read_text(encoding="utf-8"))
         self.assertIn("exit=0", Path(info["log"]).read_text(encoding="utf-8"))
 
     def test_pid_recorded_when_watcher_finishes_before_child_registration(self):

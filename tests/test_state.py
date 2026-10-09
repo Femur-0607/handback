@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import errno
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,7 @@ import unittest
 from unittest import mock
 import uuid
 
-from handback.state import ProjectState, atomic_json, home_lock, moved_destination, project_identity, state_home, state_warnings
+from handback.state import ProjectState, _MISSING, atomic_json, home_lock, moved_destination, project_identity, state_home, state_warnings
 
 
 class StateTests(unittest.TestCase):
@@ -58,6 +59,68 @@ class StateTests(unittest.TestCase):
         self.assertEqual(self.state.requests(), [])
         self.assertEqual(self.state.threads(), {})
         self.assertFalse(self.home.exists())
+
+    def test_windows_read_retries_transient_permission_errors(self):
+        for failures in (1, 3):
+            with self.subTest(failures=failures):
+                stream = mock.mock_open(read_data='{"status": "delivered"}').return_value
+                errors = [PermissionError(errno.EACCES, "sharing violation")] * failures
+                with mock.patch("handback.state.sys.platform", "win32"), \
+                        mock.patch.object(Path, "open", side_effect=errors + [stream]) as opened, \
+                        mock.patch("handback.state.time.sleep") as sleep:
+                    self.assertEqual(self.state.read_json("sample.json"), {"status": "delivered"})
+                self.assertEqual(opened.call_count, failures + 1)
+                self.assertEqual(sleep.call_count, failures)
+
+    def test_windows_read_does_not_hide_persistent_permission_error(self):
+        error = PermissionError(errno.EACCES, "access denied")
+        with mock.patch("handback.state.sys.platform", "win32"), \
+                mock.patch.object(Path, "open", side_effect=error) as opened, \
+                mock.patch("handback.state.time.sleep") as sleep:
+            with self.assertRaises(PermissionError) as raised:
+                self.state.read_json("sample.json", {})
+        self.assertIs(raised.exception, error)
+        self.assertEqual(opened.call_count, 6)
+        self.assertEqual(sleep.call_count, 5)
+        self.assertLess(sum(call.args[0] for call in sleep.call_args_list), 0.5)
+
+    def test_read_does_not_retry_other_io_errors_or_other_platforms(self):
+        for platform, error in (("linux", PermissionError(errno.EACCES, "access denied")),
+                                ("win32", OSError(errno.EIO, "disk error"))):
+            with self.subTest(platform=platform, error=error):
+                with mock.patch("handback.state.sys.platform", platform), \
+                        mock.patch.object(Path, "open", side_effect=error) as opened, \
+                        mock.patch("handback.state.time.sleep") as sleep:
+                    with self.assertRaises(type(error)) as raised:
+                        self.state.read_json("sample.json", {})
+                self.assertIs(raised.exception, error)
+                opened.assert_called_once()
+                sleep.assert_not_called()
+
+    def test_windows_read_preserves_missing_defaults_after_retry(self):
+        default = {"nested": []}
+        for fallback in (default, _MISSING):
+            with self.subTest(fallback=fallback):
+                with mock.patch("handback.state.sys.platform", "win32"), \
+                        mock.patch.object(Path, "open", side_effect=[PermissionError(errno.EACCES, "busy"),
+                                                                    FileNotFoundError()]), \
+                        mock.patch("handback.state.time.sleep"):
+                    result = self.state.read_json("sample.json", fallback)
+                if fallback is _MISSING:
+                    self.assertIs(result, _MISSING)
+                else:
+                    self.assertEqual(result, default)
+                    self.assertIsNot(result["nested"], default["nested"])
+
+    def test_windows_read_still_rejects_corrupt_json_after_retry(self):
+        stream = mock.mock_open(read_data="{").return_value
+        with mock.patch("handback.state.sys.platform", "win32"), \
+                mock.patch.object(Path, "open", side_effect=[PermissionError(errno.EACCES, "busy"), stream]) as opened, \
+                mock.patch("handback.state.time.sleep") as sleep:
+            with self.assertRaisesRegex(ValueError, "Invalid JSON state"):
+                self.state.read_json("sample.json", {})
+        self.assertEqual(opened.call_count, 2)
+        sleep.assert_called_once()
 
     def test_non_git_roots_have_distinct_stable_keys(self):
         other = self.root.parent / "other"
