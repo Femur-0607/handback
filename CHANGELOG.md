@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [0.2.2] - 2026-10-09
+
+### Fixed
+
+- An Antigravity Stop that fires before its observation file exists is now
+  collected once instead of being missed.
+- Codex install discovery is shared by the adapter and `install-skills`, so
+  version-specific install paths are found by both.
+- Releasing a project from the dashboard re-checks open requests under the
+  state lock, so a request created meanwhile is never archived.
+- Open menus, submenus, and focus survive the periodic dashboard refresh.
+- The dashboard redraws when its error state changes, and the model/reasoning
+  dialog resizes after showing or clearing errors.
+
+### Changed
+
+- Common dashboard errors are worded in Korean, the compact font is slightly
+  larger, and the panel responds to Enter/Space/Esc.
+- The release workflow publishes only after the Windows test matrix passes.
+
 ## [0.2.1] - 2026-10-09
 
 ### Added
@@ -54,5 +74,6 @@ All notable changes to this project are documented here. This file follows the
 - The release version check imports the checkout when run from a temporary
   directory.
 
+[0.2.2]: https://github.com/Femur-0607/handback/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Femur-0607/handback/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Femur-0607/handback/releases/tag/v0.2.0
