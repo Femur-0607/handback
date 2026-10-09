@@ -57,6 +57,68 @@ class DashboardMenuTests(unittest.TestCase):
             result.extend(self.widgets(child))
         return result
 
+    def request_state_fixture(self):
+        folder = self.home / "projects" / ("a" * 64)
+        dashboard.atomic_json(folder / "topology.json", {
+            "root": str(self.home.parent), "lead": "claude:lead", "workers": ["codex"]})
+        request = folder / "requests" / ("1" * 32 + ".json")
+        dashboard.atomic_json(request, {"status": "completed"})
+        return request
+
+    def test_panel_displays_damaged_request_and_recovers(self):
+        request = self.request_state_fixture()
+        request.write_text("{", encoding="utf-8")
+        [row] = dashboard.snapshot(self.home)
+        self.strip.expanded.add(row["root"])
+        with patch.object(self.strip.tooltip, "bind", wraps=self.strip.tooltip.bind) as bind:
+            self.strip.render([row])
+        labels = [w.cget("text") for w in self.widgets(self.strip.frame) if isinstance(w, self.tk.Label)]
+        self.assertIn("읽기 오류 1", labels)
+        self.assertNotIn("대기", labels)
+        self.assertNotIn("세부 항목 없음", labels)
+        self.assertTrue(any("집계 불완전" in text for text in labels))
+        self.assertTrue(any(str(request) in c.args[1] for c in bind.call_args_list))
+        dashboard.atomic_json(request, {"status": "completed"})
+        self.strip.render(dashboard.snapshot(self.home))
+        labels = [w.cget("text") for w in self.widgets(self.strip.frame) if isinstance(w, self.tk.Label)]
+        self.assertIn("대기", labels)
+        self.assertFalse(any("읽기 오류" in text for text in labels))
+
+    def test_topology_error_keeps_healthy_row_in_both_modes_and_disables_release(self):
+        self.request_state_fixture()
+        [healthy] = dashboard.snapshot(self.home)
+        folder = self.home / "projects" / ("b" * 64)
+        target = folder / "topology.json"
+        recovered = self.home.parent / "Recovered"
+        recovered.mkdir()
+        topology = {"root": str(recovered), "lead": "claude:lead", "workers": ["codex"]}
+        dashboard.atomic_json(target, topology)
+        for mode in ("panel", "taskbar"):
+            with self.subTest(mode=mode):
+                dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "mode": mode}, self.home)
+                target.write_text("{", encoding="utf-8")
+                with patch.object(self.strip.tooltip, "bind", wraps=self.strip.tooltip.bind) as bind:
+                    self.strip.refresh(reschedule=False)
+                self.assertIsNone(self.strip._render_error)
+                self.assertIn(healthy, self.strip._rows)
+                labels = [w.cget("text") for w in self.widgets(self.strip.frame)
+                          if isinstance(w, self.tk.Label)]
+                self.assertIn("대기", labels)
+                self.assertIn("읽기 오류 1", labels)
+                self.assertTrue(any(str(target) in c.args[1] for c in bind.call_args_list))
+                menu = self.context_menu(str(folder))
+                release = self.entry(menu, "handback 등록 해제…")
+                self.assertFalse(menu.items[release]["enabled"])
+                with patch.object(self.strip, "_release_project") as action:
+                    menu.invoke(release)
+                    action.assert_not_called()
+                self.strip._close_menu()
+                dashboard.atomic_json(target, topology)
+                self.strip.refresh(reschedule=False)
+                self.assertEqual({row["root"] for row in self.strip._rows},
+                                 {healthy["root"], str(recovered)})
+                self.assertTrue(all(row["unreadable"] == 0 for row in self.strip._rows))
+
     def commands(self):
         return set(self.root.tk.splitlist(self.root.tk.call("info", "commands")))
 
@@ -421,6 +483,36 @@ class DashboardMenuTests(unittest.TestCase):
         child.back()
         self.assertIsNone(menu.child)
         self.assertIs(self.strip._context_menu, menu)
+
+    @patch.object(dashboard, "taskbar_info", return_value={
+        "rect": (0, 1032, 1920, 1080), "edge": 3, "auto_hide": False})
+    def test_view_menu_separates_small_widget_taskbar_and_pinned_panel(self, _taskbar):
+        for label, mode, docked in (("작은 위젯", "taskbar", False),
+                                    ("작업표시줄에 넣기", "taskbar", True),
+                                    ("펼친 패널 고정", "panel", False)):
+            with self.subTest(label=label):
+                menu = self.context_menu()
+                settings = self.submenu(menu)
+                with patch.object(self.strip, "_save") as save:
+                    settings.invoke(self.entry(settings, label))
+                prefs = save.call_args.args[0]
+                self.assertEqual((prefs["mode"], prefs["docked"]), (mode, docked))
+
+    def test_view_menu_disables_taskbar_attachment_when_unavailable(self):
+        bottom = {"rect": (0, 1032, 1920, 1080), "edge": 3, "auto_hide": False}
+        for info in (None, {**bottom, "auto_hide": True},
+                     {**bottom, "rect": (0, 0, 48, 1080), "edge": 0},
+                     {**bottom, "rect": (1872, 0, 1920, 1080), "edge": 2}):
+            with self.subTest(taskbar=info), patch.object(dashboard, "taskbar_info", return_value=info):
+                menu = self.context_menu()
+                settings = self.submenu(menu)
+                index = self.entry(settings, "작업표시줄에 넣기")
+                self.assertFalse(settings.items[index]["enabled"])
+                self.assertTrue(settings.items[index]["tooltip"])
+                self.assertTrue(settings.items[self.entry(settings, "작은 위젯")]["enabled"])
+                with patch.object(self.strip, "_save") as save:
+                    settings.invoke(index)
+                    save.assert_not_called()
 
     def test_keyboard_bindings_invoke_and_mouse_hover_opens_submenu(self):
         menu = self.context_menu()

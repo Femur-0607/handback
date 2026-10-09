@@ -4,9 +4,9 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
-from handback import dashboard, envelope, inbox
+from handback import dashboard, envelope, inbox, state
 from handback.state import ProjectState
 
 
@@ -45,6 +45,180 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in row["running"]], ["4-15 정리"])
         self.assertEqual([item["from"] for item in row["unread"]], ["4-15 정리"])
         self.assertGreater(row["last_activity"], 0)
+        self.assertEqual(row["unreadable"], 0)
+
+    def test_damaged_requests_are_visible_and_healthy_requests_survive(self):
+        folder = self.project("a" * 64, self.checkout)
+        broken = folder / "requests" / ("1" * 32 + ".json")
+        self.write(folder / "requests" / ("2" * 32 + ".json"),
+                   {"status": "accepted", "handle": "codex:worker"})
+        for content in ('{"status":', 'null', '[]', '{}', '{"status":7}', '\xff'):
+            with self.subTest(content=content):
+                broken.write_bytes(content.encode("latin-1"))
+                [row] = dashboard.snapshot(self.home)
+                self.assertEqual(row["unreadable"], 1)
+                self.assertEqual(row["first_unreadable"], str(broken))
+                self.assertTrue(row["read_error"])
+                self.assertEqual(len(row["running"]), 1)
+                self.assertIn("집계 불완전", dashboard.read_error_text(row))
+        self.write(broken, {"status": "completed"})
+        [row] = dashboard.snapshot(self.home)
+        self.assertEqual((row["unreadable"], row["first_unreadable"], row["read_error"]), (0, "", ""))
+
+    def test_read_errors_count_each_file_and_do_not_treat_missing_threads_as_damage(self):
+        folder = self.project("a" * 64, self.checkout)
+        self.assertEqual(dashboard.snapshot(self.home)[0]["unreadable"], 0)
+        (folder / "threads.json").write_text("{", encoding="utf-8")
+        for name in ("a", "b"):
+            (folder / "requests" / (name * 32 + ".json")).write_text("{", encoding="utf-8")
+        [row] = dashboard.snapshot(self.home)
+        self.assertEqual(row["unreadable"], 3)
+        self.assertEqual(row["first_unreadable"], str(folder / "threads.json"))
+
+    def test_damaged_topology_keeps_healthy_project_and_error_row(self):
+        self.project("a" * 64, self.checkout)
+        [healthy] = dashboard.snapshot(self.home)
+        # Even a stale project whose checkout has gone must not hide other rows.
+        folder = self.project("b" * 64, self.checkout / "gone")
+        path = folder / "topology.json"
+        for content in ("{", "null", "[]", "\xff"):
+            with self.subTest(content=content):
+                path.write_bytes(content.encode("latin-1"))
+                rows = dashboard.snapshot(self.home)
+                self.assertEqual(len(rows), 2)
+                self.assertIn(healthy, rows)
+                [failed] = [row for row in rows if row.get("unresolved")]
+                self.assertIn(folder.name, failed["name"])
+                self.assertEqual(failed["root"], str(folder))
+                self.assertEqual(failed["unreadable"], 1)
+                self.assertEqual(failed["first_unreadable"], str(path))
+                self.assertIn("읽기 오류", dashboard.read_error_text(failed))
+
+    def test_topology_permission_error_is_local_after_retries_and_recovers(self):
+        self.project("a" * 64, self.checkout)
+        [healthy] = dashboard.snapshot(self.home)
+        other = self.checkout / "Other"
+        other.mkdir()
+        folder = self.project("b" * 64, other)
+        target = folder / "topology.json"
+        original_open = Path.open
+        for failures, expected in ((1, 0), (6, 1)):
+            attempts = []
+
+            def sharing_violation(path, *args, **kwargs):
+                if path == target:
+                    attempts.append(path)
+                    if len(attempts) <= failures:
+                        raise PermissionError("sharing violation")
+                return original_open(path, *args, **kwargs)
+
+            with self.subTest(failures=failures), patch.object(Path, "open", sharing_violation), \
+                    patch.object(state.sys, "platform", "win32"), patch.object(state.time, "sleep") as sleep:
+                rows = dashboard.snapshot(self.home)
+                self.assertEqual(len(rows), 2)
+                self.assertIn(healthy, rows)
+                self.assertEqual(sum(row["unreadable"] for row in rows), expected)
+                self.assertEqual(len(attempts), min(failures + 1, 6))
+                self.assertEqual(sleep.call_args_list,
+                                 [call(0.01 * 2 ** i) for i in range(min(failures, 5))])
+        rows = dashboard.snapshot(self.home)
+        self.assertEqual({row["root"] for row in rows}, {str(self.checkout), str(other)})
+        self.assertTrue(all(row["unreadable"] == 0 for row in rows))
+
+    def test_windows_request_read_retries_and_reports_exhaustion(self):
+        folder = self.project("a" * 64, self.checkout)
+        target = folder / "requests" / ("1" * 32 + ".json")
+        self.write(target, {"status": "accepted"})
+        original_open = Path.open
+        for failures, expected in ((1, 0), (6, 1)):
+            attempts = []
+
+            def sharing_violation(path, *args, **kwargs):
+                if path == target:
+                    attempts.append(path)
+                    if len(attempts) <= failures:
+                        raise PermissionError("sharing violation")
+                return original_open(path, *args, **kwargs)
+
+            with self.subTest(failures=failures), patch.object(Path, "open", sharing_violation), \
+                    patch.object(state.sys, "platform", "win32"), patch.object(state.time, "sleep") as sleep:
+                [row] = dashboard.snapshot(self.home)
+                self.assertEqual(row["unreadable"], expected)
+                self.assertEqual(len(row["running"]), 1 - expected)
+                self.assertEqual(len(attempts), min(failures + 1, 6))
+                self.assertEqual(sleep.call_args_list,
+                                 [call(0.01 * 2 ** i) for i in range(min(failures, 5))])
+
+    def test_acknowledged_bodies_are_never_opened_in_snapshot(self):
+        folder = self.project("a" * 64, self.checkout)
+        directory = folder / "inbox"
+        acknowledged = []
+        # Historical recipients remain acknowledged after a topology change.
+        for recipient in ("claude:abc", "claude:old", "codex:previous"):
+            mail = inbox.put(directory, envelope.make("r", "codex:w", recipient, "x" * 60000))
+            inbox.acknowledge(directory, mail["id"])
+            acknowledged.append(directory / (mail["id"] + ".json"))
+        unread = inbox.put(directory, envelope.make("r", "codex:w", "claude:abc", "unread"))
+        opened = []
+        original_open = Path.open
+
+        def observed_open(path, *args, **kwargs):
+            opened.append(path)
+            self.assertNotIn(path, acknowledged, "ACKed message body must not be opened")
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, "open", observed_open):
+            [row] = dashboard.snapshot(self.home)
+        self.assertEqual([item["id"] for item in row["unread"]], [unread["id"]])
+        self.assertEqual(row["unreadable"], 0)
+        self.assertIn(directory / (unread["id"] + ".json"), opened)
+        self.assertTrue(all(directory / "acks" / path.name in opened for path in acknowledged))
+
+    def test_invalid_receipts_do_not_hide_mail_and_are_visible(self):
+        folder = self.project("a" * 64, self.checkout)
+        directory = folder / "inbox"
+        mail = inbox.put(directory, envelope.make("r", "codex:w", "claude:abc", "unread"))
+        (directory / "acks").mkdir()
+        target = directory / "acks" / (mail["id"] + ".json")
+        for receipt in (None, {}, {"id": "0" * 32, "recipient": "claude:abc"},
+                        {"id": mail["id"], "recipient": ""}, {"id": mail["id"], "recipient": 7}):
+            with self.subTest(receipt=receipt):
+                self.write(target, receipt)
+                [row] = dashboard.snapshot(self.home)
+                self.assertEqual([item["id"] for item in row["unread"]], [mail["id"]])
+                self.assertEqual(row["unreadable"], 1)
+                self.assertEqual(row["first_unreadable"], str(target))
+        target.write_text("{", encoding="utf-8")
+        self.assertEqual(dashboard.snapshot(self.home)[0]["unreadable"], 1)
+
+    def test_inbox_read_failures_are_visible_and_use_windows_retries(self):
+        folder = self.project("a" * 64, self.checkout)
+        directory = folder / "inbox"
+        mail = inbox.put(directory, envelope.make("r", "codex:w", "claude:abc", "unread"))
+        target = directory / (mail["id"] + ".json")
+        original_open = Path.open
+        for failures, expected in ((1, 0), (6, 1)):
+            attempts = []
+
+            def sharing_violation(path, *args, **kwargs):
+                if path == target:
+                    attempts.append(path)
+                    if len(attempts) <= failures:
+                        raise PermissionError("sharing violation")
+                return original_open(path, *args, **kwargs)
+
+            with self.subTest(failures=failures), patch.object(Path, "open", sharing_violation), \
+                    patch.object(state.sys, "platform", "win32"), patch.object(state.time, "sleep") as sleep:
+                [row] = dashboard.snapshot(self.home)
+                self.assertEqual(row["unreadable"], expected)
+                self.assertEqual(len(row["unread"]), 1 - expected)
+                self.assertEqual(len(attempts), min(failures + 1, 6))
+                self.assertEqual(sleep.call_args_list,
+                                 [call(0.01 * 2 ** i) for i in range(min(failures, 5))])
+        target.write_text("{", encoding="utf-8")
+        [row] = dashboard.snapshot(self.home)
+        self.assertEqual(row["unreadable"], 1)
+        self.assertEqual(row["first_unreadable"], str(target))
 
     def test_outgoing_request_copies_are_not_unread(self):
         folder = self.project("d" * 64, self.checkout)
@@ -227,11 +401,11 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(dashboard.load_prefs(self.home)["mode"], "taskbar")
         self.assertIsNone(dashboard.load_prefs(self.home)["compact_x"])
         self.assertIsNone(dashboard.load_prefs(self.home)["compact_y"])
-        self.assertTrue(dashboard.load_prefs(self.home)["docked"])
+        self.assertFalse(dashboard.load_prefs(self.home)["docked"])
         dashboard.save_prefs({"mode": "panel", "compact_x": -450}, self.home)
         self.assertEqual(dashboard.load_prefs(self.home)["compact_x"], -450)
         self.assertEqual(dashboard.load_prefs(self.home)["mode"], "panel")
-        self.assertTrue(dashboard.load_prefs(self.home)["docked"])
+        self.assertFalse(dashboard.load_prefs(self.home)["docked"])
         dashboard.save_prefs({"compact_x": 500, "compact_y": -200, "docked": False}, self.home)
         self.assertEqual((dashboard.load_prefs(self.home)["compact_x"],
                           dashboard.load_prefs(self.home)["compact_y"],

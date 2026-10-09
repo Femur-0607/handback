@@ -1,4 +1,4 @@
-"""Compact Windows taskbar status widget with an optional expanded panel.
+"""Compact floating status widget with optional taskbar and expanded views.
 
 It never routes or changes agent combinations. Display preferences live in
 dashboard.json; project actions acknowledge results, move state aside, or save
@@ -18,9 +18,9 @@ import sys
 import tempfile
 import time
 
-from . import config, inbox
+from . import config, envelope, inbox
 from .collector import OPEN_STATES
-from .state import atomic_json, home_lock, state_home
+from .state import _read_json, atomic_json, home_lock, state_home
 
 
 AGENT_NAME = {"claude": "Claude", "codex": "Codex", "antigravity": "Antigravity"}
@@ -28,16 +28,63 @@ REFRESH_MS = 3000
 TASKBAR_ZORDER_MS = 750
 DETAIL_LIMIT = 5
 DEFAULT_PREFS = {"max_rows": 3, "order": [], "hidden": [], "mode": "taskbar",
-                 "compact_x": None, "compact_y": None, "docked": True}
+                 "compact_x": None, "compact_y": None, "docked": False}
 
 
-def _read(path):
+def _read(path, errors=None):
     try:
-        with open(path, encoding="utf-8") as stream:
-            value = json.load(stream)
-        return value if isinstance(value, dict) else {}
-    except (OSError, ValueError, UnicodeError):
+        value = _read_json(path, {})
+        if not isinstance(value, dict):
+            raise ValueError("상태가 JSON 객체가 아닙니다")
+        return value
+    except (OSError, ValueError, UnicodeError) as error:
+        if errors is not None:
+            errors.append((str(path), ui_error(error)))
         return {}
+
+
+def _read_mail(path):
+    """Keep inbox validation/size limits and the state reader's Windows retries."""
+    for attempt in range(6):
+        try:
+            return inbox._read_json(path)
+        except PermissionError:
+            if sys.platform != "win32" or attempt == 5:
+                raise
+            time.sleep(0.01 * 2 ** attempt)
+
+
+def _pending_results(directory, errors):
+    """Display-only scan: explicit receipts precede immutable message bodies.
+
+    A well-formed receipt is a display hint; authoritative recipient checks and
+    all ACK operations still use inbox.pending/acknowledge without this shortcut.
+    """
+    for path in sorted(directory.glob("*.json")):
+        if not inbox.ID_PATTERN.fullmatch(path.stem):
+            continue
+        ack_path = directory / "acks" / path.name
+        try:
+            receipt = _read_mail(ack_path)
+            if (not isinstance(receipt, dict) or receipt.get("id") != path.stem
+                    or not isinstance(receipt.get("recipient"), str)
+                    or not receipt["recipient"].strip()):
+                raise ValueError("확인 기록이 올바르지 않습니다")
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, UnicodeError) as error:
+            errors.append((str(ack_path), ui_error(error)))
+        else:
+            continue
+        try:
+            mail = envelope.validate(_read_mail(path))
+            if mail["id"] != path.stem:
+                raise ValueError("파일 이름과 메시지 ID가 다릅니다")
+        except (OSError, ValueError, UnicodeError) as error:
+            errors.append((str(path), ui_error(error)))
+            continue
+        if mail["kind"] != "request":
+            yield mail
 
 
 def agent_name(handle):
@@ -119,14 +166,38 @@ def _latest_mtime(folder):
 
 
 def project_row(folder):
-    topology = _read(folder / "topology.json")
+    topology_path = folder / "topology.json"
+    try:
+        topology = _read_json(topology_path, {})
+        if not isinstance(topology, dict):
+            raise ValueError("프로젝트 상태가 올바르지 않습니다")
+    except (OSError, ValueError, UnicodeError) as error:
+        # The checkout is unknown, but the state folder is a stable display key.
+        # Keep this failure local so healthy projects remain visible.
+        try:
+            activity = topology_path.stat().st_mtime
+        except OSError:
+            activity = 0
+        return {"name": "상태 " + folder.name, "root": str(folder), "unresolved": True,
+                "lead": "", "workers": [], "combo": "프로젝트 확인 불가",
+                "running": [], "unread": [], "last_activity": activity,
+                "unreadable": 1, "first_unreadable": str(topology_path),
+                "read_error": ui_error(error)}
     root = topology.get("root")
     if not root or not Path(root).is_dir() or _is_scratch(root):
         return None
-    threads = _read(folder / "threads.json")
+    errors = []
+    threads = _read(folder / "threads.json", errors)
     running = []
     for path in sorted((folder / "requests").glob("*.json")):
-        request = _read(path)
+        try:
+            request = _read_json(path, None)
+            if (not isinstance(request, dict) or not isinstance(request.get("status"), str)
+                    or not request["status"]):
+                raise ValueError("요청 상태가 올바르지 않습니다")
+        except (OSError, ValueError, UnicodeError) as error:
+            errors.append((str(path), ui_error(error)))
+            continue
         if request.get("status") in OPEN_STATES:
             thread = threads.get(request.get("handle"), {})
             running.append({"id": request.get("id", path.stem), "agent": request.get("agent"),
@@ -136,9 +207,7 @@ def project_row(folder):
     unread = []
     mail_dir = folder / "inbox"
     if mail_dir.is_dir():
-        for mail in inbox.pending(mail_dir):
-            if mail.get("kind") == "request":
-                continue  # Outgoing brief copies are not results waiting for the Lead.
+        for mail in _pending_results(mail_dir, errors):
             name = threads.get(mail.get("sender"), {}).get("name") or mail.get("sender", "")
             unread.append({"id": mail["id"], "kind": mail.get("kind"), "from": name, "sender": mail.get("sender", ""),
                            "created_utc": mail.get("created_utc"), "body": mail.get("body", "")})
@@ -147,7 +216,16 @@ def project_row(folder):
     workers = topology.get("workers") or []
     return {"name": Path(root).name, "root": root, "lead": lead, "workers": workers,
             "combo": agent_name(lead) + " → " + " + ".join(agent_name(w) for w in workers),
-            "running": running, "unread": unread, "last_activity": _latest_mtime(folder)}
+            "running": running, "unread": unread, "last_activity": _latest_mtime(folder),
+            "unreadable": len(errors), "first_unreadable": errors[0][0] if errors else "",
+            "read_error": errors[0][1] if errors else ""}
+
+
+def read_error_text(row):
+    if not row.get("unreadable"):
+        return ""
+    return (f"읽기 오류: {row['unreadable']}개 · 집계 불완전\n"
+            f"{row['first_unreadable']}\n{row['read_error']}")
 
 
 def snapshot(home=None):
@@ -605,20 +683,56 @@ def clamp_compact(x, y, width, height, bounds):
     return (max(left, min(x, right - width)), max(top, min(y, bottom - height)), width, height)
 
 
+def compact_work_area(monitor, info=None, work_area=None):
+    """Use the OS work area, also excluding any visible Explorer taskbar."""
+    left, top, right, bottom = monitor
+    if work_area is not None:
+        left, top = max(left, work_area[0]), max(top, work_area[1])
+        right, bottom = min(right, work_area[2]), min(bottom, work_area[3])
+    if info and not info["auto_hide"]:
+        x1, y1, x2, y2 = info["rect"]
+        if x2 > left and x1 < right and y2 > top and y1 < bottom:
+            if info["edge"] == 0:
+                left = max(left, x2)
+            elif info["edge"] == 1:
+                top = max(top, y2)
+            elif info["edge"] == 2:
+                right = min(right, x1)
+            elif info["edge"] == 3:
+                bottom = min(bottom, y1)
+    return (left, top, right, bottom) if right > left and bottom > top else monitor
+
+
+def floating_geometry(area, width, height, x=None, y=None, dpi=96, *, snap_distance=None):
+    """Keep a small inset from usable screen edges, with gentle corner snapping."""
+    left, top, right, bottom = area
+    width, height = min(width, right - left), min(height, bottom - top)
+    margin = max(1, round(8 * dpi / 96))
+    horizontal = min(margin, (right - left - width) // 2)
+    vertical = min(margin, (bottom - top - height) // 2)
+    left, right = left + horizontal, right - horizontal - width
+    top, bottom = top + vertical, bottom - vertical - height
+    threshold = max(1, round(12 * dpi / 96)) if snap_distance is None else snap_distance
+
+    def align(value, low, high):
+        value = high if value is None else max(low, min(value, high))
+        nearest = min((low, high), key=lambda edge: abs(value - edge))
+        return nearest if abs(value - nearest) <= threshold else value
+
+    return align(x, left, right), align(y, top, bottom), width, height
+
+
 def compact_drag_geometry(info, monitor, virtual, x, y, width, height, dpi=96, *, from_dock=False,
-                          snap_distance=None):
-    """Snap the free widget's near edge to a horizontal taskbar, including overlap."""
+                          snap_distance=None, work_area=None):
+    """Only an already docked gesture may stay in the taskbar; free drags use its outside edge."""
     threshold = max(1, round(20 * dpi / 96)) if snap_distance is None else snap_distance
-    if info and info["edge"] in (1, 3) and not info["auto_hide"]:
+    if from_dock and info and info["edge"] in (1, 3) and not info["auto_hide"]:
         left, top, right, bottom = info["rect"]
-        edge = y + height if info["edge"] == 3 else y
-        # A gesture starting docked measures the pull from its attachment, not
-        # from the free widget's bottom edge. Keep that reference for the gesture.
-        distance = abs(y - top) if from_dock else max(top - edge, edge - bottom, 0)
+        distance = abs(y - top)
         if right > left and bottom > top and x + width > left and x < right and distance <= threshold:
             return True, compact_geometry(info, monitor, width, height, x)
-    # Constrain to the target monitor too, so disconnected/gapped desktops cannot lose the widget.
-    return False, clamp_compact(*clamp_compact(x, y, width, height, virtual), monitor)
+    area = compact_work_area(monitor, info, work_area)
+    return False, floating_geometry(area, width, height, x, y, dpi)
 
 
 def compact_panel_geometry(widget_rect, width, height, area):
@@ -733,7 +847,8 @@ def compact_lines(rows, prefs, name_width, measure):
     lines = []
     for i, row in enumerate(shown[:2]):
         lines.append({"row": row, "name": truncate_text(row["name"], name_width, measure),
-                      "running": f"● {len(row['running'])}" if row["running"] else "대기",
+                      "running": (f"읽기 오류 {row['unreadable']}" if row.get("unreadable") else
+                                  f"● {len(row['running'])}" if row["running"] else "대기"),
                       "unread": f"✉ {len(row['unread'])}" if row["unread"] else "",
                       "more": f"+{len(shown) - 2}" if i == 1 and len(shown) > 2 else ""})
     return lines
@@ -1246,6 +1361,7 @@ class Strip:
         px, py = position or (None, None)
         if self._dragging and self._drag_context is not None:
             info, area, dpi = self._drag_context
+            work_area = self._drag_work_areas[area]
             virtual = self._drag_virtual
             point = (px, py)
         else:
@@ -1256,7 +1372,9 @@ class Strip:
             point = clamp_compact(*point, 1, 1, virtual)[:2]
             info = primary if px is None and py is None else taskbar_info(point)
             area = _monitor_area(self.root, *point, full=True)
+            work_area = _monitor_area(self.root, *point)
             dpi = _window_dpi(self.root)
+        work_area = compact_work_area(area, info, work_area)
         self._taskbar_hwnd = info.get("hwnd") if info else None
         excluded = None
         if self.root.winfo_ismapped():
@@ -1293,6 +1411,7 @@ class Strip:
         lines = compact_lines(rows, prefs, name_width, measure)
         view_key = (self.docked, dpi, self.compact_metrics.cget("size"), tuple(palette.items()),
                     tuple((line["row"]["root"], line["name"], line["running"], line["unread"], line["more"],
+                           read_error_text(line["row"]),
                            bool(conversation_targets(line["row"], "running")),
                            bool(conversation_targets(line["row"], "unread"))) for line in lines))
         if view_key != self._compact_view_key:
@@ -1303,12 +1422,10 @@ class Strip:
                     ("● 99", "✉ 99", "+99")) + 3 * gap + 2 * padding)
         self._compact_free_height = max(self.frame.winfo_reqheight(),
                                         self.compact_metrics.metrics("linespace") * 2 + 6)
-        if self.docked:
+        if self.docked and info and info["edge"] in (1, 3) and not info["auto_hide"]:
             geometry = compact_geometry(info, area, width, self._compact_free_height, px)
         else:
-            x = px if px is not None else area[2] - width - 8
-            y = py if py is not None else area[3] - self._compact_free_height - 8
-            geometry = clamp_compact(*clamp_compact(x, y, width, self._compact_free_height, virtual), area)
+            geometry = floating_geometry(work_area, width, self._compact_free_height, px, py, dpi)
         self._compact_position = geometry[:2]
         self._compact_geometry = geometry
         actual = (self.root.winfo_x(), self.root.winfo_y(), self.root.winfo_width(), self.root.winfo_height())
@@ -1325,6 +1442,7 @@ class Strip:
         return conversation_targets(row, kind) if row is not None else []
 
     def _render_compact_items(self, lines, palette, padding, gap):
+        self.tooltip.hide()
         bg = palette["bg"]
         style_key = (self.docked, bg, padding)
         if style_key != self._compact_style_key:
@@ -1345,13 +1463,18 @@ class Strip:
         for line in lines:
             row = self.tk.Frame(self.frame, bg=bg)
             row.pack(fill="x", expand=True)
+            error = read_error_text(line["row"])
             for key, color in (("name", palette["fg"]),
-                               ("running", palette["green"] if line["row"]["running"] else palette["dim"]),
+                               ("running", palette["yellow"] if error else
+                                palette["green"] if line["row"]["running"] else palette["dim"]),
                                ("unread", palette["yellow"]), ("more", palette["dim"])):
                 label = self.tk.Label(row, text=line[key], bg=bg, fg=color,
                                       font=self.compact_metrics, bd=0, padx=0, pady=0)
                 label.pack(side="left", padx=(0, gap if key != "more" else 0))
                 label.bind("<Button-3>", lambda event, project=line["row"]["root"]: self._menu(event, project))
+                if key == "running" and error:
+                    self.tooltip.bind(label, error)
+                    continue
                 if key in ("running", "unread"):
                     targets = conversation_targets(line["row"], key)
                     if targets:
@@ -1467,7 +1590,8 @@ class Strip:
                                  truncate_text(data["name"], self.widths[0] - 26, self.bold_metrics.measure))
             name.pack(fill="both", expand=True)
             name.bind("<Button-1>", lambda event, key=key: self._toggle(key))
-            parts = [(data["lead"], True), ("→", False)]
+            parts = ([("프로젝트 확인 불가", False)] if data.get("unresolved") else
+                     [(data["lead"], True), ("→", False)])
             for position, worker in enumerate(data["workers"]):
                 if position:
                     parts.append(("+", False))
@@ -1478,8 +1602,10 @@ class Strip:
                               fg=self.COLORS.get(agent, self.DIM) if is_agent else self.DIM,
                               font=self.bold if is_agent else self.font, padx=1, bd=0).pack(side="left")
             running, unread = len(data["running"]), len(data["unread"])
+            error = read_error_text(data)
             for column, text, color in (
-                    (2, f"● 진행 {running}" if running else "대기", self.GREEN if running else self.DIM),
+                    (2, f"읽기 오류 {data['unreadable']}" if error else f"● 진행 {running}" if running else "대기",
+                     self.YELLOW if error else self.GREEN if running else self.DIM),
                     (3, f"✉ {unread}" if unread else "", self.YELLOW),
                     (4, ago(data["last_activity"]), self.DIM)):
                 label = self.tk.Label(cells[column], text=truncate_text(text, self.widths[column] - 4,
@@ -1489,6 +1615,9 @@ class Strip:
             self._hover(row, key)
             self.tooltip.bind(name, data["name"])
             for column, kind in ((2, "running"), (3, "unread")):
+                if kind == "running" and error:
+                    self.tooltip.bind(cells[column].winfo_children()[0], error)
+                    continue
                 targets = conversation_targets(data, kind)
                 if not targets:
                     continue
@@ -1503,6 +1632,8 @@ class Strip:
             line += 1
             if key in self.expanded:
                 details = [("● 진행 중 · " + item["name"], self.GREEN, None) for item in data["running"]]
+                if error:
+                    details.insert(0, (error.replace("\n", " · "), self.YELLOW, None))
                 for index, item in enumerate(data["unread"][:DETAIL_LIMIT]):
                     when = _local_time(item["created_utc"])
                     details.append((f"✉ {when} · {item['from']} · {item['body']}",
@@ -1525,7 +1656,7 @@ class Strip:
                     self.tooltip.bind(label, text)
                 line += 1
         if overflow or (self.show_all and hidden):
-            busy = any(row["running"] or row["unread"] for row in overflow)
+            busy = any(row["running"] or row["unread"] or row.get("unreadable") for row in overflow)
             label = self._label(f"+{len(overflow)}개 더 보기" if overflow else "접기", line, 0,
                                 fg=self.YELLOW if busy else self.DIM, padx=(0, 0))
             label.configure(cursor="hand2")
@@ -1591,7 +1722,9 @@ class Strip:
                 {"label": f"미확인 결과 모두 확인 처리 ({self.unread_counts.get(project, 0)}개)",
                  "enabled": bool(self.unread_counts.get(project, 0)),
                  "command": lambda: self._acknowledge(project)},
-                {"label": "handback 등록 해제…", "command": lambda: self._release_project(project)}, None])
+                {"label": "handback 등록 해제…", "enabled": not data.get("unresolved", False),
+                 "tooltip": "프로젝트 경로를 읽을 수 없어 해제할 수 없습니다" if data.get("unresolved") else "",
+                 "command": lambda: self._release_project(project)}, None])
             if execution:
                 items.extend([{"label": "모델·추론 설정 ▶", "children": execution}, None])
         settings = [{"label": "표시 줄 수", "enabled": False}]
@@ -1599,9 +1732,18 @@ class Strip:
             settings.append({"label": ("✓ " if prefs["max_rows"] == count else "    ") + label,
                              "command": lambda count=count: self._set_max_rows(prefs, count)})
         settings.extend([None, {"label": "표시 방식", "enabled": False}])
-        for mode, label in (("taskbar", "작업표시줄 모드"), ("panel", "펼친 패널 고정")):
-            settings.append({"label": ("✓ " if prefs["mode"] == mode else "    ") + label,
-                             "command": lambda mode=mode: self._save({**prefs, "mode": mode})})
+        info = taskbar_info((self.root.winfo_x(), self.root.winfo_y()))
+        can_dock = bool(info and info["edge"] in (1, 3) and not info["auto_hide"])
+        for mode, docked, label in (("taskbar", False, "작은 위젯"),
+                                    ("taskbar", True, "작업표시줄에 넣기"),
+                                    ("panel", prefs["docked"], "펼친 패널 고정")):
+            selected = prefs["mode"] == mode and (mode == "panel" or prefs["docked"] == docked)
+            settings.append({"label": ("✓ " if selected else "    ") + label,
+                             "enabled": mode != "taskbar" or not docked or can_dock,
+                             "tooltip": "위쪽·아래쪽의 항상 표시된 작업표시줄에서 사용할 수 있습니다"
+                                        if mode == "taskbar" and docked and not can_dock else "",
+                             "command": lambda mode=mode, docked=docked: self._save(
+                                 {**prefs, "mode": mode, "docked": docked})})
         settings.extend([None, {"label": "숨긴 프로젝트", "enabled": False}])
         for root in prefs["hidden"]:
             settings.append({"label": self.names.get(root, Path(root).name) + " 다시 표시",
@@ -1890,6 +2032,7 @@ class Strip:
                               max(r[2] for r in self._drag_monitors),
                               max(r[3] for r in self._drag_monitors))
         self._drag_contexts = {}
+        self._drag_work_areas = {}
         self._drag_context = None
         self._set_drag_context(cursor)
         self._drag_threshold = drag_threshold(self._drag_context[2])
@@ -1906,6 +2049,7 @@ class Strip:
         if area not in self._drag_contexts:
             # Only a monitor crossing can add a new taskbar/DPI query during a drag.
             self._drag_contexts[area] = (taskbar_info(cursor), area, _window_dpi(self.root))
+            self._drag_work_areas[area] = _monitor_area(self.root, *cursor)
         self._drag_context = self._drag_contexts[area]
         self._drag_snap_distance = max(1, round(20 * self._drag_context[2] / 96))
 
@@ -1941,9 +2085,12 @@ class Strip:
         if self.mode == "taskbar":
             docked, geometry = compact_drag_geometry(info, area, self._drag_virtual,
                 x, y, self._drag_width, self._drag_height, dpi,
-                from_dock=self._drag_from_dock, snap_distance=self._drag_snap_distance)
+                from_dock=self._drag_from_dock, snap_distance=self._drag_snap_distance,
+                work_area=self._drag_work_areas[area])
             changed = docked != self.docked
             self.docked = docked
+            if not docked:
+                self._drag_from_dock = False
             self._compact_position = geometry[:2]
             self._taskbar_hwnd = info.get("hwnd") if info else None
             if changed or dpi != old_dpi:
