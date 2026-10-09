@@ -132,6 +132,8 @@ python handback.py wait --root "$relayRoot" --request "$requestId" --timeout 300
 
 `doctor` prints one OK/WARN/FAIL line per check, with exactly one next step for each WARN/FAIL. It exits 5 if any check fails, otherwise 0; an untested app version is a warning. Writability is a permission estimate without creating a probe file. Hook registration does not prove runtime execution or trust. `doctor --json` retains the original JSON fields and exit behavior for existing consumers. `explain --json` is the machine-readable timeline. Timestamps absent from state are explicitly marked as unrecorded.
 
+In a valid topology, a missing Codex executable or unsupported `queue --thread` is a FAIL only when Codex is selected as Lead or worker. Otherwise these checks are advisory WARNs requiring no action. The builtin default includes a Codex worker, and invalid topologies retain the required Codex checks until the configuration is corrected. Missing Claude/Codex skills remain nonblocking WARNs.
+
 ```powershell
 python handback.py doctor --root "$relayRoot" --report
 python handback.py status --root "$relayRoot" --stats --days 30

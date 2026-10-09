@@ -82,6 +82,73 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(code, 5)
         self.assertIn("FAIL Codex queue --thread", out)
 
+    def test_codex_checks_follow_lead_and_workers_in_human_and_report_output(self):
+        self.home.mkdir()
+        (self.home / "config.json").write_text(json.dumps({
+            "agents": {"antigravity": {"enabled": True}}}), encoding="utf-8")
+        for lead, workers, required in (
+                ("claude:lead", ["antigravity"], False),
+                ("claude:lead", ["codex"], True),
+                ("codex:lead-id", ["antigravity"], True),
+                ("claude:lead", ["antigravity", "codex"], True)):
+            self.state.write_json("topology.json", {"lead": lead, "workers": workers})
+            self.assertNotIn("validation_error", config.resolve(self.root, validate=False))
+            for installed, queue in ((False, False), (True, False), (True, True)):
+                self.agents[0].update(installed=installed, executable="fake-app" if installed else None)
+                missing_level = "FAIL" if required else "WARN"
+                expected = {"Codex executable": "OK" if installed else missing_level,
+                            "Codex queue --thread": "OK" if queue else missing_level}
+                for options in ((), ("--report",)):
+                    with self.subTest(lead=lead, workers=workers, installed=installed,
+                                      queue=queue, options=options):
+                        with patch.object(d, "queue_supported", return_value=queue):
+                            code, out, _ = self.invoke("doctor", *options)
+                        self.assertEqual(code, 5 if "FAIL" in expected.values() else 0)
+                        if options:
+                            report = json.loads(out.removeprefix("```json\n").removesuffix("\n```\n"))
+                            levels = {r["check"]: r["level"] for r in report["checks"]}
+                            self.assertEqual({name: levels[name] for name in expected}, expected)
+                        else:
+                            for name, level in expected.items():
+                                line = next(line for line in out.splitlines() if f" {name}:" in line)
+                                self.assertTrue(line.startswith(level + " "), line)
+                                self.assertEqual(line.count(" | Next: "), int(level != "OK"))
+                                if not required and level == "WARN":
+                                    self.assertIn("not required by selected topology", line)
+                                    self.assertIn("No action required", line)
+
+    def test_builtin_topology_still_requires_codex(self):
+        self.agents[0].update(installed=False, executable=None)
+        with patch.object(d, "queue_supported", return_value=False):
+            code, out, _ = self.invoke("doctor")
+        self.assertEqual(code, 5)
+        self.assertIn("FAIL Codex executable", out)
+        self.assertIn("FAIL Codex queue --thread", out)
+        self.assertIn("builtin default; not explicitly set", out)
+        self.assertFalse(self.home.exists())
+
+    def test_invalid_topology_retains_required_codex_checks(self):
+        # Antigravity is disabled by default, so this selection is not valid.
+        self.state.write_json("topology.json", {"lead": "claude:lead", "workers": ["antigravity"]})
+        self.assertIn("validation_error", config.resolve(self.root, validate=False))
+        self.agents[0].update(installed=False, executable=None)
+        with patch.object(d, "queue_supported", return_value=False):
+            code, out, _ = self.invoke("doctor")
+        self.assertEqual(code, 5)
+        self.assertIn("FAIL Topology", out)
+        self.assertIn("FAIL Codex executable", out)
+        self.assertIn("FAIL Codex queue --thread", out)
+
+    def test_missing_skills_remain_nonblocking_for_used_and_unused_agents(self):
+        self.state.write_json("topology.json", {"lead": "codex:lead-id", "workers": ["antigravity"]})
+        (self.home / "config.json").write_text(json.dumps({
+            "agents": {"antigravity": {"enabled": True}}}), encoding="utf-8")
+        with patch.object(d, "skill_status", return_value="missing"):
+            code, out, _ = self.invoke("doctor")
+        self.assertEqual(code, 0)
+        self.assertIn("WARN claude skill: missing", out)
+        self.assertIn("WARN codex skill: missing", out)
+
     def test_json_preserves_legacy_fields_values_and_exit(self):
         from handback.router import diagnostics
         cleanup = {"candidates": [], "dry_run": True}

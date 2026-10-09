@@ -337,6 +337,8 @@ python handback.py status --root "<absolute-checkout>" --stats --days 30
 
 `doctor`의 기본 출력은 OK/WARN/FAIL 체크리스트이며 WARN/FAIL마다 다음 조치 하나가 붙습니다. FAIL이 있으면 종료 5, 경고만 있으면 종료 0입니다. 앱 버전 불일치는 미검증 WARN입니다. 쓰기 권한은 파일 생성 없이 추정하며, 훅 등록 확인은 실제 실행이나 신뢰 설정 검증을 뜻하지 않습니다. 기존 JSON 소비자는 `doctor --json`을 사용해야 하며 기존 필드와 종료 동작이 유지됩니다. 타임라인은 `explain --json`으로도 읽을 수 있습니다.
 
+유효한 조합에서는 Codex를 Lead 또는 worker로 선택한 경우에만 실행 파일 부재나 `queue --thread` 미지원이 FAIL입니다. Codex를 사용하지 않으면 이 두 검사는 조치가 필요 없는 참고 WARN입니다. builtin 기본 조합은 Codex worker를 포함하므로 필수 검사를 유지하며, 검증에 실패한 조합도 설정을 고칠 때까지 기존 Codex 필수 검사를 유지합니다. Claude/Codex skill 누락은 기존처럼 실행을 막지 않는 WARN입니다.
+
 `doctor --report`는 OS·Python·도구·앱 버전, 검사 등급, Lead/worker 종류만 포함하는 버그 보고용 블록입니다. 홈 경로는 `~`로, 사용자 지정 상태 경로는 자리표시자로 표시하고 프로젝트 경로와 세션·스레드 ID를 제외합니다.
 
 `status --stats`는 기존 로컬 상태만 읽으며 외부로 전송하지 않습니다. `--days N`은 요청 생성 시각 기준 최근 N일이며 생략하면 전체입니다. 완료·실패·불확실·기타 열린 요청 수, 생성부터 결과 확정까지의 중앙값과 p90(nearest-rank), 추가 Lead 전달 시도, 미ACK 결과 수를 보여 줍니다. 추가 시도에는 자동 재시도도 포함됩니다. 수집 시간초과 이력, `wait` 복구 횟수, 명시적 redeliver 횟수는 기존 상태에서 구분할 수 없어 0으로 표시하지 않고 산출 불가로 설명합니다.

@@ -212,6 +212,11 @@ def checklist(state, resolved, agents):
                      **({"next_action": action} if level != "OK" else {})})
 
     values = resolved["values"]
+    lead = values["lead"].split(":")[0]
+    error = resolved.get("validation_error")
+    # Builtin defaults select a Codex worker. An invalid topology cannot
+    # reliably establish optional dependencies, so keep the required checks.
+    codex_required = bool(error) or lead == "codex" or "codex" in values["workers"]
     add("Python", "OK" if sys.version_info >= (3, 10) else "FAIL", platform.python_version(),
         "Install Python 3.10 or newer.")
     parent = state.home
@@ -222,10 +227,15 @@ def checklist(state, resolved, agents):
         " (permission estimate; no write probe)", "Set HANDBACK_HOME to a writable state directory.")
     by_agent = {a["agent"]: a for a in agents}
     codex = by_agent["codex"]
-    add("Codex executable", "OK" if codex.get("installed") else "FAIL",
-        codex.get("executable") or "not detected", "Set HANDBACK_CODEX to the installed Codex executable.")
-    add("Codex queue --thread", "OK" if queue_supported(codex.get("executable")) else "FAIL",
-        "queue help capability probe", "Install a Codex build with queue --thread support.")
+    codex_missing = "FAIL" if codex_required else "WARN"
+    codex_note = "" if codex_required else " (not required by selected topology)"
+    codex_optional_action = "No action required for the selected topology."
+    add("Codex executable", "OK" if codex.get("installed") else codex_missing,
+        (codex.get("executable") or "not detected") + codex_note,
+        "Set HANDBACK_CODEX to the installed Codex executable." if codex_required else codex_optional_action)
+    add("Codex queue --thread", "OK" if queue_supported(codex.get("executable")) else codex_missing,
+        "queue help capability probe" + codex_note,
+        "Install a Codex build with queue --thread support." if codex_required else codex_optional_action)
     enabled = values.get("agents", {}).get("antigravity", {}).get("enabled", False)
     if enabled:
         agy = by_agent["antigravity"]
@@ -240,13 +250,11 @@ def checklist(state, resolved, agents):
             detail = "cannot read skill"
         add(agent + " skill", "OK" if detail == "points at this installation" else "WARN", detail,
             "handback install-skills")
-    error = resolved.get("validation_error")
     configured = resolved.get("sources", {}).get("lead") != "builtin"
     add("Topology", "FAIL" if error else "OK" if configured else "WARN",
         error or (values["lead"].split(":")[0] + " -> " + ",".join(values["workers"]) +
                   ("" if configured else " (builtin default; not explicitly set)")),
         "Configure a supported Lead/worker combination with handback use --root <checkout> --lead <agent:id> --workers <agents>.")
-    lead = values["lead"].split(":")[0]
     if lead in {"claude", "codex"}:
         try:
             present = hooks_present(lead, state.home)
