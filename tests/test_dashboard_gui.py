@@ -226,7 +226,7 @@ class DashboardMenuTests(unittest.TestCase):
             self.assertEqual(current, baseline)
             if iteration == 99:
                 handles = self.handles()
-            name.event_generate("<Enter>")  # Next refresh cancels this pending timer.
+            name.event_generate("<Enter>")  # Unchanged refresh retains this pending timer.
         self.strip.tooltip.hide()
         for value, initial in zip(self.handles(), handles):
             self.assertLessEqual(value, initial)
@@ -251,8 +251,9 @@ class DashboardMenuTests(unittest.TestCase):
         self.root.wait_variable(ready)
         self.assertIsNotNone(self.strip.tooltip.window)
         self.assertIsNone(self.strip.tooltip.pending)
+        tooltip = self.strip.tooltip.window
         self.strip.render(rows)
-        self.assertIsNone(self.strip.tooltip.window)
+        self.assertIs(self.strip.tooltip.window, tooltip)
         self.assertEqual(tuple(map(str, self.strip.icons)), icons)
         self.assertEqual(len(icons), 5)
         self.assertTrue(set(icons).issubset(self.root.tk.call("image", "names")))
@@ -458,6 +459,7 @@ class DashboardMenuTests(unittest.TestCase):
         self.assertEqual([item["label"] for item in menu.items if item],
                          ["보기 설정 ▶", "새로고침", "닫기"])
         settings = self.submenu(menu)
+        self.assertFalse(settings.items[self.entry(settings, "펼친 패널 표시 줄 수")]["enabled"])
         self.assertEqual([item["label"] for item in settings.items if item and item["label"].startswith("✓")],
                          ["✓ 3줄", "✓ 펼친 패널 고정"])
         index = self.entry(settings, "숨긴 프로젝트 없음")

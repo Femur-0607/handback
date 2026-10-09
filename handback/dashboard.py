@@ -5,6 +5,7 @@ dashboard.json; project actions acknowledge results, move state aside, or save
 explicitly selected model and reasoning defaults.
 """
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import math
@@ -388,12 +389,22 @@ def display_rows(rows, prefs, show_all=False):
 
 
 class DarkTooltip:
-    """One window and one cancellable timer owned by the strip."""
+    """One tooltip with a stable hover deadline across view refreshes."""
     def __init__(self, strip):
         self.strip = strip
         self.pending = self.window = None
+        self.target = None
+        self.text = None
+        self._rebuild = None
+        self._retarget_timer = self._retarget_rect = None
 
     def hide(self, event=None):
+        if event is not None and event.widget != self.target:
+            return
+        self.target = None
+        self.text = None
+        self._rebuild = None
+        self._cancel_retarget()
         if self.pending is not None:
             self.strip.root.after_cancel(self.pending)
             self.pending = None
@@ -401,14 +412,78 @@ class DarkTooltip:
             self.window.destroy()
             self.window = None
 
+    def hide_within(self, parent):
+        if self.target is not None and (self.target == parent or
+                str(self.target).startswith(str(parent) + ".")):
+            self.hide()
+
+    @staticmethod
+    def _rect(widget):
+        return (widget.winfo_rootx(), widget.winfo_rooty(),
+                widget.winfo_width(), widget.winfo_height())
+
+    def _cancel_retarget(self):
+        if self._retarget_timer is not None:
+            self.strip.root.after_cancel(self._retarget_timer)
+        self._retarget_timer = self._retarget_rect = None
+
+    def _check_retarget(self):
+        expected = self._retarget_rect
+        self._cancel_retarget()
+        if expected is None:
+            return
+        # Run after rendering has committed the new window and viewport geometry.
+        self.strip.root.update_idletasks()
+        if (self.target is None or not self.target.winfo_exists()
+                or not self.target.winfo_ismapped() or self._rect(self.target) != expected):
+            self.hide()
+
+    @contextmanager
+    def preserve_on_rebuild(self, parent):
+        saved = None
+        if (self.target is not None and self.target.winfo_exists()
+                and str(self.target).startswith(str(parent) + ".")):
+            key = getattr(self.target, "_tooltip_key", None)
+            if key is not None:
+                saved = {"key": key, "text": self.text, "replacement": None,
+                         "rect": self._retarget_rect or self._rect(self.target)}
+                self._cancel_retarget()
+                self._rebuild = saved
+        try:
+            yield
+        except BaseException:
+            if saved is not None:
+                self.hide()
+            raise
+        finally:
+            if saved is not None and self._rebuild is saved:
+                self._rebuild = None
+                if saved["replacement"] is None:
+                    self.hide()
+                else:
+                    self._retarget_rect = saved["rect"]
+                    self._retarget_timer = self.strip.root.after(0, self._check_retarget)
+
     def schedule(self, widget, text):
+        if self.target == widget and self.text == text and (self.pending or self.window):
+            return
         self.hide()
-        self.pending = self.strip.root.after(500, lambda: self.show(widget, text))
+        self.target = widget
+        self.text = text
+        self.pending = self.strip.root.after(500, self._show_pending)
+
+    def _show_pending(self):
+        self.pending = None
+        self._check_retarget()
+        if self.target is not None:
+            self.show(self.target, self.text)
 
     def show(self, widget, text):
         self.hide()
         if not widget.winfo_exists():
             return
+        self.target = widget
+        self.text = text
         strip = self.strip
         window = self.window = strip.tk.Toplevel(strip.root)
         window.withdraw()
@@ -427,10 +502,16 @@ class DarkTooltip:
         window.geometry(f"{width}x{height}+{x}+{y}")
         window.deiconify()
 
-    def bind(self, widget, text):
+    def bind(self, widget, text, *, key=None):
+        widget._tooltip_key = key
+        if (self._rebuild is not None and key == self._rebuild["key"]
+                and text == self._rebuild["text"]):
+            self._rebuild["replacement"] = self.target = widget
         widget.bind("<Enter>", lambda event: self.schedule(widget, text), add="+")
         widget.bind("<Leave>", self.hide, add="+")
         widget.bind("<ButtonPress>", self.hide, add="+")
+        widget.bind("<Destroy>", lambda event: self.hide()
+                    if event.widget == self.target and self._rebuild is None else None, add="+")
 
 
 def move(prefs, roots, root, step):
@@ -656,12 +737,61 @@ def keep_above_taskbar(widget, taskbar=None):
         above = user.GetWindow(above, 3)
 
 
-def compact_geometry(info, area, width, height, x=None):
+def _set_window_corners(widget, width, height, radius, *, wrapper=True):
+    """Clip a Tk wrapper or child; Windows owns a region only after success."""
+    if sys.platform != "win32" or width <= 0 or height <= 0:
+        return False
+    import ctypes
+    from ctypes import wintypes
+    try:
+        user, gdi = ctypes.windll.user32, ctypes.windll.gdi32
+        user.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        user.GetAncestor.restype = wintypes.HWND
+        user.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN, wintypes.BOOL]
+        user.SetWindowRgn.restype = ctypes.c_int
+        gdi.CreateRoundRectRgn.argtypes = [ctypes.c_int] * 6
+        gdi.CreateRoundRectRgn.restype = wintypes.HRGN
+        gdi.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+        gdi.DeleteObject.restype = wintypes.BOOL
+        hwnd = user.GetAncestor(widget.winfo_id(), 2) if wrapper else widget.winfo_id()
+        if not hwnd:
+            return False
+        redraw = bool(widget.winfo_ismapped())
+        if radius <= 0:
+            return bool(user.SetWindowRgn(hwnd, None, redraw))
+        diameter = min(width, height, max(2, round(radius * 2)))
+        region = gdi.CreateRoundRectRgn(0, 0, width, height, diameter, diameter)
+        if not region:
+            return False
+        try:
+            if user.SetWindowRgn(hwnd, region, redraw):
+                region = None  # Ownership transferred; never delete this handle.
+                return True
+            return False
+        finally:
+            if region:
+                gdi.DeleteObject(region)
+    except (AttributeError, OSError):
+        return False
+
+
+def compact_taskbar_rect(info, dpi=96):
+    """Leave the taskbar's desktop-facing separator visible (one logical pixel)."""
+    left, top, right, bottom = info["rect"]
+    inset = min(max(1, round(dpi / 96)), max(0, bottom - top - 1))
+    if info["edge"] == 3:
+        top += inset
+    elif info["edge"] == 1:
+        bottom -= inset
+    return left, top, right, bottom
+
+
+def compact_geometry(info, area, width, height, x=None, *, dpi=96):
     """Dock to a horizontal taskbar, respecting the tray when there is enough room."""
     left, top, right, bottom = area
     if (info and info["edge"] in (1, 3) and not info["auto_hide"]
             and info["rect"][2] > info["rect"][0] and info["rect"][3] > info["rect"][1]):
-        left, y, right, bottom = info["rect"]
+        left, y, right, bottom = compact_taskbar_rect(info, dpi)
         height = bottom - y
         default_right = info.get("notification_left")
         if default_right is None or not left < default_right <= right:
@@ -724,15 +854,23 @@ def floating_geometry(area, width, height, x=None, y=None, dpi=96, *, snap_dista
 
 def compact_drag_geometry(info, monitor, virtual, x, y, width, height, dpi=96, *, from_dock=False,
                           snap_distance=None, work_area=None):
-    """Only an already docked gesture may stay in the taskbar; free drags use its outside edge."""
-    threshold = max(1, round(20 * dpi / 96)) if snap_distance is None else snap_distance
-    if from_dock and info and info["edge"] in (1, 3) and not info["auto_hide"]:
+    """Every drag is free; docking is decided only when the user releases it."""
+    return False, clamp_compact(x, y, width, height, monitor)
+
+
+def compact_drop_geometry(info, monitor, x, y, width, height, *, cursor=None, dpi=96):
+    """Magnetize an intentional drop inside a taskbar, never mere proximity."""
+    geometry = clamp_compact(x, y, width, height, monitor)
+    x, y, width, height = geometry
+    if info and info["edge"] in (1, 3) and not info["auto_hide"]:
         left, top, right, bottom = info["rect"]
-        distance = abs(y - top)
-        if right > left and bottom > top and x + width > left and x < right and distance <= threshold:
-            return True, compact_geometry(info, monitor, width, height, x)
-    area = compact_work_area(monitor, info, work_area)
-    return False, floating_geometry(area, width, height, x, y, dpi)
+        px, py = cursor if cursor is not None else (x + width / 2, y + height / 2)
+        overlap_width = max(0, min(x + width, right) - max(x, left))
+        overlap_height = max(0, min(y + height, bottom) - max(y, top))
+        if (width > 0 and height > 0 and left <= px < right and top <= py < bottom
+                and 2 * overlap_width * overlap_height >= width * height):
+            return True, compact_geometry(info, monitor, width, height, x, dpi=dpi)
+    return False, geometry
 
 
 def compact_panel_geometry(widget_rect, width, height, area):
@@ -844,13 +982,15 @@ def _native_drag_mover(widget):
 
 def compact_lines(rows, prefs, name_width, measure):
     shown, _ = arrange(rows, {**prefs, "max_rows": 0})
+    overflow_unread = sum(len(row["unread"]) for row in shown[2:])
     lines = []
     for i, row in enumerate(shown[:2]):
         lines.append({"row": row, "name": truncate_text(row["name"], name_width, measure),
                       "running": (f"읽기 오류 {row['unreadable']}" if row.get("unreadable") else
                                   f"● {len(row['running'])}" if row["running"] else "대기"),
                       "unread": f"✉ {len(row['unread'])}" if row["unread"] else "",
-                      "more": f"+{len(shown) - 2}" if i == 1 and len(shown) > 2 else ""})
+                      "more": f"+{len(shown) - 2}" if i == 1 and len(shown) > 2 else "",
+                      "overflow_unread": overflow_unread if i == 1 else 0})
     return lines
 
 
@@ -864,12 +1004,17 @@ def _window_dpi(widget):
             user.GetParent.restype = wintypes.HWND
             user.GetDpiForWindow.argtypes = [wintypes.HWND]
             user.GetDpiForWindow.restype = wintypes.UINT
-            dpi = user.GetDpiForWindow(user.GetParent(widget.winfo_id()))
+            hwnd = widget.winfo_id()
+            # A withdrawn Tk window may not have its wrapper yet. Its client
+            # HWND already carries the correct DPI; Tk's screen cache may not.
+            dpi = user.GetDpiForWindow(user.GetParent(hwnd) or hwnd)
             if dpi:
                 return dpi
         except (AttributeError, OSError):
             pass
-    return widget.winfo_fpixels("1i")
+    # Tk may report 143.96 before the native wrapper exists at 150% scaling.
+    # Match the integer native DPI so a one-DIP border does not change on map.
+    return max(1, round(widget.winfo_fpixels("1i")))
 
 
 def _luminance(rgb):
@@ -1175,8 +1320,83 @@ class DarkMenu:
         return "break"
 
 
+class PanelViewport:
+    """A bounded panel body with a pixel offset that survives row refreshes."""
+    def __init__(self, strip, parent):
+        tk = strip.tk
+        self.row_height = strip.row_height
+        self.tooltip = strip.tooltip
+        self.offset = 0
+        self._wheel_delta = 0
+        self.container = tk.Frame(parent, bg=strip.BG)
+        self.container.pack_propagate(False)
+        self.canvas = tk.Canvas(self.container, bg=strip.BG, bd=0,
+                                highlightthickness=0, takefocus=0, yscrollincrement=1)
+        from tkinter import ttk
+        style = ttk.Style(parent)
+        if style.theme_use() != "clam":
+            style.theme_use("clam")
+        style.configure("Dark.Vertical.TScrollbar", background=DarkMenu.BG, troughcolor=strip.BG,
+                        bordercolor=strip.BG, arrowcolor=strip.FG, lightcolor=DarkMenu.BG,
+                        darkcolor=DarkMenu.BG)
+        style.map("Dark.Vertical.TScrollbar", background=[("active", DarkMenu.HOVER)])
+        self.scrollbar = ttk.Scrollbar(self.container, orient="vertical", command=self.scroll,
+                                       takefocus=0, style="Dark.Vertical.TScrollbar")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.content = tk.Frame(self.canvas, bg=strip.BG, padx=10, pady=6,
+                                highlightthickness=1, highlightbackground=DarkMenu.HOVER)
+        self._item = self.canvas.create_window(0, 0, window=self.content, anchor="nw")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        # Scrollbar gestures must not reach Strip's top-level drag bindings.
+        self.scrollbar.bindtags(tuple(tag for tag in self.scrollbar.bindtags()
+                                      if tag != str(parent)))
+        parent.bind("<MouseWheel>", self.wheel, add="+")
+        parent.bind("<Button-4>", self.wheel, add="+")
+        parent.bind("<Button-5>", self.wheel, add="+")
+
+    def dimensions(self, max_width, max_height):
+        height = min(self.content.winfo_reqheight(), max_height)
+        overflow = self.content.winfo_reqheight() > height
+        width = self.content.winfo_reqwidth() + (self.scrollbar.winfo_reqwidth() if overflow else 0)
+        return max(1, min(width, max_width)), max(1, height)
+
+    def layout(self, width, height):
+        content_height = self.content.winfo_reqheight()
+        overflow = content_height > height
+        if overflow:
+            self.scrollbar.pack(side="right", fill="y", before=self.canvas)
+        else:
+            self.scrollbar.pack_forget()
+        content_width = max(1, width - (self.scrollbar.winfo_reqwidth() if overflow else 0))
+        self.container.configure(width=width, height=height)
+        self.canvas.configure(width=content_width, height=height,
+                              scrollregion=(0, 0, content_width, content_height))
+        self.canvas.itemconfigure(self._item, width=content_width)
+        self.offset = max(0, min(self.offset, content_height - height))
+        self.canvas.yview_moveto(self.offset / max(1, content_height))
+
+    def scroll(self, *args):
+        self.tooltip.hide_within(self.content)
+        self.canvas.yview(*args)
+        self.offset = max(0, round(self.canvas.canvasy(0)))
+
+    def wheel(self, event):
+        if not self.container.winfo_ismapped():
+            return
+        if getattr(event, "num", None) in (4, 5):
+            steps = 1 if event.num == 4 else -1
+        else:
+            self._wheel_delta += event.delta
+            steps = int(self._wheel_delta / 120)
+            self._wheel_delta -= steps * 120
+        if steps:
+            self.scroll("scroll", -steps * 3 * self.row_height, "units")
+        return "break"
+
+
 class Strip:
     BG, FG, DIM = "#1f1f1f", "#e6e6e6", "#8a8a8a"
+    BORDER = "#6a6a70"
     COLORS = {"claude": "#d97757", "codex": "#e6e6e6", "antigravity": "#5b9bf8"}
     GREEN, YELLOW = "#5fd38a", "#f2c94c"
 
@@ -1195,6 +1415,8 @@ class Strip:
         self._context_menu = None
         self.panel = None
         self.panel_frame = None
+        self._panel_viewport = None
+        self._fixed_viewport = None
         self._outside_timer = None
         self._refresh_timer = None
         self._zorder_timer = None
@@ -1208,6 +1430,10 @@ class Strip:
         self._compact_style_key = None
         self._compact_font_key = None
         self._compact_geometry = None
+        self._corner_key = None
+        self._corner_dpi = 96
+        self._corner_syncing = False
+        self._corner_timer = None
         self._drag_from_dock = False
         self._drag_timer = None
         self._drag_capture_timer = None
@@ -1218,6 +1444,7 @@ class Strip:
         self._taskbar_hwnd = None
         self._mouse_down = False
         self._start = None
+        self._status_press = None
         self._rows = []
         self._palette_key = None
         self._palette_at = 0
@@ -1250,6 +1477,7 @@ class Strip:
         self.tooltip = DarkTooltip(self)
         self.frame = tk.Frame(self.root, bg=self.BG, padx=10, pady=6,
                               highlightthickness=1, highlightbackground=DarkMenu.HOVER)
+        self._root_frame = self.frame
         self.frame.pack()
         self.root.bind("<Destroy>", lambda event: self.tooltip.hide()
                        if event.widget == self.root else None)
@@ -1262,11 +1490,53 @@ class Strip:
         self.root.bind("<Return>", self._keyboard_toggle_panel)
         self.root.bind("<space>", self._keyboard_toggle_panel)
         self.root.bind("<Destroy>", self._destroyed, add="+")
+        self.root.bind("<Configure>", self._sync_window_corners, add="+")
+        self._root_frame.bind("<Configure>", self._sync_window_corners, add="+")
+        self.root.bind("<Map>", lambda event: self._sync_window_corners(event, force=True), add="+")
+
+    def _corner_parameters(self):
+        floating = self.mode == "taskbar" and not self.docked
+        radius = max(1, round(10 * self._corner_dpi / 96)) if floating else 0
+        border = max(1, round(self._corner_dpi / 96)) if floating else 0
+        return (self.root.winfo_width(), self.root.winfo_height(), radius,
+                self._root_frame.winfo_width(), self._root_frame.winfo_height(), border)
+
+    def _sync_window_corners(self, event=None, *, force=False):
+        if (sys.platform != "win32" or self._corner_syncing
+                or event is not None and event.widget not in (self.root, self._root_frame)):
+            return
+        if self._corner_timer is not None:
+            self.root.after_cancel(self._corner_timer)
+            self._corner_timer = None
+        if force:
+            self._corner_key = None
+        key = self._corner_parameters()
+        if key == self._corner_key:
+            return  # Configure also fires on moves: no native queries or new regions.
+        # SetWindowRgn sends WM_WINDOWPOSCHANGED. Let Tk finish a pending geometry
+        # update first so the old native rectangle cannot overwrite the new one.
+        self._corner_timer = self.root.after_idle(self._apply_window_corners)
+
+    def _apply_window_corners(self):
+        self._corner_timer = None
+        key = self._corner_parameters()
+        if key == self._corner_key:
+            return
+        width, height, radius, frame_width, frame_height, border = key
+        self._corner_syncing = True
+        try:
+            outer = _set_window_corners(self.root, width, height, radius)
+            inner = _set_window_corners(self._root_frame, frame_width, frame_height,
+                                        max(0, radius - border), wrapper=False)
+            if outer and inner:
+                self._corner_key = key
+        finally:
+            self._corner_syncing = False
 
     def _destroyed(self, event):
         if event.widget == self.root:
             for name in ("_outside_timer", "_refresh_timer", "_zorder_timer",
-                         "_drag_timer", "_drag_capture_timer"):
+                         "_drag_timer", "_drag_capture_timer", "_corner_timer"):
                 timer = getattr(self, name)
                 if timer is not None:
                     self.root.after_cancel(timer)
@@ -1295,7 +1565,7 @@ class Strip:
                 self.tooltip.hide()
             show_widget_without_activation(self.root, not hidden)
             self._fullscreen_hidden = hidden
-        if not hidden and self.docked:
+        if not hidden:
             keep_above_taskbar(self.root, self._taskbar_hwnd)
         self._zorder_timer = self.root.after(TASKBAR_ZORDER_MS, self._watch_zorder)
 
@@ -1331,6 +1601,7 @@ class Strip:
         self._rows = rows
         prefs = load_prefs(self.home)
         if self.mode != prefs["mode"]:
+            self.tooltip.hide()
             self._collapse_panel()
             self.mode = prefs["mode"]
             self.anchor = None
@@ -1339,10 +1610,20 @@ class Strip:
             self.docked = prefs["docked"]
         self._sync_zorder_timer()
         if self.mode == "panel":
+            self._root_frame.pack_forget()
+            if self._fixed_viewport is None:
+                self._fixed_viewport = PanelViewport(self, self.root)
+            self._fixed_viewport.container.pack(fill="both", expand=True)
+            self.frame = self._fixed_viewport.content
             self.root.attributes("-alpha", 0.93)
+            self.root.configure(bg=self.BG)
             self.frame.configure(bg=self.BG, padx=10, pady=6, highlightthickness=1)
             self._render_panel(rows)
         else:
+            if self._fixed_viewport is not None:
+                self._fixed_viewport.container.pack_forget()
+            self.frame = self._root_frame
+            self.frame.pack(fill="both", expand=True)
             self._render_compact(rows, prefs)
             if self.panel is not None:
                 original = self.frame
@@ -1351,6 +1632,7 @@ class Strip:
                     self._render_panel(rows)
                 finally:
                     self.frame = original
+        self._sync_window_corners()
 
     def _render_compact(self, rows, prefs):
         self.names = {row["root"]: row["name"] for row in rows}
@@ -1375,6 +1657,7 @@ class Strip:
             work_area = _monitor_area(self.root, *point)
             dpi = _window_dpi(self.root)
         work_area = compact_work_area(area, info, work_area)
+        self._corner_dpi = dpi
         self._taskbar_hwnd = info.get("hwnd") if info else None
         excluded = None
         if self.root.winfo_ismapped():
@@ -1393,10 +1676,13 @@ class Strip:
             "bg": self.BG, "fg": self.FG, "dim": self.DIM, "green": self.GREEN, "yellow": self.YELLOW}
         bg = palette["bg"]
         padding, gap = max(1, round(7 * dpi / 96)), max(1, round(3 * dpi / 96))
+        border = 0 if self.docked else max(1, round(dpi / 96))
         # Negative Tk font sizes are pixels; derive them from this window's actual DPI.
         pixels = max(6, round(9 * dpi / 72))
-        available = (info["rect"][3] - info["rect"][1] if self.docked and info
-                     and info["edge"] in (1, 3) and not info["auto_hide"] else None)
+        available = None
+        if self.docked and info and info["edge"] in (1, 3) and not info["auto_hide"]:
+            _, dock_top, _, dock_bottom = compact_taskbar_rect(info, dpi)
+            available = dock_bottom - dock_top
         font_key = (dpi, available)
         if font_key != self._compact_font_key:
             self.compact_metrics.configure(size=-pixels)
@@ -1411,21 +1697,27 @@ class Strip:
         lines = compact_lines(rows, prefs, name_width, measure)
         view_key = (self.docked, dpi, self.compact_metrics.cget("size"), tuple(palette.items()),
                     tuple((line["row"]["root"], line["name"], line["running"], line["unread"], line["more"],
+                           line["overflow_unread"],
                            read_error_text(line["row"]),
                            bool(conversation_targets(line["row"], "running")),
                            bool(conversation_targets(line["row"], "unread"))) for line in lines))
         if view_key != self._compact_view_key:
-            self._render_compact_items(lines, palette, padding, gap)
+            self._render_compact_items(lines, palette, padding, gap, border)
             self.root.update_idletasks()
             self._compact_view_key = view_key
         width = max(self.frame.winfo_reqwidth(), name_width + sum(measure(text) for text in
-                    ("● 99", "✉ 99", "+99")) + 3 * gap + 2 * padding)
+                    ("● 99", "✉ 99", "+99")) + 3 * gap + 2 * padding) + 2 * border
         self._compact_free_height = max(self.frame.winfo_reqheight(),
-                                        self.compact_metrics.metrics("linespace") * 2 + 6)
+                                        self.compact_metrics.metrics("linespace") * 2 + 6) + 2 * border
         if self.docked and info and info["edge"] in (1, 3) and not info["auto_hide"]:
-            geometry = compact_geometry(info, area, width, self._compact_free_height, px)
+            geometry = compact_geometry(info, area, width, self._compact_free_height, px, dpi=dpi)
         else:
-            geometry = floating_geometry(work_area, width, self._compact_free_height, px, py, dpi)
+            # Work-area margins choose an initial position only. Preserve an
+            # intentional drag over the taskbar, including after refresh/restart.
+            default = floating_geometry(work_area, width, self._compact_free_height, dpi=dpi)
+            geometry = clamp_compact(px if px is not None else default[0],
+                                     py if py is not None else default[1],
+                                     width, self._compact_free_height, area)
         self._compact_position = geometry[:2]
         self._compact_geometry = geometry
         actual = (self.root.winfo_x(), self.root.winfo_y(), self.root.winfo_width(), self.root.winfo_height())
@@ -1436,53 +1728,58 @@ class Strip:
             self._drag_width = geometry[2]
             self._drag_height = self._compact_free_height
             self._drag_applied_geometry = geometry
+        self._sync_window_corners()
 
     def _compact_targets(self, project, kind):
         row = next((row for row in self._rows if row["root"] == project), None)
         return conversation_targets(row, kind) if row is not None else []
 
-    def _render_compact_items(self, lines, palette, padding, gap):
-        self.tooltip.hide()
-        bg = palette["bg"]
-        style_key = (self.docked, bg, padding)
-        if style_key != self._compact_style_key:
-            if self.root.attributes("-alpha") != 1.0:
-                self.root.attributes("-alpha", 1.0)
-            if self.root.cget("bg") != bg:
-                self.root.configure(bg=bg)
-            self.frame.configure(bg=bg, padx=padding, pady=0 if self.docked else 2,
-                                 highlightthickness=0 if self.docked else 1,
-                                 highlightbackground=DarkMenu.HOVER)
-            self.frame.pack_configure(fill="both", expand=True)
-            self._compact_style_key = style_key
-        for child in self.frame.winfo_children():
-            child.destroy()
-        if not lines:
-            self.tk.Label(self.frame, text="handback · 대기", bg=bg, fg=palette["dim"],
-                          font=self.compact_metrics, bd=0, padx=0).pack(anchor="w", expand=True)
-        for line in lines:
-            row = self.tk.Frame(self.frame, bg=bg)
-            row.pack(fill="x", expand=True)
-            error = read_error_text(line["row"])
-            for key, color in (("name", palette["fg"]),
-                               ("running", palette["yellow"] if error else
-                                palette["green"] if line["row"]["running"] else palette["dim"]),
-                               ("unread", palette["yellow"]), ("more", palette["dim"])):
-                label = self.tk.Label(row, text=line[key], bg=bg, fg=color,
-                                      font=self.compact_metrics, bd=0, padx=0, pady=0)
-                label.pack(side="left", padx=(0, gap if key != "more" else 0))
-                label.bind("<Button-3>", lambda event, project=line["row"]["root"]: self._menu(event, project))
-                if key == "running" and error:
-                    self.tooltip.bind(label, error)
-                    continue
-                if key in ("running", "unread"):
-                    targets = conversation_targets(line["row"], key)
-                    if targets:
-                        label.configure(cursor="hand2")
-                        label.bind("<Button-1>", lambda event, project=line["row"]["root"], kind=key:
-                                   self._conversations(event, self._compact_targets(project, kind)))
-                        # A release after a status click must not toggle the panel.
-                        label.bind("<ButtonRelease-1>", lambda event: "break")
+    def _render_compact_items(self, lines, palette, padding, gap, border):
+        with self.tooltip.preserve_on_rebuild(self.frame):
+            bg = palette["bg"]
+            style_key = (self.docked, bg, padding, border)
+            if style_key != self._compact_style_key:
+                if self.root.attributes("-alpha") != 1.0:
+                    self.root.attributes("-alpha", 1.0)
+                root_bg = self.BORDER if border else bg
+                if self.root.cget("bg") != root_bg:
+                    self.root.configure(bg=root_bg)
+                self.frame.configure(bg=bg, padx=padding, pady=0 if self.docked else 2,
+                                     highlightthickness=0,
+                                     highlightbackground=DarkMenu.HOVER)
+                self.frame.pack_configure(fill="both", expand=True, padx=border, pady=border)
+                self._compact_style_key = style_key
+            for child in self.frame.winfo_children():
+                child.destroy()
+            if not lines:
+                self.tk.Label(self.frame, text="handback · 대기", bg=bg, fg=palette["dim"],
+                              font=self.compact_metrics, bd=0, padx=0).pack(anchor="w", expand=True)
+            for line in lines:
+                row = self.tk.Frame(self.frame, bg=bg)
+                row.pack(fill="x", expand=True)
+                error = read_error_text(line["row"])
+                for key, color in (("name", palette["fg"]),
+                                   ("running", palette["yellow"] if error else
+                                    palette["green"] if line["row"]["running"] else palette["dim"]),
+                                   ("unread", palette["yellow"]),
+                                   ("more", palette["yellow"] if line["overflow_unread"] else palette["dim"])):
+                    label = self.tk.Label(row, text=line[key], bg=bg, fg=color,
+                                          font=self.compact_metrics, bd=0, padx=0, pady=0)
+                    label.pack(side="left", padx=(0, gap if key != "more" else 0))
+                    label.bind("<Button-3>", lambda event, project=line["row"]["root"]: self._menu(event, project))
+                    if key == "more" and line["more"]:
+                        self.tooltip.bind(label, f"다른 프로젝트의 미확인 결과 {line['overflow_unread']}개"
+                                          if line["overflow_unread"] else "다른 프로젝트 보기",
+                                          key=("compact-overflow", line["row"]["root"]))
+                    if key == "running" and error:
+                        self.tooltip.bind(label, error, key=("compact-error", line["row"]["root"]))
+                        continue
+                    if key in ("running", "unread"):
+                        targets = conversation_targets(line["row"], key)
+                        if targets:
+                            label.configure(cursor="hand2")
+                            label.bind("<Button-1>", lambda event, project=line["row"]["root"], kind=key:
+                                       self._press_status(event, project, kind))
 
     def _collapse_panel(self):
         if self._outside_timer is not None:
@@ -1492,6 +1789,7 @@ class Strip:
             self._close_menu()
             self.panel.destroy()
             self.panel = self.panel_frame = None
+            self._panel_viewport = None
 
     def _keyboard_toggle_panel(self, event):
         self._toggle_panel()
@@ -1508,9 +1806,9 @@ class Strip:
         panel.overrideredirect(True)
         panel.attributes("-topmost", True)
         panel.configure(bg=self.BG)
-        self.panel_frame = self.tk.Frame(panel, bg=self.BG, padx=10, pady=6,
-                                        highlightthickness=1, highlightbackground=DarkMenu.HOVER)
-        self.panel_frame.pack()
+        self._panel_viewport = PanelViewport(self, panel)
+        self._panel_viewport.container.pack(fill="both", expand=True)
+        self.panel_frame = self._panel_viewport.content
         panel.bind("<Escape>", lambda event: self._collapse_panel())
         panel.bind("<Return>", self._keyboard_toggle_panel)
         panel.bind("<space>", self._keyboard_toggle_panel)
@@ -1559,110 +1857,121 @@ class Strip:
         self._outside_timer = self.root.after(80, self._watch_outside)
 
     def _render_panel(self, rows):
-        self.tooltip.hide()
-        for child in self.frame.winfo_children():
-            child.destroy()
         prefs = load_prefs(self.home)
         if self._max_rows != prefs["max_rows"]:
             self.show_all = False
             self._max_rows = prefs["max_rows"]
-        self.names = {row["root"]: row["name"] for row in rows}
-        self.unread_counts = {row["root"]: len(row["unread"]) for row in rows}
-        limited, hidden = arrange(rows, prefs)
-        shown, overflow = display_rows(rows, prefs, self.show_all)
-        self.order = [row["root"] for row in limited + hidden]
-        if not shown:
-            self._label("표시할 handback 프로젝트 없음 (우클릭으로 설정)", 0, 0, fg=self.DIM)
-        line = 0
-        for data in shown:
-            key = data["root"]
-            row = self.tk.Frame(self.frame, bg=self.BG, width=sum(self.widths), height=self.row_height)
-            row.grid(row=line, column=0, sticky="ew")
-            row.pack_propagate(False)
-            cells = []
-            for width in self.widths:
-                cell = self.tk.Frame(row, bg=self.BG, width=width, height=self.row_height)
-                cell.pack(side="left", fill="y")
-                cell.pack_propagate(False)
-                cells.append(cell)
-            name = self.tk.Label(cells[0], bg=self.BG, fg=self.FG, font=self.bold, anchor="w",
-                                 cursor="hand2", text=("▾ " if key in self.expanded else "▸ ") +
-                                 truncate_text(data["name"], self.widths[0] - 26, self.bold_metrics.measure))
-            name.pack(fill="both", expand=True)
-            name.bind("<Button-1>", lambda event, key=key: self._toggle(key))
-            parts = ([("프로젝트 확인 불가", False)] if data.get("unresolved") else
-                     [(data["lead"], True), ("→", False)])
-            for position, worker in enumerate(data["workers"]):
-                if position:
-                    parts.append(("+", False))
-                parts.append((worker, True))
-            for text, is_agent in parts:
-                agent = str(text).partition(":")[0]
-                self.tk.Label(cells[1], text=agent_name(text) if is_agent else text, bg=self.BG,
-                              fg=self.COLORS.get(agent, self.DIM) if is_agent else self.DIM,
-                              font=self.bold if is_agent else self.font, padx=1, bd=0).pack(side="left")
-            running, unread = len(data["running"]), len(data["unread"])
-            error = read_error_text(data)
-            for column, text, color in (
-                    (2, f"읽기 오류 {data['unreadable']}" if error else f"● 진행 {running}" if running else "대기",
-                     self.YELLOW if error else self.GREEN if running else self.DIM),
-                    (3, f"✉ {unread}" if unread else "", self.YELLOW),
-                    (4, ago(data["last_activity"]), self.DIM)):
-                label = self.tk.Label(cells[column], text=truncate_text(text, self.widths[column] - 4,
-                                      self.metrics.measure), bg=self.BG, fg=color, font=self.font,
-                                      anchor="e" if column == 4 else "w")
-                label.pack(fill="both", expand=True)
-            self._hover(row, key)
-            self.tooltip.bind(name, data["name"])
-            for column, kind in ((2, "running"), (3, "unread")):
-                if kind == "running" and error:
-                    self.tooltip.bind(cells[column].winfo_children()[0], error)
-                    continue
-                targets = conversation_targets(data, kind)
-                if not targets:
-                    continue
-                cell = cells[column].winfo_children()[0]
-                cell.configure(cursor="hand2")
-                cell.bind("<Button-1>", lambda event, targets=targets: self._conversations(event, targets))
-                tip = (agent_name(targets[0]["handle"]) + " 대화 열기" if len(targets) == 1
-                       and conversation_link(targets[0]["handle"]) else "워커 대화 선택")
-                if len(targets) == 1 and not conversation_link(targets[0]["handle"]):
-                    tip = UNSUPPORTED_CONVERSATION
-                self.tooltip.bind(cell, tip)
-            line += 1
-            if key in self.expanded:
-                details = [("● 진행 중 · " + item["name"], self.GREEN, None) for item in data["running"]]
-                if error:
-                    details.insert(0, (error.replace("\n", " · "), self.YELLOW, None))
-                for index, item in enumerate(data["unread"][:DETAIL_LIMIT]):
-                    when = _local_time(item["created_utc"])
-                    details.append((f"✉ {when} · {item['from']} · {item['body']}",
-                                    self.YELLOW if item["kind"] == "result" else "#f28b82", index))
-                if len(data["unread"]) > DETAIL_LIMIT:
-                    details.append((f"… 전체 {len(data['unread'])}개 보기", self.DIM, 0))
-                box = self.tk.Frame(self.frame, bg=self.BG)
-                box.grid(row=line, column=0, sticky="ew", padx=(9, 0), pady=(0, 3))
-                self.tk.Frame(box, bg=DarkMenu.HOVER, width=2).pack(side="left", fill="y", padx=(0, 8))
-                body = self.tk.Frame(box, bg=self.BG)
-                body.pack(side="left", fill="both", expand=True)
-                for text, color, index in details or [("세부 항목 없음", self.DIM, None)]:
-                    label = self.tk.Label(body, text=truncate_text(text, min(520, sum(self.widths) - 32),
+        view_key = (json.dumps(rows, sort_keys=True, ensure_ascii=False),
+                    tuple(ago(row["last_activity"]) for row in rows),
+                    tuple(prefs["order"]), tuple(prefs["hidden"]), prefs["max_rows"],
+                    self.show_all, frozenset(self.expanded), self.widths, self.row_height)
+        if getattr(self.frame, "_panel_view_key", None) == view_key:
+            self._place()
+            return
+        with self.tooltip.preserve_on_rebuild(self.frame):
+            for child in self.frame.winfo_children():
+                child.destroy()
+            self.names = {row["root"]: row["name"] for row in rows}
+            self.unread_counts = {row["root"]: len(row["unread"]) for row in rows}
+            limited, hidden = arrange(rows, prefs)
+            shown, overflow = display_rows(rows, prefs, self.show_all)
+            self.order = [row["root"] for row in limited + hidden]
+            if not shown:
+                self._label("표시할 handback 프로젝트 없음 (우클릭으로 설정)", 0, 0, fg=self.DIM)
+            line = 0
+            for data in shown:
+                key = data["root"]
+                row = self.tk.Frame(self.frame, bg=self.BG, width=sum(self.widths), height=self.row_height)
+                row.grid(row=line, column=0, sticky="ew")
+                row.pack_propagate(False)
+                cells = []
+                for width in self.widths:
+                    cell = self.tk.Frame(row, bg=self.BG, width=width, height=self.row_height)
+                    cell.pack(side="left", fill="y")
+                    cell.pack_propagate(False)
+                    cells.append(cell)
+                name = self.tk.Label(cells[0], bg=self.BG, fg=self.FG, font=self.bold, anchor="w",
+                                     cursor="hand2", text=("▾ " if key in self.expanded else "▸ ") +
+                                     truncate_text(data["name"], self.widths[0] - 26, self.bold_metrics.measure))
+                name.pack(fill="both", expand=True)
+                name.bind("<Button-1>", lambda event, key=key: self._toggle(key))
+                parts = ([("프로젝트 확인 불가", False)] if data.get("unresolved") else
+                         [(data["lead"], True), ("→", False)])
+                for position, worker in enumerate(data["workers"]):
+                    if position:
+                        parts.append(("+", False))
+                    parts.append((worker, True))
+                for text, is_agent in parts:
+                    agent = str(text).partition(":")[0]
+                    self.tk.Label(cells[1], text=agent_name(text) if is_agent else text, bg=self.BG,
+                                  fg=self.COLORS.get(agent, self.DIM) if is_agent else self.DIM,
+                                  font=self.bold if is_agent else self.font, padx=1, bd=0).pack(side="left")
+                running, unread = len(data["running"]), len(data["unread"])
+                error = read_error_text(data)
+                for column, text, color in (
+                        (2, f"읽기 오류 {data['unreadable']}" if error else f"● 진행 {running}" if running else "대기",
+                         self.YELLOW if error else self.GREEN if running else self.DIM),
+                        (3, f"✉ {unread}" if unread else "", self.YELLOW),
+                        (4, ago(data["last_activity"]), self.DIM)):
+                    label = self.tk.Label(cells[column], text=truncate_text(text, self.widths[column] - 4,
                                           self.metrics.measure), bg=self.BG, fg=color, font=self.font,
-                                          anchor="w", cursor="hand2" if index is not None else "")
-                    label.pack(fill="x")
-                    if index is not None:
-                        self._hover(label, key)
-                        label.bind("<Button-1>", lambda event, data=data, index=index: self._open(data, index))
-                    self.tooltip.bind(label, text)
+                                          anchor="e" if column == 4 else "w")
+                    label.pack(fill="both", expand=True)
+                self._hover(row, key)
+                self.tooltip.bind(name, data["name"], key=("name", key))
+                for column, kind in ((2, "running"), (3, "unread")):
+                    if kind == "running" and error:
+                        self.tooltip.bind(cells[column].winfo_children()[0], error, key=("error", key))
+                        continue
+                    targets = conversation_targets(data, kind)
+                    if not targets:
+                        continue
+                    cell = cells[column].winfo_children()[0]
+                    cell.configure(cursor="hand2")
+                    cell.bind("<Button-1>", lambda event, targets=targets: self._conversations(event, targets))
+                    tip = (agent_name(targets[0]["handle"]) + " 대화 열기" if len(targets) == 1
+                           and conversation_link(targets[0]["handle"]) else "워커 대화 선택")
+                    if len(targets) == 1 and not conversation_link(targets[0]["handle"]):
+                        tip = UNSUPPORTED_CONVERSATION
+                    self.tooltip.bind(cell, tip, key=("status", key, kind,
+                                      tuple(target["handle"] for target in targets)))
                 line += 1
-        if overflow or (self.show_all and hidden):
-            busy = any(row["running"] or row["unread"] or row.get("unreadable") for row in overflow)
-            label = self._label(f"+{len(overflow)}개 더 보기" if overflow else "접기", line, 0,
-                                fg=self.YELLOW if busy else self.DIM, padx=(0, 0))
-            label.configure(cursor="hand2")
-            self._hover(label)
-            label.bind("<Button-1>", lambda event: self._toggle_overflow())
-        self._place()
+                if key in self.expanded:
+                    details = [("● 진행 중 · " + item["name"], self.GREEN, None,
+                                ("running", item.get("id"), item.get("handle"))) for item in data["running"]]
+                    if error:
+                        details.insert(0, (error.replace("\n", " · "), self.YELLOW, None, ("error",)))
+                    for index, item in enumerate(data["unread"][:DETAIL_LIMIT]):
+                        when = _local_time(item["created_utc"])
+                        details.append((f"✉ {when} · {item['from']} · {item['body']}",
+                                        self.YELLOW if item["kind"] == "result" else "#f28b82", index,
+                                        ("unread", item.get("id"), item.get("sender"), item.get("created_utc"))))
+                    if len(data["unread"]) > DETAIL_LIMIT:
+                        details.append((f"… 전체 {len(data['unread'])}개 보기", self.DIM, 0, ("all",)))
+                    box = self.tk.Frame(self.frame, bg=self.BG)
+                    box.grid(row=line, column=0, sticky="ew", padx=(9, 0), pady=(0, 3))
+                    self.tk.Frame(box, bg=DarkMenu.HOVER, width=2).pack(side="left", fill="y", padx=(0, 8))
+                    body = self.tk.Frame(box, bg=self.BG)
+                    body.pack(side="left", fill="both", expand=True)
+                    for text, color, index, identity in details or [("세부 항목 없음", self.DIM, None, ("empty",))]:
+                        label = self.tk.Label(body, text=truncate_text(text, min(520, sum(self.widths) - 32),
+                                              self.metrics.measure), bg=self.BG, fg=color, font=self.font,
+                                              anchor="w", cursor="hand2" if index is not None else "")
+                        label.pack(fill="x")
+                        if index is not None:
+                            self._hover(label, key)
+                            label.bind("<Button-1>", lambda event, data=data, index=index: self._open(data, index))
+                        self.tooltip.bind(label, text, key=("detail", key, identity))
+                    line += 1
+            if overflow or (self.show_all and hidden):
+                busy = any(row["running"] or row["unread"] or row.get("unreadable") for row in overflow)
+                label = self._label(f"+{len(overflow)}개 더 보기" if overflow else "접기", line, 0,
+                                    fg=self.YELLOW if busy else self.DIM, padx=(0, 0))
+                label.configure(cursor="hand2")
+                self._hover(label)
+                label.bind("<Button-1>", lambda event: self._toggle_overflow())
+            self.frame._panel_view_key = view_key
+            self._place()
 
     def _close_menu(self):
         self.tooltip.hide()
@@ -1727,7 +2036,7 @@ class Strip:
                  "command": lambda: self._release_project(project)}, None])
             if execution:
                 items.extend([{"label": "모델·추론 설정 ▶", "children": execution}, None])
-        settings = [{"label": "표시 줄 수", "enabled": False}]
+        settings = [{"label": "펼친 패널 표시 줄 수", "enabled": False}]
         for count, label in ((2, "2줄"), (3, "3줄"), (0, "전부")):
             settings.append({"label": ("✓ " if prefs["max_rows"] == count else "    ") + label,
                              "command": lambda count=count: self._set_max_rows(prefs, count)})
@@ -2004,12 +2313,25 @@ class Strip:
     def _place(self):
         self.root.update_idletasks()
         if self.panel is not None and self.frame == self.panel_frame:
-            width, height = self.panel.winfo_reqwidth(), self.panel.winfo_reqheight()
             x, y = self.root.winfo_x(), self.root.winfo_y()
             area = _monitor_area(self.root, x, y)
+            width, height = self._panel_viewport.dimensions(area[2] - area[0], area[3] - area[1])
             x, y, width, height = compact_panel_geometry(
                 (x, y, self.root.winfo_width(), self.root.winfo_height()), width, height, area)
+            self._panel_viewport.layout(width, height)
             self.panel.geometry(f"{width}x{height}+{x}+{y}")
+            return
+        if self.mode == "panel" and self._fixed_viewport is not None:
+            point = ((self.anchor[0] - 1, self.anchor[1] - 1) if self.anchor is not None
+                     else (self.root.winfo_x(), self.root.winfo_y()))
+            area = _monitor_area(self.root, *point)
+            if self.anchor is None:
+                self.anchor = (area[2] - 8, area[3] - 4)
+            width, height = self._fixed_viewport.dimensions(area[2] - area[0], area[3] - area[1])
+            x, y, width, height = clamp_compact(self.anchor[0] - width, self.anchor[1] - height,
+                                               width, height, area)
+            self._fixed_viewport.layout(width, height)
+            self.root.geometry(f"{width}x{height}+{x}+{y}")
             return
         width, height = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
         if self.anchor is None:
@@ -2018,9 +2340,15 @@ class Strip:
         right, bottom = self.anchor
         self.root.geometry(f"{width}x{height}+{right - width}+{bottom - height}")
 
+    def _press_status(self, event, project, kind):
+        self._press(event)
+        self._status_press = (project, kind)
+        return "break"
+
     def _press(self, event):
         if self._start is not None:
             self._finish_drag()
+        self._status_press = None
         cursor = self.root.winfo_pointerxy()
         self._start = (*cursor, self.root.winfo_x(), self.root.winfo_y())
         self._dragged = False
@@ -2066,6 +2394,8 @@ class Strip:
             self._collapse_panel()
             self._close_menu()
             self.tooltip.hide()
+            if self.mode == "taskbar":
+                keep_above_taskbar(self.root, self._taskbar_hwnd)
             self._drag_capture_timer = self.root.after(50, self._watch_drag_capture)
         # One idle callback consumes the latest cursor, however many events arrived.
         if self._drag_timer is None:
@@ -2125,7 +2455,7 @@ class Strip:
         if event.widget == self.root and self._start is not None:
             self._finish_drag()
 
-    def _finish_drag(self, click=False, read_pointer=False):
+    def _finish_drag(self, click=False, read_pointer=False, event=None):
         if self._start is None:
             return
         for name in ("_drag_timer", "_drag_capture_timer"):
@@ -2133,9 +2463,19 @@ class Strip:
             if timer is not None:
                 self.root.after_cancel(timer)
                 setattr(self, name, None)
+        drop_geometry = None
         if self._dragged:
             # Flush before saving, including a release ahead of the pending idle move.
             self._flush_drag(read_pointer=read_pointer)
+            if click and self.mode == "taskbar":
+                info, area, dpi = self._drag_context
+                docked, geometry = compact_drop_geometry(
+                    info, area, *self._compact_geometry, cursor=self._drag_cursor, dpi=dpi)
+                if docked:
+                    self.docked = True
+                    self._palette_key = None
+                    drop_geometry = geometry
+        status_press, self._status_press = self._status_press, None
         self._start = None
         self._dragging = False
         self._drag_context = None
@@ -2143,6 +2483,10 @@ class Strip:
             self.root.grab_release()
         self._drag_native_capture = None
         if self._dragged:
+            if drop_geometry is not None:
+                self._render_compact(self._rows, {
+                    **self._drag_prefs, "compact_x": drop_geometry[0],
+                    "compact_y": drop_geometry[1], "docked": True})
             self.root.update_idletasks()
             if self.mode == "taskbar":
                 prefs = load_prefs(self.home)
@@ -2152,11 +2496,16 @@ class Strip:
                 self.anchor = (self.root.winfo_x() + self.root.winfo_width(),
                                self.root.winfo_y() + self.root.winfo_height())
         elif click and self.mode == "taskbar":
-            self._toggle_panel()
+            if status_press is not None:
+                self._conversations(event, self._compact_targets(*status_press))
+            else:
+                self._toggle_panel()
 
     def _release(self, event):
         if self._start is not None:
-            self._finish_drag(click=True, read_pointer=True)
+            # A final pointer move can arrive before its queued motion event.
+            self._drag(event)
+            self._finish_drag(click=True, read_pointer=True, event=event)
             return "break" if self._dragged else None
         if self.mode == "taskbar":
             return
@@ -2168,7 +2517,6 @@ class Strip:
         if reschedule and self._refresh_timer is not None:
             self.root.after_cancel(self._refresh_timer)
             self._refresh_timer = None
-        self.tooltip.hide()
         try:
             if self._render_error is not None:
                 self._compact_view_key = None
@@ -2178,6 +2526,8 @@ class Strip:
             self._compact_view_key = None
             message = "읽기 오류: " + ui_error(error)[:60]
             if message != self._render_error:
+                self.tooltip.hide_within(self.frame)
+                self.frame._panel_view_key = None
                 for child in self.frame.winfo_children():
                     child.destroy()
                 self._label(message, 0, 0, fg=self.YELLOW)
