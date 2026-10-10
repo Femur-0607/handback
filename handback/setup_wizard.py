@@ -39,7 +39,9 @@ def _skill_lines(messages):
                 message.split(":", 1)[1].split("->")[0].strip().capitalize()
             lines.append(f"✓ {name} 스킬 " + ("설치 예정" if dry else "설치됨"))
         elif message.startswith("skip:"):
-            lines.append("– " + message[5:].strip().split(";")[0])
+            detail = message[5:].strip().lower()
+            name = next((label for agent, label, _ in APPS if agent in detail), "")
+            lines.append(f"– {name} 스킬 건너뜀".replace("–  ", "– "))
     return lines
 
 
