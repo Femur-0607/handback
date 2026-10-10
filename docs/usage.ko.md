@@ -2,14 +2,13 @@
 
 ## Windows 설치 (Python 불필요)
 
-1. [GitHub Releases](https://github.com/Femur-0607/handback/releases)에서 `handback-<버전>-windows-x64.zip`을 받습니다.
-2. **공백 없는 폴더**(예: `C:\handback`)에 압축을 풉니다. 다운로드·바탕화면 폴더는 피하세요. 훅과 자동 시작이 이 절대 경로를 기억하고, Antigravity는 공백 경로를 거부합니다.
-3. `handback-dashboard.exe`를 더블클릭합니다. SmartScreen 경고가 뜨면(서명 없는 exe) **추가 정보** → **실행**을 누릅니다.
-4. 처음 실행하면 작은 설정 창이 열립니다. 앱 확인(Claude 필수), 스킬 설치, Windows 시작 시 실행(선택)을 합니다. 나중에 다시 하려면 현황판 우클릭 › **설정 다시 실행**입니다. 현황판은 작업 표시줄에 handback 로고로 표시됩니다.
+1. [GitHub Releases](https://github.com/Femur-0607/handback/releases)에서 `handback-<버전>-setup.exe`를 받습니다.
+2. 실행합니다. SmartScreen 경고가 뜨면(서명 없는 설치 파일) **추가 정보** → **실행**을 누릅니다. 관리자 권한은 필요 없고, `%LOCALAPPDATA%\Programs\handback`에 설치하며 에이전트 스킬도 자동으로 설치합니다. 선택 항목은 Windows 시작 시 실행(기본 켜짐), 바탕화면 아이콘(기본 꺼짐)입니다.
+3. 설치가 끝나면 handback이 자동으로 열립니다. 다음부터는 시작 메뉴의 **handback**을 엽니다.
 
-`handback.exe`는 에이전트와 훅이 쓰는 명령줄 도구입니다(더블클릭하면 텍스트 설정이 실행됩니다). 터미널에서는 `handback setup`(`--yes`, `--dry-run`)입니다.
+설치 폴더의 `handback.exe`는 에이전트와 훅이 쓰는 명령줄 도구입니다. 터미널에서는 `handback setup`(`--yes`, `--dry-run`)입니다. 설정은 현황판 우클릭 › **설정**에서 다시 열 수 있습니다.
 
-업데이트: 현황판을 닫고 새 버전을 같은 폴더에 덮어 풉니다(새 폴더에 풀면 마법사를 다시 실행). 다운로드 검증: `SHA256SUMS.txt`와 `Get-FileHash`로 비교하고, `gh attestation verify <zip> --repo Femur-0607/handback`로 빌드 증명을 확인합니다. 아래 명령 설명에서 현황판 우클릭 메뉴로 같은 일을 하는 항목은 함께 적었습니다.
+업데이트: 새 `setup.exe`를 실행하면 현황판을 자동으로 닫고 그 자리에서 업그레이드합니다. 삭제: Windows 설정 › 앱 › handback (자동 시작과 handback이 만든 훅은 지우고, `~/.handback` 데이터와 스킬은 남깁니다). 다운로드 검증: `SHA256SUMS.txt`와 `Get-FileHash`로 비교하고, `gh attestation verify <setup.exe> --repo Femur-0607/handback`로 빌드 증명을 확인합니다. 아래 명령 설명에서 현황판 우클릭 메뉴로 같은 일을 하는 항목은 함께 적었습니다.
 
 ## 만든 이유
 

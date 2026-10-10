@@ -2176,7 +2176,7 @@ class Strip:
              "enabled": not checking, "command": self._check_install},
             {"label": "스킬 다시 설치 (설치 중…)" if installing else "스킬 다시 설치",
              "enabled": not installing, "command": self._reinstall_skills},
-            {"label": "설정 다시 실행", "command": self._open_setup},
+            {"label": "설정", "command": self._open_setup},
             {"label": "Hook ▶", "children": [
                 {"label": "설치", "command": lambda: self._hooks("install")},
                 {"label": "해제", "command": lambda: self._hooks("uninstall")}]},

@@ -58,12 +58,11 @@ Windows has live integration coverage. macOS and Linux are unverified. App queue
 
 ## Install on Windows (no Python)
 
-1. Download `handback-<version>-windows-x64.zip` from [GitHub Releases](https://github.com/Femur-0607/handback/releases).
-2. Unzip it to a folder **without spaces**, such as `C:\handback`. Not Downloads or Desktop: hooks and autostart remember this path, and Antigravity rejects paths with spaces.
-3. Double-click `handback-dashboard.exe`. If SmartScreen warns (the exe is unsigned), click **More info** → **Run anyway**.
-4. The first launch opens a small setup window. It checks your apps (Claude is required), installs the agent skills, and offers to start the dashboard with Windows. To reopen it later, right-click the dashboard › **설정 다시 실행**.
+1. Download `handback-<version>-setup.exe` from [GitHub Releases](https://github.com/Femur-0607/handback/releases).
+2. Run it. If SmartScreen warns (the installer is unsigned), click **추가 정보** → **실행**. No admin rights needed; it installs to `%LOCALAPPDATA%\Programs\handback`, installs the agent skills, and offers two options: start with Windows (on by default) and a desktop icon (off).
+3. handback opens when the install finishes. Next time, open **handback** from the Start menu.
 
-The dashboard shows the handback logo in the taskbar. `handback.exe` is the command-line tool that agents and hooks call; double-clicking it runs the text setup instead. Terminal users can run `handback setup` (also `--yes`, `--dry-run`).
+`handback.exe` in the install folder is the command-line tool that agents and hooks use. Terminal users can run `handback setup` (also `--yes`, `--dry-run`).
 
 ## Use it
 
@@ -73,25 +72,25 @@ The dashboard shows the handback logo in the taskbar. `handback.exe` is the comm
    Use the handback skill. Ask one Codex worker to review error handling in <module-path> without changing files, then summarize its findings here.
    ```
 
-2. Open the dashboard to see running tasks and unread results. Right-click it for settings: start with Windows, install check, reinstall skills, hooks, and per-project roles. The dashboard can set only Claude as Lead; set a Codex or Antigravity Lead from that app.
+2. Open the **handback** app (the dashboard) to see running tasks and unread results. Right-click it for settings: **설정**, start with Windows, install check, reinstall skills, hooks, and per-project roles. The dashboard can set only Claude as Lead; set a Codex or Antigravity Lead from that app.
 3. To check that the round trip works, right-click a project → **연결 테스트**. This runs one real Codex worker task and uses model quota.
 
 ## Update
 
-Close the dashboard, then unzip the new version over the same folder. If you use a new folder, run `handback.exe` again to repeat setup.
+Run the new `handback-<version>-setup.exe`. It closes the dashboard and upgrades in place. To uninstall, use Windows **설정 › 앱 › handback**. This removes autostart and handback's own hooks; your `~/.handback` data and installed skills are kept.
 
 ## Verify the download
 
-Compare the zip's SHA256 with `SHA256SUMS.txt` on the release page:
+Compare the installer's SHA256 with `SHA256SUMS.txt` on the release page:
 
 ```powershell
-Get-FileHash .\handback-<version>-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\handback-<version>-setup.exe -Algorithm SHA256
 ```
 
 Check the build provenance with the [GitHub CLI](https://cli.github.com/):
 
 ```powershell
-gh attestation verify .\handback-<version>-windows-x64.zip --repo Femur-0607/handback
+gh attestation verify .\handback-<version>-setup.exe --repo Femur-0607/handback
 ```
 
 ## For developers
