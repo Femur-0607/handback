@@ -185,10 +185,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          $ErrorActionPreference = 'Continue'
           $out = Join-Path $env:RUNNER_TEMP 'handback-exe'
           $zip = (Get-ChildItem -LiteralPath $out -Filter 'handback-*-windows-x64.zip').FullName
           $sums = Join-Path $out 'SHA256SUMS.txt'
           gh release view $env:GITHUB_REF_NAME *> $null
-          if ($LASTEXITCODE -ne 0) { gh release create $env:GITHUB_REF_NAME --title $env:GITHUB_REF_NAME --verify-tag --generate-notes; if ($LASTEXITCODE -ne 0) { throw 'release create failed' } }
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:GITHUB_REF_NAME --title $env:GITHUB_REF_NAME --verify-tag --generate-notes
+            if ($LASTEXITCODE -ne 0) {
+              gh release view $env:GITHUB_REF_NAME *> $null
+              if ($LASTEXITCODE -ne 0) { throw 'release create failed' }
+            }
+          }
           gh release upload $env:GITHUB_REF_NAME $zip $sums --clobber
           if ($LASTEXITCODE -ne 0) { throw 'release upload failed' }
