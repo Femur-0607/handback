@@ -624,7 +624,7 @@ class AntigravityAdapter(BaseAdapter):
         sidecar = SIDECAR_PREFIX + request["id"][:12]
         sidecar_dir = self.gemini / "config" / "sidecars" / sidecar
         _write_json(sidecar_dir / "sidecar.json", {
-            "command": sys.executable, "args": [*entry_args(ENTRY_SCRIPT), "antigravity-sidecar", "--job", str(folder / "job.json")],
+            "command": self_argv(ENTRY_SCRIPT)[0], "args": [*entry_args(ENTRY_SCRIPT), "antigravity-sidecar", "--job", str(folder / "job.json")],
             "restart_policy": "never", "display_name": "handback " + request["id"][:8],
             "description": "handback: one agentapi call for one request, then exits."})
         backups = state.home / "antigravity" / "backups"

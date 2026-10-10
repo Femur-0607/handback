@@ -457,7 +457,8 @@ class DashboardMenuTests(unittest.TestCase):
     def test_item_context_disabled_checked_and_hidden(self):
         menu = self.context_menu()
         self.assertEqual([item["label"] for item in menu.items if item],
-                         ["보기 설정 ▶", "새로고침", "닫기"])
+                         ["보기 설정 ▶", *(["    Windows 시작 시 실행"] if dashboard.sys.platform == "win32" else []),
+                          "설치 상태 점검", "스킬 다시 설치", "Hook ▶", "새로고침", "닫기"])
         settings = self.submenu(menu)
         self.assertFalse(settings.items[self.entry(settings, "펼친 패널 표시 줄 수")]["enabled"])
         self.assertEqual([item["label"] for item in settings.items if item and item["label"].startswith("✓")],
@@ -469,7 +470,8 @@ class DashboardMenuTests(unittest.TestCase):
         self.assertFalse(menu.items[index]["enabled"])
         menu.invoke(index)
         self.assertIs(self.strip._context_menu, menu)
-        self.assertEqual(len([item for item in menu.items if item]), 8)
+        self.assertEqual(len([item for item in menu.items if item]),
+                         13 + (dashboard.sys.platform == "win32"))
 
     def test_keyboard_skips_disabled_and_submenu_returns_to_parent(self):
         menu = self.context_menu("project")
@@ -477,6 +479,9 @@ class DashboardMenuTests(unittest.TestCase):
         menu.step(1)
         self.assertEqual(menu.items[menu.active]["label"], "handback 등록 해제…")
         menu.step(1)
+        self.assertEqual(menu.items[menu.active]["label"], "역할 지정 ▶")
+        menu.step(2)
+        self.assertEqual(menu.items[menu.active]["label"], "보기 설정 ▶")
         menu.open_child(keyboard=True)
         child = menu.child
         self.assertEqual(child.items[child.active]["label"].strip("✓ "), "2줄")

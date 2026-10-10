@@ -18,10 +18,21 @@ def entry_args(script=None):
     return [str(source)] if source.is_file() else ["-m", "handback"]
 
 
+def _frozen_cli():
+    """The console handback.exe, even when running inside the windowed dashboard exe."""
+    return Path(sys.executable).with_name("handback.exe")
+
+
 def self_argv(script=None):
     """Interpreter plus entry arguments that re-launch this installation."""
     if frozen():
-        return [sys.executable]
+        current = Path(sys.executable)
+        if current.name.lower() == "handback.exe":
+            return [sys.executable]
+        cli = _frozen_cli()
+        if not cli.is_file():
+            raise RuntimeError(f"handback.exe를 찾을 수 없습니다: {cli}")
+        return [str(cli)]
     return [sys.executable, "-X", "utf8", *entry_args(script)]
 
 

@@ -2034,8 +2034,14 @@ class Strip:
                 {"label": "handback 등록 해제…", "enabled": not data.get("unresolved", False),
                  "tooltip": "프로젝트 경로를 읽을 수 없어 해제할 수 없습니다" if data.get("unresolved") else "",
                  "command": lambda: self._release_project(project)}, None])
+            items.append({"label": "역할 지정 ▶", "children": self._role_items(project, data)})
             if execution:
-                items.extend([{"label": "모델·추론 설정 ▶", "children": execution}, None])
+                items.append({"label": "모델·추론 설정 ▶", "children": execution})
+            testing = self._is_busy(("try", project))
+            items.extend([{"label": "연결 테스트 (테스트 중…)" if testing else "연결 테스트",
+                           "enabled": not testing and not data.get("running"),
+                           "tooltip": "진행 중인 작업이 있어 지금은 할 수 없습니다" if data.get("running") else "",
+                           "command": lambda: self._connection_test(project)}, None])
         settings = [{"label": "펼친 패널 표시 줄 수", "enabled": False}]
         for count, label in ((2, "2줄"), (3, "3줄"), (0, "전부")):
             settings.append({"label": ("✓ " if prefs["max_rows"] == count else "    ") + label,
@@ -2062,8 +2068,23 @@ class Strip:
             settings.append({"label": "숨긴 프로젝트 없음", "enabled": False})
         settings.extend([None, {"label": "순서 초기화 (최근 활동순)",
                                 "command": lambda: self._save({**prefs, "order": []})}])
-        items.extend([{"label": "보기 설정 ▶", "children": settings}, None,
-                      {"label": "새로고침", "command": lambda: self.refresh(reschedule=False)},
+        items.extend([{"label": "보기 설정 ▶", "children": settings}, None])
+        if sys.platform == "win32":
+            on = startup_shortcut().exists()
+            items.append({"label": ("✓ " if on else "    ") + "Windows 시작 시 실행",
+                          "command": lambda: self._toggle_autostart(not on)})
+        checking = self._is_busy(("doctor",))
+        installing = self._is_busy(("skills",))
+        items.extend([
+            {"label": "설치 상태 점검 (점검 중…)" if checking else "설치 상태 점검",
+             "enabled": not checking, "command": self._check_install},
+            {"label": "스킬 다시 설치 (설치 중…)" if installing else "스킬 다시 설치",
+             "enabled": not installing, "command": self._reinstall_skills},
+            {"label": "Hook ▶", "children": [
+                {"label": "설치", "command": lambda: self._hooks("install")},
+                {"label": "해제", "command": lambda: self._hooks("uninstall")}]},
+            None,
+            {"label": "새로고침", "command": lambda: self.refresh(reschedule=False)},
                       {"label": "닫기", "command": self.root.destroy}])
         menu = DarkMenu(self, items, _monitor_area(self.root, event.x_root, event.y_root))
         self._context_menu = menu
@@ -2297,6 +2318,160 @@ class Strip:
             return
         self.refresh(reschedule=False)
         self._dialog("해제 완료", f"보관 위치:\n{target}", parent=self.root)
+
+    # ---- menu actions ----
+    def _is_busy(self, key):
+        return key in getattr(self, "_busy", set())
+
+    def _run_async(self, key, work, done):
+        """Run work() in a thread; done(result, error) runs on the Tk thread.
+
+        The worker only fills a holder; the Tk thread polls it with root.after,
+        so no Tk call is ever made off-thread.
+        """
+        import threading
+        if not hasattr(self, "_busy"):
+            self._busy = set()
+        self._busy.add(key)
+        holder = {}
+
+        def target():
+            try:
+                holder["result"] = work()
+            except Exception as error:  # surfaced to the user as a one-line dialog
+                holder["error"] = error
+            holder["done"] = True
+
+        def poll():
+            if not holder.get("done"):
+                self.root.after(150, poll)
+                return
+            self._busy.discard(key)
+            done(holder.get("result"), holder.get("error"))
+
+        threading.Thread(target=target, daemon=True).start()
+        self.root.after(150, poll)
+
+    def _toggle_autostart(self, enable):
+        try:
+            set_autostart(enable)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            self._dialog("자동 실행", "자동 실행을 바꾸지 못했습니다 — " + " ".join(str(error).split())[:80])
+
+    def _check_install(self):
+        root = self._rows[0]["root"] if self._rows else str(Path.cwd())
+
+        def done(lines, error):
+            if error:
+                self._dialog("설치 상태 점검", "점검하지 못했습니다 — " + " ".join(ui_error(error).split())[:80])
+            else:
+                self._dialog("설치 상태 점검", "\n".join(lines) if lines else "문제 없음")
+        self._run_async(("doctor",), lambda: doctor_problems(root, self.home), done)
+
+    def _reinstall_skills(self):
+        if not self._dialog(
+                "스킬 다시 설치",
+                "에이전트별 handback 스킬 폴더를 덮어씁니다. 직접 고친 내용은 바뀌고 백업은 남습니다.",
+                confirm=True):
+            return
+
+        def done(lines, error):
+            if error:
+                self._dialog("스킬 다시 설치", "설치하지 못했습니다 — " + " ".join(ui_error(error).split())[:80])
+            else:
+                count = sum(1 for line in lines if line.startswith("installed:"))
+                self._dialog("스킬 다시 설치", f"스킬 {count}개를 설치했습니다")
+        self._run_async(("skills",), run_skill_install, done)
+
+    def _hooks(self, action):
+        verb = "추가합니다" if action == "install" else "제거합니다"
+        paths = "\n".join(hook_settings_paths())
+        if not self._dialog(
+                "Hook " + ("설치" if action == "install" else "해제"),
+                f"Claude·Codex 설정에서 handback hook을 {verb}. 기존 설정은 백업됩니다.\n\n"
+                f"설정 파일:\n{paths}\n백업 위치:\n{hook_backup_dir(self.home)}", confirm=True):
+            return
+        try:
+            backups = run_hooks(action, self.home)
+        except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+            self._dialog("Hook", "실패 — " + " ".join(ui_error(error).split())[:80])
+            return
+        done = "설치했습니다" if action == "install" else "해제했습니다"
+        self._dialog("Hook", done + ("\n백업: " + "\n".join(backups) if backups else ""))
+
+    def _role_items(self, project, data):
+        lead = data.get("lead", "")
+        lead_agent = lead.partition(":")[0]
+        workers = list(data.get("workers", []))
+        items = [{"label": "리드", "enabled": False}]
+        for agent in config.AGENTS:
+            current = agent == lead_agent
+            usable = agent == "claude" or current
+            items.append({"label": ("✓ " if current else "    ") + agent_name(agent),
+                          "enabled": usable and not current,
+                          "tooltip": "" if usable else "Codex·Antigravity 리드는 해당 앱 대화에서 직접 지정합니다",
+                          "command": lambda agent=agent: self._change_roles(
+                              project, agent + ":lead", workers)})
+        items.extend([None, {"label": "워커", "enabled": False}])
+        for agent in ("codex", "antigravity"):
+            chosen = [w for w in config.AGENTS if (w in workers) != (w == agent)]
+            items.append({"label": ("✓ " if agent in workers else "    ") + agent_name(agent),
+                          "command": lambda chosen=chosen: self._change_roles(project, lead, chosen)})
+        return items
+
+    def _change_roles(self, project, lead, workers):
+        data = next((row for row in self._rows if row["root"] == project), {})
+        old_lead, old_workers = data.get("lead", ""), list(data.get("workers", []))
+        if data.get("running"):
+            self._dialog("역할 지정", "진행 중인 작업이 있어 바꿀 수 없습니다")
+            return
+        over = role_env_override()
+        if over:
+            self._dialog("역할 지정", "환경변수 " + "·".join(over) + "가 설정돼 있어 바꿀 수 없습니다 — "
+                         "Remove-Item Env:HANDBACK_LEAD, Env:HANDBACK_WORKERS")
+            return
+        old_name, new_name = old_lead.partition(":")[0], lead.partition(":")[0]
+        summary = role_summary(old_name, old_workers, new_name, workers)
+        if not summary:
+            return
+        if not self._dialog("역할 지정", summary + " 로 바꿉니다", confirm=True):
+            return
+        try:
+            fallback = config.resolve(project, home=self.home, validate=False)["values"].get("fallback", "ask")
+            config.use_topology(project, lead, workers, fallback, home=self.home)
+        except (OSError, ValueError, TimeoutError) as error:
+            self._dialog("역할 지정", "실패 — " + " ".join(ui_error(error).split())[:80])
+            return
+        self.refresh(reschedule=False)
+        self._dialog("역할 지정", "역할을 바꿨습니다")
+
+    def _connection_test(self, project):
+        from .state import ProjectState
+        key = ("try", project)
+        if self._is_busy(key):
+            return
+        data = next((row for row in self._rows if row["root"] == project), {})
+        if data.get("running"):
+            self._dialog("연결 테스트", "진행 중인 작업이 있어 지금은 할 수 없습니다")
+            return
+        try:
+            saved = ProjectState(project, home=self.home).read_json("topology.json", {})
+        except (OSError, ValueError):
+            saved = {}
+        message = "Codex 워커가 실제로 1회 실행됩니다 (사용량 발생)"
+        if not saved:
+            message += "\n역할이 Lead=Claude, Workers=Codex로 저장됩니다"
+        if not self._dialog("연결 테스트", message, confirm=True):
+            return
+
+        def done(result, error):
+            if error:
+                self._dialog("연결 테스트", "실패 — " + " ".join(ui_error(error).split())[:80])
+            else:
+                ok, seconds, reason = result
+                self._dialog("연결 테스트", f"연결 정상 ({seconds}초)" if ok else f"실패 — {reason}")
+            self.refresh(reschedule=False)
+        self._run_async(key, lambda: run_connection_test(project), done)
 
     def _set_max_rows(self, prefs, count):
         self.show_all = False
@@ -2584,6 +2759,166 @@ def set_autostart(enabled):
     return {"autostart": True, "shortcut": str(link), "target": str(pythonw), "launcher": str(launcher)}
 
 
+def _expected_autostart_target():
+    from .invocation import frozen
+    if frozen():
+        return Path(sys.executable).with_name("handback-dashboard.exe")
+    return Path(sys.executable).with_name("pythonw.exe")
+
+
+def _shortcut_target(link):
+    script = "(New-Object -ComObject WScript.Shell).CreateShortcut('" + str(link).replace("'", "''") + "').TargetPath"
+    done = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, text=True, timeout=30)
+    return done.stdout.strip()
+
+
+def repair_autostart():
+    """Silently rewrite a stale Startup shortcut (moved/reinstalled launcher)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        link = startup_shortcut()
+        if not link.exists():
+            return False
+        target = _shortcut_target(link)
+        expected = _expected_autostart_target()
+        same = bool(target) and os.path.normcase(os.path.normpath(target)) == \
+            os.path.normcase(os.path.normpath(str(expected)))
+        if same and Path(target).exists():
+            return False
+        set_autostart(True)
+        return True
+    except (OSError, RuntimeError, KeyError, subprocess.SubprocessError):
+        return False
+
+
+# ---- right-click menu helpers (pure logic; Strip wires them to dialogs) ----
+HOOK_AGENTS = ("claude", "codex")
+ROLE_MIGRATION_ENV = ("HANDBACK_LEAD", "HANDBACK_WORKERS")
+_SKILL_FIX = "우클릭 › 스킬 다시 설치"
+
+
+def _problem_line(row):
+    name, detail = row.get("check", ""), str(row.get("detail", ""))
+    if name.endswith(" version") or name == "Claude Monitor":
+        return None  # informational only
+    if name == "Python":
+        return "Python 버전이 낮음 — 3.10 이상을 설치하세요"
+    if name == "State home":
+        return "상태 폴더에 쓸 수 없음 — HANDBACK_HOME 폴더 권한을 확인하세요"
+    if name in ("Codex executable", "Codex queue --thread"):
+        return "Codex 실행 파일을 쓸 수 없음 — Codex 앱을 설치·업데이트하세요"
+    if name.startswith("Antigravity hooks"):
+        return "Antigravity hook 없음 — 우클릭 › Hook › 설치"
+    if name == "Antigravity":
+        return "Antigravity 실행 파일 없음 — Antigravity를 설치하세요"
+    if name.endswith(" skill"):
+        who = agent_name(name.split()[0])
+        kind = ("스킬 없음" if detail.startswith("missing") else "예전 스킬만 있음"
+                if detail.startswith("legacy") else "스킬이 다른 설치를 가리킴")
+        return f"{who} {kind} — {_SKILL_FIX}"
+    if name == "Topology":
+        return "역할 설정 문제 — 프로젝트 우클릭 › 역할 지정"
+    if name.endswith(" recovery hooks"):
+        return f"{agent_name(name.split()[0])} 복구 hook 없음 — 우클릭 › Hook › 설치"
+    if name.startswith("Collector "):
+        return "결과 수집이 멈춤 — 잠시 후 다시 점검하세요"
+    if name == "Lead delivery":
+        return "전달 안 된 결과 있음 — 프로젝트 우클릭 › 미확인 결과 확인"
+    if name.startswith("State warning"):
+        return "상태 폴더 경고 — handback doctor로 자세히 확인하세요"
+    return f"{name} 문제 — handback doctor로 확인하세요"
+
+
+def problem_lines(rows):
+    lines = []
+    for row in rows:
+        if row.get("level") == "OK":
+            continue
+        line = _problem_line(row)
+        if line and line not in lines:
+            lines.append(line)
+    return lines
+
+
+def doctor_problems(root, home=None, adapter_for=None):
+    """Same checks as `handback doctor`, returned as Korean one-line problems."""
+    from . import diagnostics
+    from .state import ProjectState
+    if adapter_for is None:
+        from .cli import get_adapter as adapter_for
+    state = ProjectState(root, home=home)
+    resolved = config.resolve(root, home=state.home, validate=False)
+    values = resolved["values"]
+    agents = [adapter_for(a, values).detect() for a in ("codex", "claude", "antigravity")
+              if a != "antigravity" or values["agents"][a]["enabled"]]
+    return problem_lines(diagnostics.checklist(state, resolved, agents))
+
+
+def hook_settings_paths():
+    from . import hook_install
+    return [str(hook_install._config_path(agent, None)) for agent in HOOK_AGENTS]
+
+
+def hook_backup_dir(home=None):
+    return Path(home or state_home()) / "hook-install" / "backups"
+
+
+def run_hooks(action, home=None, config_paths=None):
+    """install/uninstall Claude+Codex hooks; returns backup paths written."""
+    from . import hook_install
+    run = hook_install.install if action == "install" else hook_install.uninstall
+    result = run(list(HOOK_AGENTS), home=home, config_paths=config_paths)
+    return [change["backup"] for change in result.get("changes", []) if change.get("backup")]
+
+
+def run_skill_install():
+    from .skill_install import install
+    messages = install(None, False)
+    return [m for m in messages if m.startswith(("installed:", "backup:"))]
+
+
+def run_connection_test(root):
+    """Same path as `handback try --root <root> --json`, run as a child process.
+
+    A subprocess keeps global stdout untouched (the windowed exe has none).
+    Returns (ok, seconds, reason).
+    """
+    from .invocation import self_argv
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    try:
+        done = subprocess.run([*self_argv(), "try", "--root", str(root), "--json"],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              env={**os.environ, "PYTHONUTF8": "1"}, creationflags=flags,
+                              stdin=subprocess.DEVNULL, timeout=330)
+    except subprocess.TimeoutExpired:
+        return False, 330, "시간 초과"
+    try:
+        report = json.loads(done.stdout)
+    except ValueError:
+        report = {}
+    seconds = round(float(report.get("elapsed_seconds") or 0))
+    if done.returncode == 0:
+        return True, seconds, ""
+    reason = (report.get("error") or report.get("status") or (done.stderr or "").strip()
+              or f"코드 {done.returncode}")
+    return False, seconds, " ".join(str(reason).split())[:80]
+
+
+def role_env_override():
+    return [name for name in ROLE_MIGRATION_ENV if os.environ.get(name)]
+
+
+def role_summary(old_lead, old_workers, new_lead, new_workers):
+    parts = []
+    if old_lead != new_lead:
+        parts.append(f"Lead: {old_lead} → {new_lead}")
+    if list(old_workers) != list(new_workers):
+        parts.append(f"Workers: {', '.join(old_workers) or '없음'} → {', '.join(new_workers) or '없음'}")
+    return ", ".join(parts)
+
+
 def main(home=None):
     if sys.platform == "win32":
         import ctypes
@@ -2595,4 +2930,6 @@ def main(home=None):
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except (AttributeError, OSError):
             pass
+    import threading
+    threading.Thread(target=repair_autostart, daemon=True).start()
     Strip(home).run()

@@ -41,6 +41,17 @@ class InvocationTests(FrozenCase):
         self.assertEqual(invocation.entry_args(), [])
         self.assertEqual(invocation.self_argv(Path("whatever.py")), [EXE])
 
+    def test_dashboard_exe_resolves_to_sibling_cli(self):
+        with tempfile.TemporaryDirectory() as folder:
+            dash = Path(folder) / "handback-dashboard.exe"
+            with patch.object(sys, "executable", str(dash)):
+                with self.assertRaises(RuntimeError):
+                    invocation.self_argv()
+                (Path(folder) / "handback.exe").write_text("x")
+                self.assertEqual(invocation.self_argv(), [str(Path(folder) / "handback.exe")])
+                self.assertIn("handback.exe", invocation.command_text("hook"))
+                self.assertNotIn("dashboard", invocation.command_text("hook"))
+
     def test_command_text(self):
         text = invocation.command_text("inbox", "ack")
         self.assertIn("handback.exe", text)
