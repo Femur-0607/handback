@@ -32,7 +32,7 @@ class MenuActionTests(DashboardMenuTests):
     def test_root_menu_order_and_project_items(self):
         root = self.project()
         menu = self.context_menu()
-        expected = ["보기 설정 ▶", "설치 상태 점검", "스킬 다시 설치", "Hook ▶", "새로고침", "닫기"]
+        expected = ["보기 설정 ▶", "설치 상태 점검", "스킬 다시 설치", "설정 다시 실행", "Hook ▶", "새로고침", "닫기"]
         if dashboard.sys.platform == "win32":
             expected.insert(1, "Windows 시작 시 실행")
         self.assertEqual(self.labels(menu), expected)

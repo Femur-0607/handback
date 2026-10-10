@@ -737,6 +737,85 @@ def keep_above_taskbar(widget, taskbar=None):
         above = user.GetWindow(above, 3)
 
 
+APP_USER_MODEL_ID = "Femur0607.handback.dashboard"
+
+
+def set_app_user_model_id(app_id=APP_USER_MODEL_ID):
+    """Give the process its own taskbar identity (grouping + logo); failures are ignored."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(ctypes.c_wchar_p(app_id))
+        return True
+    except (AttributeError, OSError):
+        return False
+
+
+def enable_taskbar_button(widget):
+    """Give the override-redirect dashboard a taskbar button (WS_EX_APPWINDOW, not TOOLWINDOW).
+
+    Idempotent: returns True only when the style changed. Any failure is a no-op.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user = ctypes.windll.user32
+        user.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        user.GetAncestor.restype = wintypes.HWND
+        user.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user.GetWindowLongW.restype = ctypes.c_long
+        user.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+        user.SetWindowLongW.restype = ctypes.c_long
+        hwnd = user.GetAncestor(widget.winfo_id(), 2)  # GA_ROOT: Tk's native wrapper.
+        if not hwnd:
+            return False
+        style = user.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
+        wanted = (style & ~0x80) | 0x40000  # drop TOOLWINDOW, add APPWINDOW
+        if wanted == style:
+            return False
+        user.SetWindowLongW(hwnd, -20, wanted)
+        if widget.winfo_ismapped():
+            # The shell only re-reads the style on a fresh show. Hide/show through Tk:
+            # a native SW_HIDE re-enters Tk's handlers while ctypes has released the GIL.
+            widget.withdraw()
+            widget.deiconify()
+        return True
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def restore_if_minimized(widget):
+    """A taskbar click can minimize an override-redirect window: bring it straight back."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user = ctypes.windll.user32
+        user.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        user.GetAncestor.restype = wintypes.HWND
+        user.IsIconic.argtypes = [wintypes.HWND]
+        user.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        hwnd = user.GetAncestor(widget.winfo_id(), 2)
+        if hwnd and user.IsIconic(hwnd):
+            user.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE: restore without stealing focus
+            return True
+    except (AttributeError, OSError, ValueError):
+        pass
+    return False
+
+
+def _icon_file():
+    try:
+        path = Path(str(resources.files("handback").joinpath("assets", "icon.ico")))
+        return str(path) if path.is_file() else None
+    except (OSError, TypeError):
+        return None
+
+
 def _set_window_corners(widget, width, height, radius, *, wrapper=True):
     """Clip a Tk wrapper or child; Windows owns a region only after success."""
     if sys.platform != "win32" or width <= 0 or height <= 0:
@@ -1460,6 +1539,13 @@ class Strip:
                 self.icons.append(tk.PhotoImage(master=self.root, data=asset.read_bytes(), format="png"))
             except (OSError, tk.TclError):
                 pass  # Source-only or incomplete installs still have a usable dashboard.
+        if sys.platform == "win32":
+            ico = _icon_file()
+            if ico:
+                try:
+                    self.root.iconbitmap(default=ico)  # taskbar button uses this logo
+                except tk.TclError:
+                    pass
         if self.icons:
             self.root.iconphoto(True, *self.icons)
         self.root.overrideredirect(True)
@@ -1493,6 +1579,16 @@ class Strip:
         self.root.bind("<Configure>", self._sync_window_corners, add="+")
         self._root_frame.bind("<Configure>", self._sync_window_corners, add="+")
         self.root.bind("<Map>", lambda event: self._sync_window_corners(event, force=True), add="+")
+        self.root.bind("<Map>", self._taskbar_mapped, add="+")
+        self.root.bind("<Unmap>", self._taskbar_unmapped, add="+")
+
+    def _taskbar_mapped(self, event):
+        if event.widget == self.root and sys.platform == "win32":
+            enable_taskbar_button(self.root)  # idempotent: no-op once applied
+
+    def _taskbar_unmapped(self, event):
+        if event.widget == self.root and sys.platform == "win32":
+            restore_if_minimized(self.root)
 
     def _corner_parameters(self):
         floating = self.mode == "taskbar" and not self.docked
@@ -2080,6 +2176,7 @@ class Strip:
              "enabled": not checking, "command": self._check_install},
             {"label": "스킬 다시 설치 (설치 중…)" if installing else "스킬 다시 설치",
              "enabled": not installing, "command": self._reinstall_skills},
+            {"label": "설정 다시 실행", "command": self._open_setup},
             {"label": "Hook ▶", "children": [
                 {"label": "설치", "command": lambda: self._hooks("install")},
                 {"label": "해제", "command": lambda: self._hooks("uninstall")}]},
@@ -2382,6 +2479,16 @@ class Strip:
                 count = sum(1 for line in lines if line.startswith("installed:"))
                 self._dialog("스킬 다시 설치", f"스킬 {count}개를 설치했습니다")
         self._run_async(("skills",), run_skill_install, done)
+
+    def _open_setup(self):
+        from . import setup_gui
+        self._close_menu()
+        setup_gui.open_setup(self)
+
+    def _auto_setup(self):
+        from . import setup_gui
+        if setup_gui.needs_setup():
+            setup_gui.open_setup(self)
 
     def _hooks(self, action):
         verb = "추가합니다" if action == "install" else "제거합니다"
@@ -2715,6 +2822,8 @@ class Strip:
         self.root.deiconify()
         if self._fullscreen_hidden:
             show_widget_without_activation(self.root, False)
+        if getattr(sys, "frozen", False):  # source/PyPI users keep the current behaviour
+            self.root.after(400, self._auto_setup)
         self.root.mainloop()
 
 
@@ -2930,6 +3039,7 @@ def main(home=None):
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except (AttributeError, OSError):
             pass
+        set_app_user_model_id()
     import threading
     threading.Thread(target=repair_autostart, daemon=True).start()
     Strip(home).run()
