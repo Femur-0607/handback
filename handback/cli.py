@@ -511,6 +511,8 @@ def cmd_try(args):
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="handback", description="handback: durable local agent relay")
+    from . import __version__
+    parser.add_argument("--version", action="version", version="handback " + __version__)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("codex")
     trial = sub.add_parser("try", help="run and acknowledge one read-only Codex smoke task")

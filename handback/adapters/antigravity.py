@@ -29,7 +29,7 @@ from urllib.parse import unquote, urlparse
 
 from .base import AdapterError, AdapterUnavailable, BaseAdapter
 from .codex import BinaryRolloutTailer
-from ..invocation import entry_args
+from ..invocation import entry_args, self_argv
 
 SIDECAR_PREFIX = "handback-"
 HOOK_GROUP = "handback"
@@ -385,8 +385,9 @@ def _short_path(path):
 
 
 def hook_command(event, relay_home):
-    entry = [_short_path(p) if p not in ("-m", "handback") else p for p in entry_args(ENTRY_SCRIPT)]
-    parts = [_short_path(sys.executable), "-X", "utf8", *entry, "hook", "--agent", "antigravity",
+    parts = [part if part in ("-m", "handback", "-X", "utf8") else _short_path(part)
+             for part in self_argv(ENTRY_SCRIPT)]
+    parts += ["hook", "--agent", "antigravity",
              "--event", event, "--state-home", _short_path(relay_home)]
     if any(" " in part or '"' in part for part in parts):
         raise AdapterUnavailable("Antigravity hook commands cannot be quoted; a path still contains a space: "
@@ -496,8 +497,10 @@ def cleanup_sidecars(relay_home, dry_run=False, home=None):
                 continue
             legacy = (len(args) == 4 and Path(args[0]).resolve() == ENTRY_SCRIPT and
                       args[1:3] == ["antigravity-sidecar", "--job"])
+            exe = (len(args) == 3 and args[:2] == ["antigravity-sidecar", "--job"]
+                   and Path(str(spec.get("command", "")).replace("\\", "/")).name.lower() == "handback.exe")
             module = len(args) == 5 and args[0] == "-m" and args[1] in ("handback", "agent_relay") and args[2:4] == ["antigravity-sidecar", "--job"]
-            if legacy or module:
+            if legacy or module or exe:
                 job_path = Path(args[-1]).resolve()
                 job_path.relative_to(relay_home / "projects")
                 job = _read_json(job_path, {})

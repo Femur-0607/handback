@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 from . import envelope, inbox
-from .invocation import entry_args, command_text
+from .invocation import self_argv, command_text
 from .state import _MISSING, atomic_json
 
 
@@ -128,7 +128,7 @@ def diagnostics(state, lead):
 
 def spawn_external(state, conversation):
     from .collector import ENTRY_SCRIPT, _detach_options
-    command = [sys.executable, *entry_args(ENTRY_SCRIPT), "route", "--root", str(state.root),
+    command = [*self_argv(ENTRY_SCRIPT), "route", "--root", str(state.root),
                "--conversation", conversation]
     env = dict(os.environ, HANDBACK_HOME=str(state.home), PYTHONUTF8="1")
     # Inherit the host's actual permissions; never strip a sandbox indicator.

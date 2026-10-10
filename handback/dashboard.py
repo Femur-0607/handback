@@ -2547,6 +2547,18 @@ def startup_shortcut():
     return Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup/handback 현황판.lnk"
 
 
+def _write_startup_shortcut(link, target, arguments, working_directory):
+    def quoted(value):
+        return "'" + str(value).replace("'", "''") + "'"
+    script = ("$s = (New-Object -ComObject WScript.Shell).CreateShortcut(" + quoted(link) + ");"
+              "$s.TargetPath = " + quoted(target) + ";"
+              "$s.Arguments = " + quoted(arguments) + ";"
+              "$s.WorkingDirectory = " + quoted(working_directory) + ";"
+              "$s.Description = 'handback 현황판';$s.Save()")
+    subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                   check=True, capture_output=True, timeout=30)
+
+
 def set_autostart(enabled):
     """Add or remove a per-user Startup shortcut that runs dashboard.pyw."""
     if sys.platform != "win32":
@@ -2555,22 +2567,20 @@ def set_autostart(enabled):
     if not enabled:
         link.unlink(missing_ok=True)
         return {"autostart": False, "shortcut": str(link)}
-    from .invocation import entry_args
+    from .invocation import entry_args, frozen
+    if frozen():
+        # Windowed sibling of handback.exe; no interpreter, launcher script or arguments.
+        target = Path(sys.executable).with_name("handback-dashboard.exe")
+        if not target.exists():
+            raise RuntimeError(f"handback-dashboard.exe를 찾을 수 없습니다: {target}")
+        _write_startup_shortcut(link, target, "", target.parent)
+        return {"autostart": True, "shortcut": str(link), "target": str(target), "launcher": str(target)}
     launcher = Path(__file__).resolve().parent.parent / "dashboard.pyw"
     arguments = subprocess.list2cmdline([str(launcher)] if launcher.is_file() else [*entry_args(), "dashboard"])
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     if not pythonw.exists():
         raise RuntimeError(f"pythonw.exe를 찾을 수 없습니다: {pythonw}")
-
-    def quoted(value):
-        return "'" + str(value).replace("'", "''") + "'"
-    script = ("$s = (New-Object -ComObject WScript.Shell).CreateShortcut(" + quoted(link) + ");"
-              "$s.TargetPath = " + quoted(pythonw) + ";"
-              "$s.Arguments = " + quoted(arguments) + ";"
-              "$s.WorkingDirectory = " + quoted(launcher.parent) + ";"
-              "$s.Description = 'handback 현황판';$s.Save()")
-    subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                   check=True, capture_output=True, timeout=30)
+    _write_startup_shortcut(link, pythonw, arguments, launcher.parent)
     return {"autostart": True, "shortcut": str(link), "target": str(pythonw), "launcher": str(launcher)}
 
 

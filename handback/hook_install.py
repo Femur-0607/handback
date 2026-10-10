@@ -20,7 +20,7 @@ import sys
 import uuid
 
 from .state import ProjectState, state_home
-from .invocation import entry_args
+from .invocation import self_argv
 
 
 EVENTS = {"codex": ("UserPromptSubmit", "Stop", "Interrupt"),
@@ -144,8 +144,9 @@ def _powershell_string(value):
 def _spec(agent, event, script_path, home):
     # Resolving a POSIX venv's python symlink would select the base interpreter
     # and lose the installed package. Preserve the environment's executable.
-    executable = os.path.abspath(sys.executable)
-    arguments = ["-X", "utf8", *entry_args(script_path), "hook", "--agent", agent,
+    base = self_argv(script_path)
+    executable = os.path.abspath(base[0])
+    arguments = [*base[1:], "hook", "--agent", agent,
                  "--event", event, "--state-home", str(home)]
     timeout = 3 if event == "Interrupt" else 5
     if agent == "claude":
@@ -180,14 +181,21 @@ def legacy_handler(handler, agent, event):
             args = [token.strip("\"'") for token in tokens[1:]]
         else:
             args = list(args)
-        if args[:2] == ["-X", "utf8"]:
-            args = args[2:]
-        if args[:2] == ["-m", "agent_relay"]:
-            args = args[2:]
-        elif args and args[0].replace("\\", "/").rsplit("/", 1)[-1] == "agent_relay.py":
-            args = args[1:]
+        program = handler.get("command", "")
+        if handler.get("args") is None:
+            program = shlex.split(program, posix=False)[0] if program.strip() else ""
+        program = program.strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if program == "handback.exe":
+            pass  # frozen build: the executable itself is the entry point
         else:
-            return False
+            if args[:2] == ["-X", "utf8"]:
+                args = args[2:]
+            if args[:2] == ["-m", "agent_relay"]:
+                args = args[2:]
+            elif args and args[0].replace("\\", "/").rsplit("/", 1)[-1] == "agent_relay.py":
+                args = args[1:]
+            else:
+                return False
         return (len(args) == 7 and args[:5] == ["hook", "--agent", agent, "--event", event]
                 and args[5] == "--state-home" and bool(args[6]))
     except (TypeError, ValueError, AttributeError):

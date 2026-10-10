@@ -22,7 +22,7 @@ import uuid
 
 from . import config, envelope, inbox
 from .state import atomic_json, home_lock
-from .invocation import entry_args
+from .invocation import frozen, self_argv
 
 
 OPEN_STATES = frozenset({"prepared", "dispatching", "accepted", "delivery_unknown"})
@@ -108,7 +108,9 @@ def spawn(state, request, timeout=DEFAULT_COLLECT_TIMEOUT, python=None):
 def _spawn(state, request, timeout, python):
     log_path = state.path / "log" / ("collector-" + request["id"] + ".log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    command = [python or sys.executable, *entry_args(ENTRY_SCRIPT), "collect", "--request", request["id"],
+    # A frozen build must relaunch itself; an interpreter override cannot run its modules.
+    interpreter = [python] if python and not frozen() else None
+    command = [*(interpreter or self_argv(ENTRY_SCRIPT)), "collect", "--request", request["id"],
                "--root", str(state.root), "--timeout", str(timeout)]
     env = dict(os.environ, PYTHONUTF8="1")
     env["HANDBACK_HOME"] = str(state.home)

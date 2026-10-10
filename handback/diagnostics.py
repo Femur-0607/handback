@@ -182,7 +182,7 @@ def queue_supported(executable):
 
 
 def skill_status(agent):
-    from .invocation import command_text, entry_args
+    from .invocation import command_text, entry_args, frozen
     root = (Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") if agent == "codex"
             else Path.home() / ".claude")
     path = root / "skills/handback/SKILL.md"
@@ -190,7 +190,7 @@ def skill_status(agent):
         content = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return "legacy agent-relay skill; reinstall" if (root / "skills/agent-relay/SKILL.md").is_file() else "missing"
-    current = command_text() in content or (len(entry_args()) == 1 and
+    current = command_text() in content or (not frozen() and len(entry_args()) == 1 and
               entry_args()[0].replace("\\", "/").lower() in content.replace("\\", "/").lower())
     return "points at this installation" if current else "installation reference differs or is unverified"
 
