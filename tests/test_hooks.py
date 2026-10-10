@@ -497,6 +497,33 @@ class HookTests(unittest.TestCase):
             self.assertEqual(scan(), [])  # EOF resets a cursor beyond a shrunken directory.
             self.assertEqual(scan()[0]["id"], records[0]["id"])
 
+    def test_completed_scan_removes_checkpoint_and_keeps_limits_log(self):
+        records = [{**self.request, "id": f"{index:032x}"} for index in range(2)]
+        with self.scan_fixture("requests", records), patch.object(hooks, "MAX_REQUESTS", 1):
+            def scan():
+                return list(hooks._requests(self.state.path, hooks._Context(self.home)))
+            scan()
+            scans = self.home / "hook-scans"
+            self.assertEqual(len(list(scans.glob("*.json"))), 1)
+            scan()  # reaches EOF
+            self.assertEqual(list(scans.glob("*.json")), [])
+            self.assertTrue((scans / "limits.log").exists())
+
+    def test_stale_checkpoints_are_pruned_when_another_is_written(self):
+        records = [{**self.request, "id": f"{index:032x}"} for index in range(2)]
+        scans = self.home / "hook-scans"
+        scans.mkdir(parents=True, exist_ok=True)
+        stale, fresh = scans / "a.json", scans / "b.json"
+        for path in (stale, fresh):
+            atomic_json(path, {"offset": 0})
+        old = time.time() - 8 * 24 * 3600
+        os.utime(stale, (old, old))
+        with self.scan_fixture("requests", records), patch.object(hooks, "MAX_REQUESTS", 1):
+            list(hooks._requests(self.state.path, hooks._Context(self.home)))
+        self.assertFalse(stale.exists())
+        self.assertTrue(fresh.exists())
+        self.assertTrue((scans / "limits.log").exists())
+
     def test_later_recovery_budget_expiry_keeps_earlier_mail(self):
         mail = self.seed_lead()
         with patch.object(hooks, "_watch_hint", side_effect=hooks._BudgetExpired):

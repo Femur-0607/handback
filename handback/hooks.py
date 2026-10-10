@@ -23,6 +23,8 @@ MAX_LOG_BYTES = 16 * 1024
 MAX_PROJECTS = 256
 MAX_REQUESTS = 4096
 MAX_CONTEXT_MESSAGES = 10
+CHECKPOINT_TTL_SECONDS = 7 * 24 * 3600
+MAX_PRUNE = 16
 OPEN_STATES = frozenset({"prepared", "dispatching", "accepted", "delivery_unknown"})
 PROJECT_KEY = re.compile(r"[0-9a-f]{64}\Z")
 REQUEST_ID = re.compile(r"[0-9a-f]{32}\Z")
@@ -109,6 +111,27 @@ def _entries(directory):
         return
 
 
+def _prune_checkpoints(directory, keep, context):
+    """Drop a few long-stale disposable cursors; the caller holds the home lock."""
+    cutoff = time.time() - CHECKPOINT_TTL_SECONDS
+    removed = 0
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if removed >= MAX_PRUNE or context.deadline - time.monotonic() < 0.01:
+                    return
+                try:
+                    if (entry.name.endswith(".json") and entry.path != str(keep)
+                            and entry.is_file(follow_symlinks=False)
+                            and entry.stat(follow_symlinks=False).st_mtime < cutoff):
+                        os.unlink(entry.path)
+                        removed += 1
+                except OSError:
+                    continue
+    except OSError:
+        return
+
+
 @contextmanager
 def _scan(project, kind, context, scope):
     """Resume a bounded pass; checkpoints are disposable, never ACKs or state.
@@ -121,11 +144,14 @@ def _scan(project, kind, context, scope):
     key = hashlib.sha256(json.dumps([project.name, kind, scope]).encode()).hexdigest()
     checkpoint = context.home / "hook-scans" / (key + ".json")
     saved = None
+    existed = False
     try:
         saved = _read(checkpoint, context)
+        existed = saved is not None
     except _BudgetExpired:
         raise
     except (OSError, ValueError, TypeError) as error:
+        existed = True
         _log_file_error(context, project, error)
     offset = saved.get("offset", 0) if isinstance(saved, dict) else 0
     if type(offset) is not int or offset < 0:
@@ -165,16 +191,23 @@ def _scan(project, kind, context, scope):
         context.deadline = parent_deadline
         if not complete:
             context.scan_limits.append((project, kind, reason))
-        if not complete or saved is not None:
+        if not complete or existed:
             try:
                 context.remaining()
                 if checkpoint.is_symlink() or not _inside(checkpoint, context.home):
                     raise ValueError("unsafe hook checkpoint path")
                 with home_lock(context.home, timeout=min(0.05, context.remaining())):
-                    atomic_json(checkpoint, {"offset": position, "complete": complete,
-                                            "reason": None if complete else reason,
-                                            "project": project.name, "kind": kind,
-                                            "updated_utc": datetime.now(timezone.utc).isoformat()})
+                    if complete:
+                        try:
+                            checkpoint.unlink()
+                        except FileNotFoundError:
+                            pass
+                    else:
+                        atomic_json(checkpoint, {"offset": position, "complete": complete,
+                                                "reason": reason,
+                                                "project": project.name, "kind": kind,
+                                                "updated_utc": datetime.now(timezone.utc).isoformat()})
+                    _prune_checkpoints(checkpoint.parent, checkpoint, context)
             except (OSError, ValueError, TypeError) as error:
                 context.scan_limits.append((project, kind, "checkpoint"))
                 _log_file_error(context, project, error)
