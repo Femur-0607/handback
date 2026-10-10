@@ -60,10 +60,10 @@ Windows has live integration coverage. macOS and Linux are unverified. App queue
 
 1. Download `handback-<version>-windows-x64.zip` from [GitHub Releases](https://github.com/Femur-0607/handback/releases).
 2. Unzip it to a folder **without spaces**, such as `C:\handback`. Not Downloads or Desktop: hooks and autostart remember this path, and Antigravity rejects paths with spaces.
-3. Double-click `handback.exe`. If SmartScreen warns (the exe is unsigned), click **More info** → **Run anyway**.
-4. Follow the setup wizard. It checks your apps (Claude is required), installs the agent skills, offers to start the dashboard with Windows, opens the dashboard, and prints your next step.
+3. Double-click `handback-dashboard.exe`. If SmartScreen warns (the exe is unsigned), click **More info** → **Run anyway**.
+4. The first launch opens a small setup window. It checks your apps (Claude is required), installs the agent skills, and offers to start the dashboard with Windows. To reopen it later, right-click the dashboard › **설정 다시 실행**.
 
-The folder holds `handback.exe` and `handback-dashboard.exe`. Terminal users can run `handback setup` (also `--yes`, `--dry-run`).
+The dashboard shows the handback logo in the taskbar. `handback.exe` is the command-line tool that agents and hooks call; double-clicking it runs the text setup instead. Terminal users can run `handback setup` (also `--yes`, `--dry-run`).
 
 ## Use it
 

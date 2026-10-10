@@ -2,7 +2,7 @@
 
 ## Windows without Python
 
-Download `handback-<version>-windows-x64.zip` from [GitHub Releases](https://github.com/Femur-0607/handback/releases), unzip it to a folder without spaces (for example `C:\handback`), and double-click `handback.exe`. Follow the setup wizard (same as `handback setup`). The steps below are for the Python/CLI route; where a dashboard menu does the same job, it is noted.
+Download `handback-<version>-windows-x64.zip` from [GitHub Releases](https://github.com/Femur-0607/handback/releases), unzip it to a folder without spaces (for example `C:\handback`), and double-click `handback-dashboard.exe`. The first launch opens a setup window (right-click › 설정 다시 실행 reopens it). `handback.exe` is the command-line tool used by agents and hooks; double-clicking it runs the text setup (same as `handback setup`). The steps below are for the Python/CLI route; where a dashboard menu does the same job, it is noted.
 
 ## One-command first task
 

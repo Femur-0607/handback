@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [0.3.1] - 2026-10-10
+
+### Added
+
+- Setup window on the first dashboard launch (exe) and a **설정 다시 실행**
+  menu item to reopen it.
+- Dashboard taskbar button with the handback logo.
+
+### Changed
+
+- README: start from `handback-dashboard.exe`.
+
+### Fixed
+
+- The release job now creates a missing GitHub release (PowerShell 5.1 stderr).
+- Dashboard menu tests no longer depend on the real Startup folder.
+
 ## [0.3.0] - 2026-10-10
 
 ### Added
@@ -138,6 +155,7 @@ All notable changes to this project are documented here. This file follows the
 - The release version check imports the checkout when run from a temporary
   directory.
 
+[0.3.1]: https://github.com/Femur-0607/handback/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Femur-0607/handback/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/Femur-0607/handback/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/Femur-0607/handback/compare/v0.2.2...v0.2.3
