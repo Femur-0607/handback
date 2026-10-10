@@ -167,7 +167,15 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.13'
-      - name: Build Windows bundle
+      - name: Ensure Inno Setup 6
+        run: |
+          $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          if (-not $iscc -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --version 6.7.3 -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
+          }
+          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { throw 'ISCC.exe not found' }
+      - name: Build Windows bundle and installer
         run: .\packaging\build.ps1 -OutDir "$env:RUNNER_TEMP\handback-exe"
       - name: Verify version matches tag
         run: |
@@ -176,10 +184,15 @@ jobs:
           if ($version -notmatch [regex]::Escape($expected)) { throw "Built version '$version' does not match tag '$env:GITHUB_REF_NAME'" }
       - name: Smoke-test the bundle
         run: .\packaging\smoke.ps1 -Folder "$env:RUNNER_TEMP\handback-exe\dist\handback"
+      - name: Smoke-test the installer
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          $setup = (Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\handback-exe" -Filter 'handback-*-setup.exe').FullName
+          .\packaging\smoke-installer.ps1 -Setup $setup -Version $version
       - name: Attest build provenance
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
-          subject-path: ${{ runner.temp }}\handback-exe\handback-*-windows-x64.zip
+          subject-path: ${{ runner.temp }}\handback-exe\handback-*-setup.exe
       - name: Upload to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -187,7 +200,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $out = Join-Path $env:RUNNER_TEMP 'handback-exe'
-          $zip = (Get-ChildItem -LiteralPath $out -Filter 'handback-*-windows-x64.zip').FullName
+          $setup = (Get-ChildItem -LiteralPath $out -Filter 'handback-*-setup.exe').FullName
           $sums = Join-Path $out 'SHA256SUMS.txt'
           gh release view $env:GITHUB_REF_NAME *> $null
           if ($LASTEXITCODE -ne 0) {
@@ -197,5 +210,5 @@ jobs:
               if ($LASTEXITCODE -ne 0) { throw 'release create failed' }
             }
           }
-          gh release upload $env:GITHUB_REF_NAME $zip $sums --clobber
+          gh release upload $env:GITHUB_REF_NAME $setup $sums --clobber
           if ($LASTEXITCODE -ne 0) { throw 'release upload failed' }

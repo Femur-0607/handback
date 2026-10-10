@@ -1,6 +1,6 @@
 <#
-.SYNOPSIS  Build the handback Windows onedir bundle, zip it, and write SHA256SUMS.txt.
-.PARAMETER OutDir  Output directory (default: <repo>\dist-exe). Receives dist\, the zip and SHA256SUMS.txt.
+.SYNOPSIS  Build the handback Windows onedir bundle, compile the Inno Setup installer, and write SHA256SUMS.txt.
+.PARAMETER OutDir  Output directory (default: <repo>\dist-exe). Receives dist\, handback-<ver>-setup.exe and SHA256SUMS.txt.
 .PARAMETER Python  Python interpreter used to create the build venv (default: python on PATH).
 #>
 param(
@@ -47,18 +47,24 @@ foreach ($n in 'handback.exe', 'handback-dashboard.exe') {
     if (-not (Test-Path -LiteralPath (Join-Path $bundle $n))) { throw "Missing $n in bundle" }
 }
 
-# Zip with a top-level handback-<ver>/ folder.
-$stage = Join-Path $work 'stage'
-$top = Join-Path $stage "handback-$version"
-New-Item -ItemType Directory -Force -Path $stage | Out-Null
-Copy-Item -LiteralPath $bundle -Destination $top -Recurse
-$zip = Join-Path $OutDir "handback-$version-windows-x64.zip"
-Compress-Archive -LiteralPath $top -DestinationPath $zip -CompressionLevel Optimal
+# Compile the installer with Inno Setup 6 (ISCC on PATH, Program Files, or a per-user winget install).
+$iscc = $null
+$cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+if ($cmd) { $iscc = $cmd.Source }
+foreach ($c in @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe", "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe")) {
+    if (-not $iscc -and (Test-Path -LiteralPath $c)) { $iscc = $c }
+}
+if (-not $iscc) { throw 'ISCC.exe (Inno Setup 6) not found. Install it: winget install JRSoftware.InnoSetup' }
+$images = Join-Path $work 'wizard'
+& (Join-Path $PSScriptRoot 'make-wizard-images.ps1') -OutDir $images
+Run $iscc @("/DAppVersion=$version", "/DWizardImages=$images", "/DSourceDir=$bundle", "/DOutDir=$OutDir", (Join-Path $PSScriptRoot 'installer.iss'))
+$setup = Join-Path $OutDir "handback-$version-setup.exe"
+if (-not (Test-Path -LiteralPath $setup)) { throw "Installer not produced: $setup" }
 
-$hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-[IO.File]::WriteAllText((Join-Path $OutDir 'SHA256SUMS.txt'), "$hash  $(Split-Path $zip -Leaf)`n", (New-Object Text.UTF8Encoding($false)))
+$hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+[IO.File]::WriteAllText((Join-Path $OutDir 'SHA256SUMS.txt'), "$hash  $(Split-Path $setup -Leaf)`n", (New-Object Text.UTF8Encoding($false)))
 
 Write-Host "version=$version"
 Write-Host "bundle=$bundle"
-Write-Host "zip=$zip"
+Write-Host "setup=$setup"
 Write-Host "sha256=$hash"
