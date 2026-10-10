@@ -8,7 +8,7 @@ Previously developed as **agent-relay**; legacy state is detected with migration
 
 A local tool for handing work between coding-agent apps and bringing the results back to the conversation where you started.
 
-**Experimental · Windows verified · Python 3.10+ · One computer, one OS user**
+**Experimental · Windows verified · No Python needed on Windows · One computer, one OS user**
 
 [First task](https://github.com/Femur-0607/handback#try-your-first-task) · [Use-your-own-project guide](https://github.com/Femur-0607/handback#use-it-on-your-own-project) · [Detailed setup](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) · [한국어 사용 설명서](https://github.com/Femur-0607/handback/blob/main/docs/usage.ko.md) · [Changelog](https://github.com/Femur-0607/handback/blob/main/CHANGELOG.md)
 
@@ -18,7 +18,7 @@ handback connects coding agents running on your computer. You work with one main
 
 For example, you can discuss a change with Claude, have a Codex worker inspect the relevant code, and review its findings back in Claude. The apps perform the reasoning and coding; handback handles task delivery, result collection, and recovery.
 
-It runs as an installed Python package or directly from this repository, using only Python's standard library. You need the supported agent apps installed and signed in. Everything is scoped to one computer and one OS user, and no other project repository is required.
+On Windows it runs as a downloaded program with no Python needed; developers can also use the Python package or this repository (standard library only). You need the supported agent apps installed and signed in. Everything is scoped to one computer and one OS user, and no other project repository is required.
 
 ## When to use it / when not to
 
@@ -56,7 +56,49 @@ Start with **Claude Lead → Codex worker**. Claude workers, Codex Lead → Code
 
 Windows has live integration coverage. macOS and Linux are unverified. App queue, transcript, and hook contracts can change with updates; see the [verification summary](https://github.com/Femur-0607/handback/blob/main/docs/verification/README.md) for tested behavior and remaining gaps.
 
-## Install
+## Install on Windows (no Python)
+
+1. Download `handback-<version>-windows-x64.zip` from [GitHub Releases](https://github.com/Femur-0607/handback/releases).
+2. Unzip it to a folder **without spaces**, such as `C:\handback`. Not Downloads or Desktop: hooks and autostart remember this path, and Antigravity rejects paths with spaces.
+3. Double-click `handback.exe`. If SmartScreen warns (the exe is unsigned), click **More info** → **Run anyway**.
+4. Follow the setup wizard. It checks your apps (Claude is required), installs the agent skills, offers to start the dashboard with Windows, opens the dashboard, and prints your next step.
+
+The folder holds `handback.exe` and `handback-dashboard.exe`. Terminal users can run `handback setup` (also `--yes`, `--dry-run`).
+
+## Use it
+
+1. Open your project in Claude (the Lead) and ask it to use the handback skill, for example:
+
+   ```text
+   Use the handback skill. Ask one Codex worker to review error handling in <module-path> without changing files, then summarize its findings here.
+   ```
+
+2. Open the dashboard to see running tasks and unread results. Right-click it for settings: start with Windows, install check, reinstall skills, hooks, and per-project roles. The dashboard can set only Claude as Lead; set a Codex or Antigravity Lead from that app.
+3. To check that the round trip works, right-click a project → **연결 테스트**. This runs one real Codex worker task and uses model quota.
+
+## Update
+
+Close the dashboard, then unzip the new version over the same folder. If you use a new folder, run `handback.exe` again to repeat setup.
+
+## Verify the download
+
+Compare the zip's SHA256 with `SHA256SUMS.txt` on the release page:
+
+```powershell
+Get-FileHash .\handback-<version>-windows-x64.zip -Algorithm SHA256
+```
+
+Check the build provenance with the [GitHub CLI](https://cli.github.com/):
+
+```powershell
+gh attestation verify .\handback-<version>-windows-x64.zip --repo Femur-0607/handback
+```
+
+## For developers
+
+Install with Python 3.10+ (`pip`, `pipx`, `uv`) or run from a source checkout. The sections through "Use it on your own project" are the CLI walkthrough.
+
+### Install from PyPI or source
 
 Install the published package from PyPI:
 
@@ -73,7 +115,7 @@ handback install-skills --dry-run
 handback install-skills
 ```
 
-No runtime dependencies are installed. The optional `handback-dashboard` GUI requires a Python build with Tk support.
+No runtime dependencies are installed. The optional `handback-dashboard` GUI requires a Python build with Tk support. `handback --version` prints the installed version.
 
 `handback install-skills --dry-run --target-home <absolute-test-home>` previews an isolated installation without consulting host PATH or CODEX_HOME. Existing skills get timestamp backups. Claude is always installed; Codex and Antigravity require app detection, and Antigravity also requires a registered skill directory. Without `--target-home`, detection checks the known Windows app paths and PATH on all platforms.
 
@@ -81,7 +123,7 @@ Packaged skills and hooks use the environment's absolute Python executable with 
 
 The source-only walkthrough below remains supported; `install.ps1` is a thin wrapper around `python handback.py install-skills`. Package users can replace `python "$relayScript"` in later examples with `handback`.
 
-## Try your first task
+### Try your first task
 
 Start with **Claude Lead → Codex worker**. Have these ready:
 
@@ -106,7 +148,7 @@ Use `--root <path>` for another project, `--lead claude:<session-id>` when selec
 
 The manual route below includes optional skill setup. Keep the same state home and PowerShell session throughout.
 
-### 1. Get the tool and check your setup
+#### 1. Get the tool and check your setup
 
 ```powershell
 git clone https://github.com/Femur-0607/handback.git
@@ -120,7 +162,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -DryRun
 
 If you downloaded an archive, open its extracted `handback` folder in PowerShell and continue from `$relayRoot = ...`. No `pip install` is required. Review the diagnostic output and planned installation paths. `doctor` checks app availability; it does not prove a task can complete. See [setup and troubleshooting](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) if it reports a missing app or an existing-state warning.
 
-### 2. Install the skills and select the Lead inbox
+#### 2. Install the skills and select the Lead inbox
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
@@ -133,7 +175,7 @@ Check that `status` shows the Claude Lead and Codex worker combination. `claude:
 
 The installer writes agent skills and backs up existing skill files. It does not start the apps, a Lead conversation, or a watcher. Keep the checkout after installation because the installed skills refer to its files. The Windows default state home is `%USERPROFILE%\.handback`; if you already set `HANDBACK_HOME`, keep the same value throughout.
 
-### 3. Send one small task
+#### 3. Send one small task
 
 This command creates a real Codex worker conversation and sends one task:
 
@@ -143,7 +185,7 @@ python "$relayScript" new --worker codex --cwd "$relayRoot" --name "relay first 
 
 Save the returned JSON, especially `request_id` and `handle`. With `--no-wait`, a successful exit means the task was accepted; its result may still be pending. A detached collector gathers the reply.
 
-### 4. Collect and review the answer
+#### 4. Collect and review the answer
 
 Replace the placeholder with the `request_id` returned above:
 
@@ -155,7 +197,7 @@ python "$relayScript" inbox list --root "$relayRoot" --for "$leadAddress"
 
 Check that the result belongs to this request and contains `RELAY_OK`. If waiting times out, keep this request ID and follow the recovery section below. Do not send the task again.
 
-### 5. Mark the result as handled
+#### 5. Mark the result as handled
 
 Use the same request ID after reviewing its result:
 
@@ -168,7 +210,7 @@ The handled result should disappear from the pending list while its original fil
 
 </details>
 
-## Use it on your own project
+### Use it on your own project
 
 Install the relay once, then select the project you want to work on. **The relay installation folder and your working project are separate paths.** Keep `$relayScript` pointing to the installed tool, and set `$projectRoot` to your existing source folder:
 

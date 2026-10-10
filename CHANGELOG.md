@@ -3,6 +3,35 @@
 All notable changes to this project are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [0.3.0] - 2026-10-10
+
+### Added
+
+- Windows download: `handback-<version>-windows-x64.zip` on GitHub Releases with
+  `SHA256SUMS.txt` and a build provenance attestation. It contains
+  `handback.exe` and `handback-dashboard.exe` and needs no Python.
+- Setup wizard: double-click `handback.exe`, or run `handback setup` (`--yes`,
+  `--dry-run`). It checks apps, installs skills, offers Windows autostart, opens
+  the dashboard, and prints the next step.
+- Dashboard right-click menu: Windows startup toggle, install check, skill
+  reinstall, Hook install/remove, per-project role selection, and a connection
+  test that runs one real Codex worker task. The dashboard can set only Claude
+  as Lead; Codex and Antigravity Leads are set from their own app.
+- `handback --version`.
+
+### Changed
+
+- Running `handback` with no arguments prints help from source. The Windows exe
+  runs the setup wizard instead.
+- The Windows startup shortcut repairs itself if the folder was moved.
+- Hook-scan checkpoints are deleted when a scan completes. Cursors untouched for
+  7 days are pruned (at most 16 per write). `limits.log` is kept.
+
+### Fixed
+
+- Windows sharing violations (`PermissionError`) in state locks and atomic file
+  replaces could crash concurrent routers. They are now retried.
+
 ## [0.2.4] - 2026-10-09
 
 ### Changed
@@ -11,6 +40,8 @@ All notable changes to this project are documented here. This file follows the
   edges, from anywhere including status counts. It docks only when released
   inside a top or bottom taskbar with at least half of it overlapping. Floating
   widgets have rounded corners and an outline on Windows.
+- The dashboard now starts as a small widget (`docked` default changed from
+  true to false). It docks only when released inside the taskbar.
 - Long expanded panels scroll, including pinned panels. `+N` turns yellow when
   the remaining projects have unread results. Unchanged tooltips and scroll
   positions survive refresh.
@@ -107,6 +138,7 @@ All notable changes to this project are documented here. This file follows the
 - The release version check imports the checkout when run from a temporary
   directory.
 
+[0.3.0]: https://github.com/Femur-0607/handback/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/Femur-0607/handback/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/Femur-0607/handback/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Femur-0607/handback/compare/v0.2.1...v0.2.2

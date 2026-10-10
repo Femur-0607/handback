@@ -1,5 +1,9 @@
 # English quick start
 
+## Windows without Python
+
+Download `handback-<version>-windows-x64.zip` from [GitHub Releases](https://github.com/Femur-0607/handback/releases), unzip it to a folder without spaces (for example `C:\handback`), and double-click `handback.exe`. Follow the setup wizard (same as `handback setup`). The steps below are for the Python/CLI route; where a dashboard menu does the same job, it is noted.
+
 ## One-command first task
 
 Install from PyPI with `pip install handback`. From a source checkout, `pip install .` installs the package; `python handback.py` also works without installation. Installed-package users can replace `python handback.py` with `handback` throughout this guide. The numbered walkthrough below uses a source checkout.
@@ -47,7 +51,7 @@ python handback.py doctor --root "$relayRoot"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -DryRun
 ```
 
-`status`, `doctor`, and installer dry runs do not create relay state. `doctor` probes app availability and versions; it is not a live round-trip test. Claude detection uses its CLI and can report unavailable even when Desktop is present. Confirm that your intended Lead can run relay commands and use Monitor.
+`status`, `doctor`, and installer dry runs do not create relay state. Dashboard: right-click → **설치 상태 점검**. `doctor` probes app availability and versions; it is not a live round-trip test. Claude detection uses its CLI and can report unavailable even when Desktop is present. Confirm that your intended Lead can run relay commands and use Monitor.
 
 The default Windows state home is `%USERPROFILE%\.handback`. If you already use `HANDBACK_HOME`, keep that same value in every terminal, Lead, collector, and recovery command. Do not choose a new state home to bypass an existing-state warning. The [manual](usage.ko.md#windows-msix-이전-상태) explains migration from older Windows locations.
 
@@ -57,7 +61,7 @@ The default Windows state home is `%USERPROFILE%\.handback`. If you already use 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installer always writes the Claude skill and installs Codex or Antigravity skills when their app and target location are detected. It prints every installed path and backs up an existing `SKILL.md` beside it. It does not install hooks or edit shared `AGENTS.md` / `GEMINI.md` files. Confirm the installed skill is available in each app; automatic loading and triggering from a fresh installation are not yet fully verified.
+Dashboard: right-click → **스킬 다시 설치**. The installer always writes the Claude skill and installs Codex or Antigravity skills when their app and target location are detected. It prints every installed path and backs up an existing `SKILL.md` beside it. It does not install hooks or edit shared `AGENTS.md` / `GEMINI.md` files. Confirm the installed skill is available in each app; automatic loading and triggering from a fresh installation are not yet fully verified.
 
 Codex results can be collected from its local transcript without observation hooks. To add Codex observations and Claude session recovery, preview and install these hooks:
 
@@ -66,7 +70,7 @@ python handback.py install-hooks --agents codex,claude --dry-run
 python handback.py install-hooks --agents codex,claude
 ```
 
-Hooks are merged into app settings and backed up. Review and trust new or changed Codex hooks through the Codex CLI `/hooks` interface; the relay does not change hook trust. Claude Desktop's global recovery hook loading is not fully verified, so use Monitor or explicit inbox reads for reception. `--state-home` selects relay state and ownership records; it does not isolate app settings.
+Dashboard: right-click → **Hook ▶ 설치/해제** (shows the settings file and backup path). Hooks are merged into app settings and backed up. Review and trust new or changed Codex hooks through the Codex CLI `/hooks` interface; the relay does not change hook trust. Claude Desktop's global recovery hook loading is not fully verified, so use Monitor or explicit inbox reads for reception. `--state-home` selects relay state and ownership records; it does not isolate app settings.
 
 ## 3. Select the Lead and start reception
 
@@ -78,7 +82,7 @@ python handback.py use --root "$relayRoot" --lead "$leadAddress" --workers codex
 python handback.py status --root "$relayRoot"
 ```
 
-Check that the returned Lead address and worker list match your selection. `use` changes state outside the checkout. Requests already sent retain their original return address when you later switch Leads.
+Dashboard: right-click a project → **역할 지정 ▶** (Lead can be set to Claude only; Codex/Antigravity Leads are set from their app; blocked while requests are in flight or `HANDBACK_LEAD`/`HANDBACK_WORKERS` is set). Check that the returned Lead address and worker list match your selection. `use` changes state outside the checkout. Requests already sent retain their original return address when you later switch Leads.
 
 If you already know your Claude `session_id` from its session metadata or hook input, you can instead use `claude:<actual-Claude-session-id>` consistently in every command and install the Claude recovery hook. A conversation title or Codex thread ID is not a Claude session ID. This optional setup enables exact-session recovery; it is not required for the first test.
 
@@ -173,7 +177,7 @@ Right-click → **보기 설정** to select compact mode (**작업표시줄 모�
 - A full-screen window covering the widget's monitor hides the compact widget, docked or floating. This does not apply to pinned panel mode. Multi-monitor placement and exclusive full-screen Direct3D behavior have unit-test coverage only, without live verification.
 - Conversation links open Codex threads only; Claude and Antigravity links are disabled.
 
-`handback dashboard --once` prints a JSON snapshot. `handback dashboard --autostart on` adds a Windows login shortcut; `--autostart off` removes it. The dashboard is optional and does not start the Lead or Monitor. See the [dashboard limitations](limitations.md#11-dashboard-placement-and-conversation-links).
+`handback dashboard --once` prints a JSON snapshot. `handback dashboard --autostart on` adds a Windows login shortcut; `--autostart off` removes it (dashboard: **Windows 시작 시 실행**). A project's **연결 테스트** menu item runs one real Codex worker task (uses model quota) like `handback try`. The dashboard is optional and does not start the Lead or Monitor. See the [dashboard limitations](limitations.md#11-dashboard-placement-and-conversation-links).
 
 ## Optional Antigravity setup
 

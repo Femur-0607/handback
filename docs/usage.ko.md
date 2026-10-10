@@ -1,5 +1,14 @@
 # handback 한국어 사용 설명서
 
+## Windows 설치 (Python 불필요)
+
+1. [GitHub Releases](https://github.com/Femur-0607/handback/releases)에서 `handback-<버전>-windows-x64.zip`을 받습니다.
+2. **공백 없는 폴더**(예: `C:\handback`)에 압축을 풉니다. 다운로드·바탕화면 폴더는 피하세요. 훅과 자동 시작이 이 절대 경로를 기억하고, Antigravity는 공백 경로를 거부합니다.
+3. `handback.exe`를 더블클릭합니다. SmartScreen 경고가 뜨면(서명 없는 exe) **추가 정보** → **실행**을 누릅니다.
+4. 설정 마법사를 따라갑니다. 앱 확인(Claude 필수), 스킬 설치, Windows 시작 시 실행(선택), 현황판 열기까지 하고 다음 할 일을 알려 줍니다. 터미널에서는 `handback setup`(`--yes`, `--dry-run`)입니다.
+
+업데이트: 현황판을 닫고 새 버전을 같은 폴더에 덮어 풉니다(새 폴더에 풀면 마법사를 다시 실행). 다운로드 검증: `SHA256SUMS.txt`와 `Get-FileHash`로 비교하고, `gh attestation verify <zip> --repo Femur-0607/handback`로 빌드 증명을 확인합니다. 아래 명령 설명에서 현황판 우클릭 메뉴로 같은 일을 하는 항목은 함께 적었습니다.
+
 ## 만든 이유
 
 처음 바람은 단순했습니다. 내 컴퓨터에 있는 에이전트 앱들이 서로 통신하되, 그 대화를 각 앱에서 직접 눈으로 확인하고 싶었습니다. 그래서 워커는 숨은 하위 프로세스가 아니라 해당 앱 안의 실제 대화로 만들어지며, 언제든 열어서 진행 과정을 볼 수 있습니다.
@@ -13,6 +22,8 @@
 - `--lead`: 저장된 조합이 없을 때 사용할 주소(기본 `claude:lead`). 기존 Codex 워커 조합은 그대로 재사용하고 다른 조합은 변경 없이 `use` 명령을 안내합니다.
 - `--timeout`: 기본 300초, `0`은 무기한. 시간 초과·접수 불명에는 출력된 `wait --request` 명령으로 회수하며 다시 보내지 않습니다.
 - `--keep`: 결과를 ACK하지 않고 남깁니다. `--json`: 구조화된 결과를 출력합니다.
+
+현황판: 프로젝트 우클릭 → **연결 테스트**는 실제 Codex 워커 작업 하나를 실행합니다(모델 사용량 소모). 저장된 역할이 없으면 Lead=Claude, Workers=Codex로 저장합니다.
 
 요청 ID 하나로 결과를 찾고 처리할 수 있습니다.
 
@@ -57,6 +68,8 @@ PyPI에 배포된 패키지는 `pip install handback`로 설치합니다. 소스
 
 ### 스킬 설치
 
+현황판: 우클릭 → **스킬 다시 설치**.
+
 ```powershell
 handback install-skills --dry-run
 handback install-skills
@@ -77,6 +90,8 @@ handback install-skills --target-home "<absolute-test-home>" --dry-run
 `install.ps1`은 같은 Python 명령을 호출하는 호환 래퍼입니다. 소스 직접 실행 시 `python handback.py install-skills`를 사용합니다.
 
 ### 훅과 Antigravity 준비
+
+현황판: 우클릭 → **Hook ▶ 설치/해제**(설정 파일과 백업 경로를 보여 줍니다).
 
 1. Antigravity를 쓴다면 체크아웃을 앱에서 프로젝트로 등록합니다. relay는 프로젝트를 만들지 않습니다.
 2. 선택한 상태 홈의 `config.json`에서 `agents.antigravity.enabled`를 `true`로 설정합니다. 기존 설정에 병합합니다. 선택적 `model`은 `flash_lite`, `flash`, `pro`이며 기본값은 `flash`입니다.
@@ -103,6 +118,8 @@ python handback.py use --root "<absolute-checkout>" --lead "claude:<session-id>"
 python handback.py use --root "<absolute-checkout>" --lead "codex:<thread-id>" --workers antigravity
 python handback.py new --role lead --worker codex --cwd "<absolute-checkout>" --name "relay Lead"
 ```
+
+현황판: 프로젝트 우클릭 → **역할 지정 ▶**(Lead/Workers). Lead는 Claude만 고를 수 있고 Codex·Antigravity Lead는 해당 앱에서 지정합니다. 요청이 진행 중이거나 환경변수 `HANDBACK_LEAD`·`HANDBACK_WORKERS`가 있으면 막힙니다. 설치 점검은 우클릭 → **설치 상태 점검**.
 
 `status`는 조합·설정 출처·열린 요청과 전달 상태를, `doctor`는 앱 탐지·제약·상태 경고를 읽기 전용으로 보여 줍니다. Claude의 `--workers`는 `codex`, `antigravity`, `codex,antigravity` 중에서 고릅니다. `use`는 저장소 밖 전환 상태만 바꾸므로 **조합 전환에 프로젝트 규칙 수정이 필요 없습니다.** 이미 열린 요청의 `return_to`는 발송 당시 Lead를 유지합니다.
 
@@ -173,7 +190,7 @@ pythonw dashboard.pyw
 
 대화 바로 열기는 Codex만 지원하며 Claude·Antigravity 링크는 비활성화됩니다. 다중 모니터와 독점 전체 화면 Direct3D의 배치·숨김 동작은 단위 시험만 있으며 실제 환경 검증은 하지 못했습니다. 전체 화면 자동 숨김은 작은 위젯 모드에 적용되며, 펼친 패널 고정 모드에는 적용되지 않습니다.
 
-`--autostart on`은 Windows 시작프로그램 폴더에 바로가기를 만들고 `off`는 지웁니다. 현황판은 사용자 세션당 하나만 뜹니다. `--once`는 현황을 JSON으로 출력합니다. 현황판은 선택 기능이며 Lead나 Monitor를 시작하지 않습니다.
+`--autostart on`은 Windows 시작프로그램 폴더에 바로가기를 만들고 `off`는 지웁니다(우클릭 → **Windows 시작 시 실행**과 같음. 폴더를 옮기면 바로가기가 자동으로 고쳐집니다). 현황판은 사용자 세션당 하나만 뜹니다. `--once`는 현황을 JSON으로 출력합니다. 현황판은 선택 기능이며 Lead나 Monitor를 시작하지 않습니다.
 
 ## 위임과 수신
 
