@@ -82,7 +82,15 @@ def atomic_json(path, data):
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        for attempt in range(6):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                # Windows denies a replace while a reader briefly holds the target open.
+                if sys.platform != "win32" or attempt == 5:
+                    raise
+                time.sleep(0.01 * 2 ** attempt)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -380,11 +388,15 @@ class ProjectState:
         try:
             if not depths.get(lock_key):
                 path.parent.mkdir(parents=True, exist_ok=True)
-                stream = path.open("a+b")
+                stream = path.open("a+b", buffering=0)
                 stream.seek(0, os.SEEK_END)
                 if stream.tell() == 0:
-                    stream.write(b"\0")
-                    stream.flush()
+                    try:
+                        stream.write(b"\0")
+                    except PermissionError:
+                        # Windows: a racing process already wrote and locked the byte.
+                        if sys.platform != "win32":
+                            raise
                 while True:
                     try:
                         _os_try_lock(stream)
