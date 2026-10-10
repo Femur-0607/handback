@@ -144,3 +144,51 @@ jobs:
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+  windows-exe:
+    # Independent of PyPI publishing: nothing needs this job and it does not gate publish.
+    needs: test
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - name: Build Windows bundle
+        run: .\packaging\build.ps1 -OutDir "$env:RUNNER_TEMP\handback-exe"
+      - name: Verify version matches tag
+        run: |
+          $version = (& "$env:RUNNER_TEMP\handback-exe\dist\handback\handback.exe" --version | Out-String).Trim()
+          $expected = $env:GITHUB_REF_NAME -replace '^v', ''
+          if ($version -notmatch [regex]::Escape($expected)) { throw "Built version '$version' does not match tag '$env:GITHUB_REF_NAME'" }
+      - name: Smoke-test the bundle
+        run: .\packaging\smoke.ps1 -Folder "$env:RUNNER_TEMP\handback-exe\dist\handback"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: ${{ runner.temp }}\handback-exe\handback-*-windows-x64.zip
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'handback-exe'
+          $zip = (Get-ChildItem -LiteralPath $out -Filter 'handback-*-windows-x64.zip').FullName
+          $sums = Join-Path $out 'SHA256SUMS.txt'
+          gh release view $env:GITHUB_REF_NAME *> $null
+          if ($LASTEXITCODE -ne 0) { gh release create $env:GITHUB_REF_NAME --title $env:GITHUB_REF_NAME --verify-tag --generate-notes; if ($LASTEXITCODE -ne 0) { throw 'release create failed' } }
+          gh release upload $env:GITHUB_REF_NAME $zip $sums --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'release upload failed' }
