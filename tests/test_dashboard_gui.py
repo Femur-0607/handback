@@ -53,6 +53,12 @@ class DashboardMenuTests(unittest.TestCase):
             self.root.destroy()
         except self.tk.TclError:
             pass  # The menu's close command may already have destroyed it.
+        # Free Tk images here, on the Tk thread: if the garbage collector later runs
+        # on another thread, Image.__del__ fails with "main thread is not in main loop"
+        # and Tcl aborts the whole run (Tcl_AsyncDelete).
+        self.strip.__dict__.pop("icons", None)
+        self.strip = self.root = None
+        gc.collect()
 
     def widgets(self, parent):
         result = [parent]
