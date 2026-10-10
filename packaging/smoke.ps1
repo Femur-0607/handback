@@ -41,6 +41,8 @@ try {
     Step 'install-skills --dry-run' { & $exe install-skills --dry-run --target-home $targetHome | Out-Null }
     if (Test-Path -LiteralPath $targetHome) { throw 'FAIL: dry-run created the target home' }
 
+    Step 'setup --dry-run' { & $exe setup --dry-run | Out-Null }
+
     $state = Join-Path $base 'state home'
     Step 'hook (stdin JSON)' { '{}' | & $exe hook --agent claude --event Stop --state-home $state | Out-Null }
 

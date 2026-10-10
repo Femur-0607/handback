@@ -513,8 +513,11 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="handback", description="handback: durable local agent relay")
     from . import __version__
     parser.add_argument("--version", action="version", version="handback " + __version__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
     sub.add_parser("codex")
+    setup = sub.add_parser("setup", help="interactive first-run setup")
+    setup.add_argument("--yes", action="store_true", help="accept defaults without prompting")
+    setup.add_argument("--dry-run", action="store_true", help="show the plan; change nothing")
     trial = sub.add_parser("try", help="run and acknowledge one read-only Codex smoke task")
     trial.add_argument("--root", default=".")
     trial.add_argument("--lead", default="claude:lead")
@@ -657,7 +660,17 @@ def main(argv=None):
             stream.reconfigure(encoding="utf-8")
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command is None:
+        from .invocation import frozen
+        if frozen():
+            args.command, args.yes, args.dry_run = "setup", False, False
+        else:
+            parser.print_help()
+            return 0
     try:
+        if args.command == "setup":
+            from . import setup_wizard
+            return setup_wizard.run(yes=args.yes, dry_run=args.dry_run)
         if args.command == "install-skills":
             from .skill_install import install
             for message in install(args.target_home, args.dry_run):
