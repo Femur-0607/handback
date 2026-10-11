@@ -37,6 +37,8 @@ OutputBaseFilename=handback-{#AppVersion}-setup
 Compression=lzma2/max
 SolidCompression=yes
 CloseApplications=yes
+; The [Code] section adds {app} to the per-user PATH; broadcast the change to running shells.
+ChangesEnvironment=yes
 RestartApplications=no
 WizardStyle=modern dark
 ShowLanguageDialog=no
@@ -77,4 +79,74 @@ Filename: "{app}\handback-dashboard.exe"; Description: "handback 실행"; Flags:
 
 [UninstallRun]
 Filename: "{app}\handback.exe"; Parameters: "dashboard --autostart off"; Flags: runhidden waituntilterminated; RunOnceId: "AutostartOff"
-Filename: "{app}\handback.exe"; Parameters: "uninstall-hooks"; Flags: runhidden waituntilterminated; RunOnceId: "UninstallHooks"
+Filename: "{app}\handback.exe"; Parameters: "uninstall-hooks --agents codex,claude,antigravity"; Flags: runhidden waituntilterminated; RunOnceId: "UninstallHooks"
+Filename: "{app}\handback.exe"; Parameters: "uninstall-skills"; Flags: runhidden waituntilterminated; RunOnceId: "UninstallSkills"
+
+[Code]
+// Per-user PATH (HKCU\Environment\Path): append {app} once on install, remove exactly that entry on uninstall.
+// Works with PrivilegesRequired=lowest because only HKCU is touched.
+const
+  EnvironmentKey = 'Environment';
+
+function NeedsAddPath(Dir: string): Boolean;
+var
+  Paths: string;
+begin
+  if not RegQueryStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
+  begin
+    Result := True;
+    exit;
+  end;
+  // Compare whole ';'-separated entries case-insensitively, with or without a trailing backslash.
+  Result := (Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Paths) + ';') = 0)
+    and (Pos(';' + Uppercase(Dir) + '\;', ';' + Uppercase(Paths) + ';') = 0);
+end;
+
+procedure AddAppToPath;
+var
+  Paths, Dir: string;
+begin
+  Dir := ExpandConstant('{app}');
+  if not NeedsAddPath(Dir) then
+    exit;
+  if not RegQueryStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
+    Paths := '';
+  if (Paths <> '') and (Copy(Paths, Length(Paths), 1) <> ';') then
+    Paths := Paths + ';';
+  Paths := Paths + Dir;
+  if not RegWriteExpandStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
+    Log('Could not add ' + Dir + ' to the user PATH');
+end;
+
+procedure RemoveAppFromPath;
+var
+  Paths, Dir: string;
+  P: Integer;
+begin
+  Dir := ExpandConstant('{app}');
+  if not RegQueryStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
+    exit;
+  // Sentinel semicolons make the first and last entries match like the middle ones.
+  Paths := ';' + Paths + ';';
+  P := Pos(';' + Uppercase(Dir) + ';', Uppercase(Paths));
+  if P = 0 then
+    exit;
+  Delete(Paths, P, Length(Dir) + 1);  // drop ';' + Dir, keep the following ';'
+  Paths := Copy(Paths, 2, Length(Paths) - 2);
+  if Paths = '' then
+    RegDeleteValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path')
+  else if not RegWriteExpandStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
+    Log('Could not remove ' + Dir + ' from the user PATH');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    AddAppToPath;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    RemoveAppFromPath;
+end;

@@ -22,6 +22,7 @@ $saved = @{}
 $vars = @{
     USERPROFILE = $prof; APPDATA = "$prof\AppData\Roaming"; LOCALAPPDATA = "$prof\AppData\Local"
     HANDBACK_HOME = "$prof\.handback"; CLAUDE_CONFIG_DIR = "$prof\.claude"; CODEX_HOME = "$prof\.codex"
+    GEMINI_HOME = "$prof\.gemini"
 }
 foreach ($k in $vars.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k, 'Process'); [Environment]::SetEnvironmentVariable($k, $vars[$k], 'Process') }
 try {
@@ -50,6 +51,9 @@ try {
     for ($i = 0; $i -lt 30 -and (Test-Path -LiteralPath $app); $i++) { Start-Sleep -Milliseconds 500 }
     if (Test-Path -LiteralPath $app) { throw 'FAIL: app dir still present after uninstall' }
     Write-Host 'PASS: uninstalled'
+    # The per-user PATH entry lives in the real HKCU and cannot be sandboxed, so it is not asserted here.
+    if (Test-Path -LiteralPath $skill) { throw "FAIL: skill still present after uninstall: $skill" }
+    Write-Host 'PASS: uninstall removed the skill'
     Write-Host 'INSTALLER SMOKE OK'
 }
 finally {

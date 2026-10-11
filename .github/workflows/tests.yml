@@ -42,3 +42,57 @@ jobs:
           if (Test-Path -LiteralPath $fixtureRoot) {
             throw 'Dry-run unexpectedly created files in the target home.'
           }
+
+  installer:
+    # Builds and smoke-tests the Windows installer before any release tag exists.
+    name: Windows installer
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUTF8: '1'
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - name: Ensure Inno Setup 6
+        run: |
+          $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          if (-not $iscc -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --version 6.7.3 -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
+          }
+          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { throw 'ISCC.exe not found' }
+      - name: Build Windows bundle and installer
+        run: .\packaging\build.ps1 -OutDir "$env:RUNNER_TEMP\handback-exe"
+      - name: Read package version
+        id: version
+        run: |
+          $text = [IO.File]::ReadAllText((Resolve-Path -LiteralPath 'handback\__init__.py').Path, [Text.Encoding]::UTF8)
+          $m = [regex]::Match($text, '__version__\s*=\s*"([^"]+)"')
+          if (-not $m.Success) { throw 'Could not read version' }
+          # Windows PowerShell's Out-File -Encoding utf8 adds a BOM; write plain UTF-8 instead.
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$($m.Groups[1].Value)`n", (New-Object Text.UTF8Encoding($false)))
+      - name: Smoke-test the bundle
+        run: .\packaging\smoke.ps1 -Folder "$env:RUNNER_TEMP\handback-exe\dist\handback" -Version '${{ steps.version.outputs.version }}'
+      - name: Smoke-test the installer
+        run: |
+          $setup = (Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\handback-exe" -Filter 'handback-*-setup.exe').FullName
+          .\packaging\smoke-installer.ps1 -Setup $setup -Version '${{ steps.version.outputs.version }}'
+      - name: Upload installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: handback-windows-installer
+          path: |
+            ${{ runner.temp }}/handback-exe/handback-*-setup.exe
+            ${{ runner.temp }}/handback-exe/SHA256SUMS.txt
+          if-no-files-found: error

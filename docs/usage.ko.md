@@ -6,9 +6,9 @@
 2. 실행합니다. SmartScreen 경고가 뜨면(서명 없는 설치 파일) **추가 정보** → **실행**을 누릅니다. 관리자 권한은 필요 없고, `%LOCALAPPDATA%\Programs\handback`에 설치하며 에이전트 스킬도 자동으로 설치합니다. 선택 항목은 Windows 시작 시 실행(기본 켜짐), 바탕화면 아이콘(기본 꺼짐)입니다.
 3. 설치가 끝나면 handback이 자동으로 열립니다. 다음부터는 시작 메뉴의 **handback**을 엽니다.
 
-설치 폴더의 `handback.exe`는 에이전트와 훅이 쓰는 명령줄 도구입니다. 터미널에서는 `handback setup`(`--yes`, `--dry-run`)입니다. 설정은 현황판 우클릭 › **설정**에서 다시 열 수 있습니다.
+설치 폴더의 `handback.exe`는 에이전트와 훅이 쓰는 명령줄 도구입니다. 설치 프로그램이 이 폴더를 사용자 PATH에 추가하므로, 설치 후 새로 연 터미널에서 `handback`을 바로 쓸 수 있습니다. 터미널에서는 `handback setup`(`--yes`, `--dry-run`)입니다. 설정은 현황판 우클릭 › **설정**에서 다시 열 수 있습니다.
 
-업데이트: 새 `setup.exe`를 실행하면 현황판을 자동으로 닫고 그 자리에서 업그레이드합니다. 삭제: Windows 설정 › 앱 › handback (자동 시작과 handback이 만든 훅은 지우고, `~/.handback` 데이터와 스킬은 남깁니다). 다운로드 검증: `SHA256SUMS.txt`와 `Get-FileHash`로 비교하고, `gh attestation verify <setup.exe> --repo Femur-0607/handback`로 빌드 증명을 확인합니다. 아래 명령 설명에서 현황판 우클릭 메뉴로 같은 일을 하는 항목은 함께 적었습니다.
+업데이트: 새 `setup.exe`를 실행하면 현황판을 자동으로 닫고 그 자리에서 업그레이드합니다. 삭제: Windows 설정 › 앱 › handback (자동 시작, PATH 항목, handback이 만든 Claude·Codex·Antigravity 훅과 스킬은 지우고, `~/.handback` 데이터는 남깁니다). 다운로드 검증: `SHA256SUMS.txt`와 `Get-FileHash`로 비교하고, `gh attestation verify <setup.exe> --repo Femur-0607/handback`로 빌드 증명을 확인합니다. 아래 명령 설명에서 현황판 우클릭 메뉴로 같은 일을 하는 항목은 함께 적었습니다.
 
 ## 만든 이유
 
@@ -87,6 +87,8 @@ handback install-skills --target-home "<absolute-test-home>" --dry-run
 | Antigravity | 앱 탐지 후 `~/.gemini/config/skills.json`의 해석 가능한 첫 등록 경로 아래 `handback/SKILL.md`. 등록 위치를 확인할 수 없으면 건너뜀 |
 
 기존 스킬 파일은 타임스탬프 `.bak`으로 백업합니다. `--dry-run`은 예정 경로만 출력하며 파일을 만들지 않습니다. `--target-home`을 명시하면 호스트 PATH·CODEX_HOME을 참조하지 않고 대상 홈 안의 앱·설정만 사용하며, 홈 밖의 Antigravity 등록 경로는 건너뜁니다. 공유 AGENTS.md·GEMINI.md, 훅, topology, 검색 경로 등록 파일은 수정하지 않습니다. 임시 홈 설치·백업은 검증했으며 새 설치본의 실제 앱 로딩·자동 트리거는 [검증 요약](verification/README.md)의 미검증 항목입니다.
+
+`handback uninstall-skills [--dry-run] [--target-home <home>]`는 같은 세 위치에서 이 설치본(같은 exe 또는 체크아웃)을 가리키는 `SKILL.md`만 지웁니다. 사용자가 고친 파일, 다른 설치본의 파일, `.bak` 백업은 남깁니다.
 
 `install.ps1`은 같은 Python 명령을 호출하는 호환 래퍼입니다. 소스 직접 실행 시 `python handback.py install-skills`를 사용합니다.
 

@@ -632,6 +632,10 @@ def build_parser():
     skills = sub.add_parser("install-skills", help="install packaged agent skills")
     skills.add_argument("--dry-run", action="store_true")
     skills.add_argument("--target-home", help="isolated home; never inspect host PATH or CODEX_HOME")
+    unskills = sub.add_parser("uninstall-skills",
+                              help="remove installed agent skills that point at this installation")
+    unskills.add_argument("--dry-run", action="store_true")
+    unskills.add_argument("--target-home", help="isolated home; never inspect host PATH or CODEX_HOME")
     test = sub.add_parser("selftest")
     test.add_argument("--agent", choices=["codex", "claude", "antigravity"], default="codex")
     for name in ("install-hooks", "uninstall-hooks"):
@@ -674,6 +678,11 @@ def main(argv=None):
         if args.command == "install-skills":
             from .skill_install import install
             for message in install(args.target_home, args.dry_run):
+                print(message)
+            return 0
+        if args.command == "uninstall-skills":
+            from .skill_install import uninstall
+            for message in uninstall(args.target_home, args.dry_run):
                 print(message)
             return 0
         for name in ("timeout", "collect_timeout"):

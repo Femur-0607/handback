@@ -2,7 +2,7 @@
 
 ## Windows without Python
 
-Download `handback-<version>-setup.exe` from [GitHub Releases](https://github.com/Femur-0607/handback/releases) and run it (SmartScreen: **추가 정보** → **실행**). It needs no admin rights, installs the agent skills, and opens handback when done; afterwards use **handback** in the Start menu. Right-click the dashboard › 설정 to reopen setup. To update, run the new setup; to uninstall, use Windows 설정 › 앱 › handback. `handback.exe` in the install folder is the command-line tool used by agents and hooks. The steps below are for the Python/CLI route; where a dashboard menu does the same job, it is noted.
+Download `handback-<version>-setup.exe` from [GitHub Releases](https://github.com/Femur-0607/handback/releases) and run it (SmartScreen: **추가 정보** → **실행**). It needs no admin rights, installs the agent skills, and opens handback when done; afterwards use **handback** in the Start menu. Right-click the dashboard › 설정 to reopen setup. To update, run the new setup; to uninstall, use Windows 설정 › 앱 › handback (removes autostart, the PATH entry, and handback's own hooks and skills; `~/.handback` data is kept). `handback.exe` in the install folder is the command-line tool used by agents and hooks; the installer adds that folder to your user PATH, so `handback` works in terminals opened after the install. The steps below are for the Python/CLI route; where a dashboard menu does the same job, it is noted.
 
 ## One-command first task
 
@@ -220,12 +220,11 @@ python handback.py dashboard --autostart off
 
 Sidecar cleanup backs up and removes only provably relay-owned inactive entries with no open request. It preserves uncertain open requests. Hook removal preserves unrelated settings and reports managed entries that were changed after installation.
 
-There is no skill-uninstall command. For each exact `SKILL.md` path printed by `install.ps1`, inspect the file and remove it only if it is still the relay skill you installed:
+Remove the installed skills with the same checkout or environment that installed them. `uninstall-skills` deletes a handback `SKILL.md` only when it still points at this installation; edited or foreign files and timestamped backups are kept:
 
 ```powershell
-$installedSkill = "<exact installed handback SKILL.md path>"
-Get-Content -LiteralPath $installedSkill
-Remove-Item -LiteralPath $installedSkill
+python handback.py uninstall-skills --dry-run
+python handback.py uninstall-skills
 ```
 
 If the installer replaced a previous skill, restore the chosen timestamped `.bak` to that exact path instead of deleting the current file. Keep those backups until the restoration is checked. Relay state, inbox messages, and app conversations are retained; uninstall does not erase them.

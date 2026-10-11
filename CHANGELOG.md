@@ -24,6 +24,29 @@ All notable changes to this project are documented here. This file follows the
   desktop shortcut, offers optional autostart, upgrades in place, and uninstalls
   from Windows Settings. The zip is no longer published.
 - Dashboard menu item renamed from "설정 다시 실행" to "설정".
+- The installer adds its folder to the per-user PATH, so `handback` works in
+  new terminals; uninstall removes exactly that entry.
+- CI now builds and smoke-tests the Windows installer on every push and manual
+  run, and the release workflow's installer job can be run manually (tag check
+  and GitHub Release upload stay tag-only).
+
+### Fixed
+
+- Uninstalling now also removes handback's Antigravity hooks and its own
+  Claude, Codex and Antigravity skills (new `handback uninstall-skills`, which
+  deletes only skill files that point at this installation and keeps backups),
+  so nothing is left pointing at the deleted exe. `~/.handback` data is kept.
+- The windowed dashboard no longer flashes console windows: its `git` and
+  PowerShell child processes run with `CREATE_NO_WINDOW`. Toggling
+  **Windows 시작 시 실행** no longer freezes the dashboard while PowerShell
+  runs, and the startup-shortcut check reads non-ASCII paths as UTF-8.
+- The setup window no longer warns "move to a folder without spaces" for the
+  installer location (`%LOCALAPPDATA%\Programs`) when the Windows user name
+  contains a space. Its update hint now points at the new setup.exe (or at
+  `pip install -U` for source installs) instead of overwriting files.
+- **모두 확인 처리** in the unread-results viewer now acknowledges only the
+  results that viewer showed; results that arrive while it is open stay
+  pending and still reach the Lead.
 
 ## [0.3.1] - 2026-10-11
 

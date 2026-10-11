@@ -62,7 +62,7 @@ Windows has live integration coverage. macOS and Linux are unverified. App queue
 2. Run it. If SmartScreen warns (the installer is unsigned), click **추가 정보** → **실행**. No admin rights needed; it installs to `%LOCALAPPDATA%\Programs\handback`, installs the agent skills, and offers two options: start with Windows (on by default) and a desktop icon (off).
 3. handback opens when the install finishes. Next time, open **handback** from the Start menu.
 
-`handback.exe` in the install folder is the command-line tool that agents and hooks use. Terminal users can run `handback setup` (also `--yes`, `--dry-run`).
+`handback.exe` in the install folder is the command-line tool that agents and hooks use. The installer adds that folder to your user PATH, so `handback` works in any terminal opened after the install. Terminal users can run `handback setup` (also `--yes`, `--dry-run`).
 
 ## Use it
 
@@ -77,7 +77,7 @@ Windows has live integration coverage. macOS and Linux are unverified. App queue
 
 ## Update
 
-Run the new `handback-<version>-setup.exe`. It closes the dashboard and upgrades in place. To uninstall, use Windows **설정 › 앱 › handback**. This removes autostart and handback's own hooks; your `~/.handback` data and installed skills are kept.
+Run the new `handback-<version>-setup.exe`. It closes the dashboard and upgrades in place. To uninstall, use Windows **설정 › 앱 › handback**. This removes autostart, the PATH entry, and handback's own hooks and skills (Claude, Codex and Antigravity); your `~/.handback` data is kept.
 
 ## Verify the download
 
@@ -116,7 +116,7 @@ handback install-skills
 
 No runtime dependencies are installed. The optional `handback-dashboard` GUI requires a Python build with Tk support. `handback --version` prints the installed version.
 
-`handback install-skills --dry-run --target-home <absolute-test-home>` previews an isolated installation without consulting host PATH or CODEX_HOME. Existing skills get timestamp backups. Claude is always installed; Codex and Antigravity require app detection, and Antigravity also requires a registered skill directory. Without `--target-home`, detection checks the known Windows app paths and PATH on all platforms.
+`handback install-skills --dry-run --target-home <absolute-test-home>` previews an isolated installation without consulting host PATH or CODEX_HOME. Existing skills get timestamp backups. Claude is always installed; Codex and Antigravity require app detection, and Antigravity also requires a registered skill directory. Without `--target-home`, detection checks the known Windows app paths and PATH on all platforms. `handback uninstall-skills [--dry-run]` removes only the skill files that still point at this installation.
 
 Packaged skills and hooks use the environment's absolute Python executable with `-m handback`. A direct, uninstalled checkout uses its absolute entry script instead, so hooks and workers also run from other project directories. Keep that environment (or checkout) available, and reinstall skills/hooks if you move it. Existing hook ownership manifests still support removing or upgrading old script-based hooks.
 

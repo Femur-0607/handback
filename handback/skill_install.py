@@ -21,9 +21,38 @@ def render(agent):
     return content
 
 
-def install(target_home=None, dry_run=False):
+def _home(target_home):
     isolated = target_home is not None
-    home = Path(target_home).expanduser().resolve() if isolated else Path.home().resolve()
+    return isolated, (Path(target_home).expanduser().resolve() if isolated else Path.home().resolve())
+
+
+def _codex_root(home, isolated):
+    if not isolated and os.environ.get("CODEX_HOME"):
+        return Path(os.environ["CODEX_HOME"]).expanduser().resolve()
+    return home / ".codex"
+
+
+def _registered_skill_root(home, isolated, messages):
+    """First absolute skill root registered in Antigravity's skills.json, or None."""
+    registration = home / ".gemini/config/skills.json"
+    if not registration.is_file() or (isolated and not registration.resolve().is_relative_to(home)):
+        return None
+    settings = json.loads(registration.read_text(encoding="utf-8-sig"))
+    for entry in settings.get("entries", []):
+        value = str(entry.get("path", ""))
+        path = home / value[2:].replace("\\", "/") if value.startswith(("~/", "~\\")) else Path(value)
+        if not path.is_absolute():
+            continue
+        path = path.resolve()
+        if isolated and not path.is_relative_to(home):
+            messages.append(f"skip: registered skill path outside target home: {path}")
+            continue
+        return path
+    return None
+
+
+def install(target_home=None, dry_run=False):
+    isolated, home = _home(target_home)
     messages = []
 
     def contained(path):
@@ -70,9 +99,7 @@ def install(target_home=None, dry_run=False):
     candidates = codex_bundled_candidates(home if isolated else None)
     codex = candidates[0] if candidates else (None if isolated else shutil.which("codex"))
     if codex:
-        root = home / ".codex"
-        if not isolated and os.environ.get("CODEX_HOME"):
-            root = Path(os.environ["CODEX_HOME"]).expanduser().resolve()
+        root = _codex_root(home, isolated)
         messages.append(f"detected: codex {codex}; skill root {root / 'skills'}")
         write("codex", root / "skills/handback/SKILL.md")
     else:
@@ -80,20 +107,7 @@ def install(target_home=None, dry_run=False):
     antigravity = find("antigravity", "antigravity/Antigravity.exe")
     if antigravity:
         registration = home / ".gemini/config/skills.json"
-        root = None
-        if registration.is_file() and (not isolated or contained(registration)):
-            settings = json.loads(registration.read_text(encoding="utf-8-sig"))
-            for entry in settings.get("entries", []):
-                value = str(entry.get("path", ""))
-                path = home / value[2:].replace("\\", "/") if value.startswith(("~/", "~\\")) else Path(value)
-                if not path.is_absolute():
-                    continue
-                path = path.resolve()
-                if isolated and not contained(path):
-                    messages.append(f"skip: registered skill path outside target home: {path}")
-                    continue
-                root = path
-                break
+        root = _registered_skill_root(home, isolated, messages)
         if root:
             messages.append(f"detected: antigravity {antigravity}; registered skill root {root}")
             write("antigravity", root / "handback/SKILL.md")
@@ -101,4 +115,56 @@ def install(target_home=None, dry_run=False):
             messages.append(f"skip: antigravity global skill location unverified; inspect {registration}; template retained in handback/skills/antigravity")
     else:
         messages.append("skip: antigravity app not detected")
+    return messages
+
+
+def _references_this_installation(text):
+    marker = command_text()
+    if os.name == "nt":  # Windows paths compare case-insensitively
+        return marker.casefold() in text.casefold()
+    return marker in text
+
+
+def uninstall(target_home=None, dry_run=False):
+    """Remove handback skill files written by install() that point at this installation.
+
+    Files that do not reference this installation's command (user edits, another checkout
+    or exe) and timestamp backups are left alone. Locations are checked even when the
+    agent app is no longer installed, because the content check is what authorizes removal.
+    """
+    isolated, home = _home(target_home)
+    messages = []
+
+    def remove(agent, target):
+        if isolated and not target.resolve().is_relative_to(home):
+            messages.append(f"skip: skill path outside target home: {target}")
+            return
+        if not target.is_file():
+            messages.append(f"skip: no {agent} skill at {target}")
+            return
+        text = target.read_text(encoding="utf-8", errors="replace")
+        if not _references_this_installation(text):
+            messages.append(f"skip: {target} does not reference this installation; kept")
+            return
+        if dry_run:
+            messages.append(f"dry-run: would remove {target}")
+            return
+        target.unlink()
+        messages.append(f"removed: {target}")
+        try:
+            target.parent.rmdir()  # only succeeds when no backups or other files remain
+        except OSError:
+            pass
+
+    remove("claude", home / ".claude/skills/handback/SKILL.md")
+    remove("codex", _codex_root(home, isolated) / "skills/handback/SKILL.md")
+    try:
+        root = _registered_skill_root(home, isolated, messages)
+    except (OSError, ValueError) as error:
+        root = None
+        messages.append(f"skip: antigravity skill registration unreadable: {error}")
+    if root:
+        remove("antigravity", root / "handback/SKILL.md")
+    else:
+        messages.append("skip: antigravity skill location not registered")
     return messages

@@ -147,8 +147,9 @@ jobs:
 
   windows-exe:
     # Independent of PyPI publishing: nothing needs this job and it does not gate publish.
+    # workflow_dispatch builds, smoke-tests and attests; only a v* tag push checks the tag and uploads.
     needs: test
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -178,6 +179,7 @@ jobs:
       - name: Build Windows bundle and installer
         run: .\packaging\build.ps1 -OutDir "$env:RUNNER_TEMP\handback-exe"
       - name: Verify version matches tag
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: |
           $version = (& "$env:RUNNER_TEMP\handback-exe\dist\handback\handback.exe" --version | Out-String).Trim()
           $expected = $env:GITHUB_REF_NAME -replace '^v', ''
@@ -186,7 +188,11 @@ jobs:
         run: .\packaging\smoke.ps1 -Folder "$env:RUNNER_TEMP\handback-exe\dist\handback"
       - name: Smoke-test the installer
         run: |
-          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          # Expected version comes from the source (the tag check above already ties it to the tag on push).
+          $text = [IO.File]::ReadAllText((Resolve-Path -LiteralPath 'handback\__init__.py').Path, [Text.Encoding]::UTF8)
+          $m = [regex]::Match($text, '__version__\s*=\s*"([^"]+)"')
+          if (-not $m.Success) { throw 'Could not read version' }
+          $version = $m.Groups[1].Value
           $setup = (Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\handback-exe" -Filter 'handback-*-setup.exe').FullName
           .\packaging\smoke-installer.ps1 -Setup $setup -Version $version
       - name: Attest build provenance
@@ -194,6 +200,7 @@ jobs:
         with:
           subject-path: ${{ runner.temp }}\handback-exe\handback-*-setup.exe
       - name: Upload to GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

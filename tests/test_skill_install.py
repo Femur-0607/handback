@@ -159,3 +159,55 @@ class SkillInstallTests(unittest.TestCase):
             with mock.patch.object(skill_install.Path, "home", return_value=root), mock.patch.object(skill_install.shutil, "which", side_effect=lambda name: "/bin/codex" if name == "codex" else None), mock.patch.dict(os.environ, {"CODEX_HOME": str(root / "custom-codex")}):
                 skill_install.install()
             self.assertTrue((root / "custom-codex/skills/handback/SKILL.md").is_file())
+
+    def run_uninstaller(self, root, *args):
+        return subprocess.run(
+            [sys.executable, '-m', 'handback', 'uninstall-skills', '--target-home', str(root), *args],
+            capture_output=True, timeout=30)
+
+    def test_uninstall_removes_installed_skills_and_keeps_backups(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as tmp:
+            root = Path(tmp)
+            self.fixture_apps(root)
+            targets = [root / p / 'handback/SKILL.md' for p in
+                       ('.claude/skills', '.codex/skills', '.gemini/config/skills')]
+            skill_install.install(root)
+            skill_install.install(root)  # second install leaves one backup per skill
+            for path in targets:
+                self.assertTrue(path.is_file())
+            messages = skill_install.uninstall(root)
+            for path in targets:
+                self.assertFalse(path.exists(), messages)
+                self.assertIn(f"removed: {path}", messages)
+                self.assertEqual(len(list(path.parent.glob('SKILL.md.*.bak'))), 1)
+            self.assertTrue((root / '.gemini/config/skills.json').is_file())
+
+    def test_uninstall_keeps_foreign_skill_and_removes_empty_folder(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as tmp:
+            root = Path(tmp)
+            claude = root / '.claude/skills/handback/SKILL.md'
+            claude.parent.mkdir(parents=True)
+            claude.write_text("---\nname: handback\n---\n& 'C:/elsewhere/handback.exe'\n", encoding='utf-8')
+            messages = skill_install.uninstall(root)
+            self.assertTrue(claude.is_file())
+            self.assertTrue(any('does not reference this installation' in m for m in messages), messages)
+            claude.write_text(skill_install.render('claude'), encoding='utf-8')
+            messages = skill_install.uninstall(root)
+            self.assertIn(f"removed: {claude}", messages)
+            self.assertFalse(claude.parent.exists())
+
+    def test_uninstall_dry_run_changes_nothing(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as tmp:
+            root = Path(tmp)
+            missing = root / 'absent-home'
+            result = self.run_uninstaller(missing, '--dry-run')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(b'skip: no claude skill', result.stdout)
+            self.assertFalse(missing.exists())
+            self.fixture_apps(root)
+            skill_install.install(root)
+            before = {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
+            result = self.run_uninstaller(root, '--dry-run')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.count(b'dry-run: would remove'), 3, result.stdout)
+            self.assertEqual(before, {p: p.read_bytes() for p in root.rglob('*') if p.is_file()})
