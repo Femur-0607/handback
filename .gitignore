@@ -20,3 +20,7 @@ __pycache__/
 
 # Legacy local configuration remains private.
 /.agent-relay.json
+
+# Old per-release zip builds (the installer replaced them).
+/handback-*-windows-x64/
+/handback-*-windows-x64.zip
