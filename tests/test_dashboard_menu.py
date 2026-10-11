@@ -45,7 +45,7 @@ class MenuActionTests(DashboardMenuTests):
 
     @unittest.skipUnless(dashboard.sys.platform == "win32", "Windows only")
     def test_autostart_toggle_calls_set_autostart(self):
-        with patch.object(dashboard, "startup_shortcut") as link, \
+        with self.sync_async(), patch.object(dashboard, "startup_shortcut") as link, \
                 patch.object(dashboard, "set_autostart") as setter:
             link.return_value = Path(self.home) / "missing.lnk"
             menu = self.context_menu()
@@ -53,10 +53,60 @@ class MenuActionTests(DashboardMenuTests):
             setter.assert_called_once_with(True)
 
     def test_autostart_error_shows_dialog(self):
-        with patch.object(dashboard, "set_autostart", side_effect=RuntimeError("boom")), \
+        with self.sync_async(), patch.object(dashboard, "set_autostart", side_effect=RuntimeError("boom")), \
                 patch.object(self.strip, "_dialog") as dialog:
             self.strip._toggle_autostart(True)
             self.assertIn("boom", dialog.call_args[0][1])
+
+    def test_autostart_toggle_runs_off_the_tk_thread(self):
+        with patch.object(self.strip, "_run_async") as run_async, \
+                patch.object(dashboard, "set_autostart") as setter:
+            self.strip._toggle_autostart(False)
+            setter.assert_not_called()
+            key, work, _done = run_async.call_args[0]
+            self.assertEqual(key, ("autostart",))
+            work()
+            setter.assert_called_once_with(False)
+
+    def test_powershell_calls_hide_console_window(self):
+        expected = getattr(dashboard.subprocess, "CREATE_NO_WINDOW", 0)
+        done = dashboard.subprocess.CompletedProcess([], 0, "\ufeffC:\\한글\\x.exe\r\n", "")
+        with patch.object(dashboard.sys, "platform", "win32"), \
+                patch.object(dashboard.subprocess, "run", return_value=done) as run:
+            dashboard._write_startup_shortcut("a.lnk", "b.exe", "", ".")
+            self.assertEqual(run.call_args.kwargs["creationflags"], expected)
+            self.assertEqual(dashboard._shortcut_target("a.lnk"), "C:\\한글\\x.exe")
+            self.assertEqual(run.call_args.kwargs["creationflags"], expected)
+            self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+            self.assertTrue(run.call_args[0][0][-1].startswith("[Console]::OutputEncoding=[Text.Encoding]::UTF8;"))
+
+    def test_autostart_repair_survives_decode_error(self):
+        link = Path(self.home) / "x.lnk"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.write_text("x")
+        with patch.object(dashboard.sys, "platform", "win32"), \
+                patch.object(dashboard, "startup_shortcut", return_value=link), \
+                patch.object(dashboard, "_shortcut_target",
+                             side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")), \
+                patch.object(dashboard, "set_autostart") as setter:
+            self.assertFalse(dashboard.repair_autostart())
+            setter.assert_not_called()
+
+    def test_viewer_acknowledge_acks_only_shown_ids(self):
+        checkout = self.home.parent / "viewer-project"
+        checkout.mkdir()
+        project = str(checkout)
+        folder = self.home / "projects" / ("b" * 64)
+        dashboard.atomic_json(folder / "topology.json",
+                             {"root": project, "lead": "claude:test", "workers": ["codex"]})
+        shown = dashboard.inbox.send(folder / "inbox", "test", "codex:test", "result", "seen")
+        later = dashboard.inbox.send(folder / "inbox", "test", "codex:test", "result", "later")
+        self.strip.unread_counts[project] = 2  # refreshed count includes the late arrival
+        with patch.object(self.strip, "_dialog", return_value=True) as dialog:
+            self.assertTrue(self.strip._acknowledge(project, ids=[shown["id"]]))
+        self.assertIn("1개를 모두 확인 처리", dialog.call_args_list[0].args[1])
+        self.assertEqual(dialog.call_args_list[1].args, ("정리 완료", "1개를 확인 처리했습니다."))
+        self.assertEqual([m["id"] for m in dashboard.inbox.pending(folder / "inbox")], [later["id"]])
 
     def test_role_change_refuses_with_open_requests(self):
         root = self.project(running=True)

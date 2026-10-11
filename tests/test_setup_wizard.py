@@ -1,6 +1,9 @@
 import contextlib
 import io
+import os
+from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -81,6 +84,29 @@ class LocationTests(unittest.TestCase):
                      "C:/Users/a/AppData/Local/Temp/h/handback.exe", "C:/my tools/handback.exe"):
             self.assertTrue(setup_wizard.risky_location(path), path)
         self.assertFalse(setup_wizard.risky_location("C:/handback/handback.exe"))
+
+    def test_installer_location_with_spaced_user_name_is_not_risky(self):
+        with tempfile.TemporaryDirectory() as base:
+            user = Path(base) / "Hong Gildong"
+            local = user / "AppData" / "Local"
+            exe = local / "Programs" / "handback" / "handback.exe"
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(local)}):
+                self.assertFalse(setup_wizard.risky_location(str(exe)))
+                if os.name == "nt":  # Windows paths compare case-insensitively
+                    self.assertFalse(setup_wizard.risky_location(str(exe).upper()))
+                self.assertTrue(setup_wizard.risky_location(str(user / "Downloads" / "handback" / "handback.exe")))
+                self.assertTrue(setup_wizard.risky_location(str(local / "Programs2" / "handback.exe")))
+            with patch.dict(os.environ, {}, clear=False), patch.object(Path, "home", return_value=user):
+                os.environ.pop("LOCALAPPDATA", None)
+                self.assertFalse(setup_wizard.risky_location(str(exe)))
+
+    def test_update_hint_matches_install_kind(self):
+        for is_frozen, expected in ((True, "setup.exe"), (False, "pip install -U handback")):
+            with patch.object(setup_wizard, "frozen", return_value=is_frozen), \
+                    patch.object(setup_wizard, "risky_location", return_value=False):
+                _, lines, *_ = run(["", "n", "n"])
+            [hint] = [line for line in lines if line.startswith("업데이트:")]
+            self.assertIn(expected, hint)
 
     def test_frozen_risky_location_warns_and_declines(self):
         with patch.object(setup_wizard, "frozen", return_value=True),                 patch.object(setup_wizard, "risky_location", return_value=True):

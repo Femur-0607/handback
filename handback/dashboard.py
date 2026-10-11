@@ -259,6 +259,20 @@ def acknowledge_all(root, home=None):
         return done
 
 
+def acknowledge_ids(root, ids, home=None):
+    """ACK only the pending results/errors whose id is in ids (what a viewer showed)."""
+    wanted = set(ids)
+    home = Path(home or state_home())
+    with home_lock(home):
+        folder = _folder_for(root, home)
+        done = 0
+        for mail in inbox.pending(folder / "inbox"):
+            if mail.get("kind") != "request" and mail["id"] in wanted:
+                inbox.acknowledge(folder / "inbox", mail["id"])
+                done += 1
+        return done
+
+
 def release(root, home=None):
     """Unregister a project by moving its state aside; never deletes history.
 
@@ -2219,6 +2233,7 @@ class Strip:
         if sys.platform == "win32":
             on = startup_shortcut().exists()
             items.append({"label": ("✓ " if on else "    ") + "Windows 시작 시 실행",
+                          "enabled": not self._is_busy(("autostart",)),
                           "command": lambda: self._toggle_autostart(not on)})
         checking = self._is_busy(("doctor",))
         installing = self._is_busy(("skills",))
@@ -2407,8 +2422,10 @@ class Strip:
         window.configure(bg=self.BG)
         footer = tk.Frame(window, bg=self.BG, padx=8, pady=6)
         footer.pack(side="bottom", fill="x")
+        # ACK exactly what this window rendered; mail arriving later stays pending.
+        shown = [item["id"] for item in data["unread"]]
         self._button(footer, text="모두 확인 처리", command=lambda: self._acknowledge(
-            data["root"], parent=window) and window.destroy()).pack(side="right")
+            data["root"], parent=window, ids=shown) and window.destroy()).pack(side="right")
         tk.Label(footer, text="확인 처리해도 내용은 수신함에 남습니다", bg=self.BG, fg=self.DIM,
                  font=self.font).pack(side="left")
         text = tk.Text(window, wrap="word", bg=self.BG, fg=self.FG, insertbackground=self.FG,
@@ -2437,9 +2454,10 @@ class Strip:
         text.yview(f"m{focus}")
         _dark_titlebar(window)
 
-    def _acknowledge(self, project, parent=None):
+    def _acknowledge(self, project, parent=None, ids=None):
+        """ACK ids when given (viewer), otherwise every pending result (project menu)."""
         name = self.names.get(project, project)
-        count = self.unread_counts.get(project, 0)
+        count = len(ids) if ids is not None else self.unread_counts.get(project, 0)
         if not self._dialog(
                 "미확인 결과 정리",
                 f"{name}의 미확인 결과 {count}개를 모두 확인 처리할까요?\n\n"
@@ -2447,7 +2465,8 @@ class Strip:
                 "내용은 지워지지 않고 수신함에 남습니다.", parent=parent or self.root, confirm=True):
             return False
         try:
-            done = acknowledge_all(project, self.home)
+            done = (acknowledge_ids(project, ids, self.home) if ids is not None
+                    else acknowledge_all(project, self.home))
         except (OSError, ValueError, TimeoutError) as error:
             self._dialog("정리 실패", ui_error(error), parent=parent or self.root)
             return False
@@ -2505,10 +2524,11 @@ class Strip:
         self.root.after(150, poll)
 
     def _toggle_autostart(self, enable):
-        try:
-            set_autostart(enable)
-        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-            self._dialog("자동 실행", "자동 실행을 바꾸지 못했습니다 — " + " ".join(str(error).split())[:80])
+        # PowerShell can take seconds; never block the Tk thread on it.
+        def done(_result, error):
+            if error:
+                self._dialog("자동 실행", "자동 실행을 바꾸지 못했습니다 — " + " ".join(str(error).split())[:80])
+        self._run_async(("autostart",), lambda: set_autostart(enable), done)
 
     def _check_install(self):
         root = self._rows[0]["root"] if self._rows else str(Path.cwd())
@@ -2887,6 +2907,11 @@ def startup_shortcut():
     return Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup/handback 현황판.lnk"
 
 
+def _no_window_flags():
+    """Keep console children (PowerShell) from flashing a window from the windowed exe."""
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+
+
 def _write_startup_shortcut(link, target, arguments, working_directory):
     def quoted(value):
         return "'" + str(value).replace("'", "''") + "'"
@@ -2896,7 +2921,7 @@ def _write_startup_shortcut(link, target, arguments, working_directory):
               "$s.WorkingDirectory = " + quoted(working_directory) + ";"
               "$s.Description = 'handback 현황판';$s.Save()")
     subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                   check=True, capture_output=True, timeout=30)
+                   check=True, capture_output=True, timeout=30, creationflags=_no_window_flags())
 
 
 def set_autostart(enabled):
@@ -2932,10 +2957,14 @@ def _expected_autostart_target():
 
 
 def _shortcut_target(link):
-    script = "(New-Object -ComObject WScript.Shell).CreateShortcut('" + str(link).replace("'", "''") + "').TargetPath"
+    # UTF-8 output keeps non-ASCII targets intact regardless of the console codepage.
+    script = ("[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+              "(New-Object -ComObject WScript.Shell).CreateShortcut('" + str(link).replace("'", "''")
+              + "').TargetPath")
     done = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                          capture_output=True, text=True, timeout=30)
-    return done.stdout.strip()
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+                          creationflags=_no_window_flags())
+    return (done.stdout or "").replace("\ufeff", "").strip()
 
 
 def repair_autostart():
@@ -2954,7 +2983,7 @@ def repair_autostart():
             return False
         set_autostart(True)
         return True
-    except (OSError, RuntimeError, KeyError, subprocess.SubprocessError):
+    except (OSError, RuntimeError, KeyError, subprocess.SubprocessError, UnicodeDecodeError, ValueError):
         return False
 
 

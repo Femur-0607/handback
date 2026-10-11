@@ -1,4 +1,5 @@
 """Interactive first-run setup for people who double-click handback.exe."""
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -45,9 +46,23 @@ def _skill_lines(messages):
     return lines
 
 
+def _in_user_programs(text):
+    """True for paths under %LOCALAPPDATA%\\Programs, where the installer puts handback."""
+    local = os.environ.get("LOCALAPPDATA")
+    programs = (Path(local) if local else Path.home() / "AppData" / "Local") / "Programs"
+    try:
+        target = os.path.normcase(str(Path(text).resolve())).lower()
+        folder = os.path.normcase(str(programs.resolve())).lower()
+        return os.path.commonpath([target, folder]) == folder
+    except (OSError, ValueError):
+        return False
+
+
 def risky_location(path=None):
     """True when the install path is likely to move or break embedded absolute paths."""
     text = str(path or sys.executable)
+    if _in_user_programs(text):
+        return False  # installer-managed; a spaced user name is expected and harmless
     parts = {part.lower() for part in Path(text).parts}
     return " " in text or bool(parts & {"downloads", "desktop", "temp", "tmp"})
 
@@ -156,7 +171,8 @@ def run(yes=False, dry_run=False, input_fn=input, interactive=None, detect=detec
             code = 1
     if not plan_only:
         out("다음: Claude에서 /handback 스킬로 작업을 맡기세요.")
-        out("업데이트: 현황판을 닫고 새 파일로 덮어쓰세요.")
+        out("업데이트: 새 handback-<버전>-setup.exe를 실행하면 그 자리에서 업그레이드됩니다." if frozen()
+            else "업데이트: pip install -U handback 또는 체크아웃을 갱신하세요.")
     _pause(interactive and not yes and not dry_run, input_fn, out)
     return code
 

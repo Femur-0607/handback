@@ -122,6 +122,18 @@ class StateTests(unittest.TestCase):
         self.assertEqual(opened.call_count, 2)
         sleep.assert_called_once()
 
+    def test_git_probe_hides_console_window_on_windows(self):
+        completed = subprocess.CompletedProcess([], 1, "", "")
+        with mock.patch.object(sys, "platform", "win32"), \
+                mock.patch("handback.state.subprocess.run", return_value=completed) as run:
+            project_identity(self.root)
+        expected = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        self.assertEqual(run.call_args.kwargs["creationflags"], expected)
+        with mock.patch.object(sys, "platform", "linux"), \
+                mock.patch("handback.state.subprocess.run", return_value=completed) as run:
+            project_identity(self.root)
+        self.assertEqual(run.call_args.kwargs["creationflags"], 0)
+
     def test_non_git_roots_have_distinct_stable_keys(self):
         other = self.root.parent / "other"
         other.mkdir()

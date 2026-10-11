@@ -237,6 +237,16 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(len(list((folder / "inbox").glob("*.json"))), 3)
         self.assertEqual(dashboard.snapshot(self.home)[0]["unread"], [])
 
+    def test_acknowledge_ids_only_acks_what_was_shown(self):
+        folder = self.project("e" * 64, self.checkout)
+        shown, later = (envelope.make("r", "codex:t1", "claude:abc", body) for body in ("seen", "arrived later"))
+        for mail in (shown, later):
+            inbox.put(folder / "inbox", mail)
+        self.assertEqual(dashboard.acknowledge_ids(str(self.checkout), [shown["id"], "f" * 32], self.home), 1)
+        self.assertEqual([m["id"] for m in inbox.pending(folder / "inbox")], [later["id"]])
+        self.assertEqual([item["body"] for item in dashboard.snapshot(self.home)[0]["unread"]],
+                         ["arrived later"])
+
     def test_release_moves_state_aside_and_clears_prefs(self):
         folder = self.project("f" * 64, self.checkout)
         dashboard.save_prefs({"max_rows": 2, "order": [str(self.checkout)], "hidden": []}, self.home)

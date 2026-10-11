@@ -53,10 +53,13 @@ def project_identity(root, timeout=5):
         raise ValueError(f"Project root is not a directory: {root}")
     common = None
     checkout_root = str(root)
+    # The windowed dashboard has no console; without this flag git flashes one.
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
     try:
         result = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+            creationflags=flags,
         )
         if result.returncode == 0 and result.stdout.strip():
             lines = result.stdout.strip().splitlines()
