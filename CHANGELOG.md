@@ -5,8 +5,20 @@ All notable changes to this project are documented here. This file follows the
 
 ## [0.3.2] - 2026-10-11
 
+### Added
+
+- Notification-area (tray) icon: left-click shows or hides the dashboard,
+  right-click opens its menu (with **숨기기** and **종료**), and the tooltip shows
+  the current state. **닫기** now hides the dashboard to the tray.
+
+### Removed
+
+- The 0.3.1 taskbar button; handback now lives in the notification area only.
+
 ### Changed
 
+- Dashboard window icons are loaded at 16, 20, 24, 32, 40, 48, 64, 128 and
+  256 px for sharper rendering at every display scale.
 - The Windows download is now a single installer, `handback-<ver>-setup.exe`. It
   installs the agent skills in one step, adds a Start menu entry and an optional
   desktop shortcut, offers optional autostart, upgrades in place, and uninstalls

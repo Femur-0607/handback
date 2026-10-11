@@ -72,7 +72,7 @@ Windows has live integration coverage. macOS and Linux are unverified. App queue
    Use the handback skill. Ask one Codex worker to review error handling in <module-path> without changing files, then summarize its findings here.
    ```
 
-2. Open the **handback** app (the dashboard) to see running tasks and unread results. Right-click it for settings: **설정**, start with Windows, install check, reinstall skills, hooks, and per-project roles. The dashboard can set only Claude as Lead; set a Codex or Antigravity Lead from that app.
+2. Open the **handback** app (the dashboard) to see running tasks and unread results. handback lives in the notification area (the ^ arrow near the clock), not on the taskbar: left-click its icon to show or hide the dashboard, right-click it for the menu, and choose **종료** there to exit. Right-click the dashboard for settings: **설정**, start with Windows, install check, reinstall skills, hooks, and per-project roles. The dashboard can set only Claude as Lead; set a Codex or Antigravity Lead from that app.
 3. To check that the round trip works, right-click a project → **연결 테스트**. This runs one real Codex worker task and uses model quota.
 
 ## Update

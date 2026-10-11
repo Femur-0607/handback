@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import math
+import queue
 from importlib import resources
 import re
 import webbrowser
@@ -18,15 +19,18 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 
 from . import config, envelope, inbox
 from .collector import OPEN_STATES
+from .tray import Tray
 from .state import _read_json, atomic_json, home_lock, state_home
 
 
 AGENT_NAME = {"claude": "Claude", "codex": "Codex", "antigravity": "Antigravity"}
 REFRESH_MS = 3000
 TASKBAR_ZORDER_MS = 750
+TRAY_POLL_MS = 150
 DETAIL_LIMIT = 5
 DEFAULT_PREFS = {"max_rows": 3, "order": [], "hidden": [], "mode": "taskbar",
                  "compact_x": None, "compact_y": None, "docked": False}
@@ -752,11 +756,19 @@ def set_app_user_model_id(app_id=APP_USER_MODEL_ID):
         return False
 
 
-def enable_taskbar_button(widget):
-    """Give the override-redirect dashboard a taskbar button (WS_EX_APPWINDOW, not TOOLWINDOW).
+def tray_state_text(rows, hidden=()):
+    """Short state shown in the tray tooltip, the same facts the strip shows."""
+    shown = [row for row in rows if row["root"] not in hidden]
+    if any(row.get("unreadable") for row in shown):
+        return "읽기 오류"
+    running = sum(len(row["running"]) for row in shown)
+    unread = sum(len(row["unread"]) for row in shown)
+    parts = ([f"진행 {running}"] if running else []) + ([f"결과 {unread}개"] if unread else [])
+    return " · ".join(parts) or "대기"
 
-    Idempotent: returns True only when the style changed. Any failure is a no-op.
-    """
+
+def bring_to_foreground(widget):
+    """Make a Tk window foreground so its popup closes on an outside click (tray quirk)."""
     if sys.platform != "win32":
         return False
     try:
@@ -765,47 +777,11 @@ def enable_taskbar_button(widget):
         user = ctypes.windll.user32
         user.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
         user.GetAncestor.restype = wintypes.HWND
-        user.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
-        user.GetWindowLongW.restype = ctypes.c_long
-        user.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
-        user.SetWindowLongW.restype = ctypes.c_long
-        hwnd = user.GetAncestor(widget.winfo_id(), 2)  # GA_ROOT: Tk's native wrapper.
-        if not hwnd:
-            return False
-        style = user.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
-        wanted = (style & ~0x80) | 0x40000  # drop TOOLWINDOW, add APPWINDOW
-        if wanted == style:
-            return False
-        user.SetWindowLongW(hwnd, -20, wanted)
-        if widget.winfo_ismapped():
-            # The shell only re-reads the style on a fresh show. Hide/show through Tk:
-            # a native SW_HIDE re-enters Tk's handlers while ctypes has released the GIL.
-            widget.withdraw()
-            widget.deiconify()
-        return True
-    except (AttributeError, OSError, ValueError):
-        return False
-
-
-def restore_if_minimized(widget):
-    """A taskbar click can minimize an override-redirect window: bring it straight back."""
-    if sys.platform != "win32":
-        return False
-    try:
-        import ctypes
-        from ctypes import wintypes
-        user = ctypes.windll.user32
-        user.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
-        user.GetAncestor.restype = wintypes.HWND
-        user.IsIconic.argtypes = [wintypes.HWND]
-        user.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        user.SetForegroundWindow.argtypes = [wintypes.HWND]
         hwnd = user.GetAncestor(widget.winfo_id(), 2)
-        if hwnd and user.IsIconic(hwnd):
-            user.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE: restore without stealing focus
-            return True
+        return bool(hwnd and user.SetForegroundWindow(hwnd))
     except (AttributeError, OSError, ValueError):
-        pass
-    return False
+        return False
 
 
 def _icon_file():
@@ -1478,6 +1454,11 @@ class Strip:
     BORDER = "#6a6a70"
     COLORS = {"claude": "#d97757", "codex": "#e6e6e6", "antigravity": "#5b9bf8"}
     GREEN, YELLOW = "#5fd38a", "#f2c94c"
+    # Notification-area state (class defaults keep partially built test instances valid).
+    tray = None
+    _tray_timer = None
+    _tray_text = "대기"
+    _user_hidden = False
 
     def __init__(self, home=None, opener=None):
         import tkinter as tk
@@ -1533,7 +1514,7 @@ class Strip:
         self.root.withdraw()
         self.root.title("handback")
         self.icons = []
-        for size in (256, 64, 48, 32, 16):
+        for size in (16, 20, 24, 32, 40, 48, 64, 128, 256):
             try:
                 asset = resources.files("handback").joinpath("assets", f"icon-{size}.png")
                 self.icons.append(tk.PhotoImage(master=self.root, data=asset.read_bytes(), format="png"))
@@ -1543,7 +1524,7 @@ class Strip:
             ico = _icon_file()
             if ico:
                 try:
-                    self.root.iconbitmap(default=ico)  # taskbar button uses this logo
+                    self.root.iconbitmap(default=ico)  # window/dialog logo
                 except tk.TclError:
                     pass
         if self.icons:
@@ -1579,16 +1560,6 @@ class Strip:
         self.root.bind("<Configure>", self._sync_window_corners, add="+")
         self._root_frame.bind("<Configure>", self._sync_window_corners, add="+")
         self.root.bind("<Map>", lambda event: self._sync_window_corners(event, force=True), add="+")
-        self.root.bind("<Map>", self._taskbar_mapped, add="+")
-        self.root.bind("<Unmap>", self._taskbar_unmapped, add="+")
-
-    def _taskbar_mapped(self, event):
-        if event.widget == self.root and sys.platform == "win32":
-            enable_taskbar_button(self.root)  # idempotent: no-op once applied
-
-    def _taskbar_unmapped(self, event):
-        if event.widget == self.root and sys.platform == "win32":
-            restore_if_minimized(self.root)
 
     def _corner_parameters(self):
         floating = self.mode == "taskbar" and not self.docked
@@ -1631,6 +1602,7 @@ class Strip:
 
     def _destroyed(self, event):
         if event.widget == self.root:
+            self._stop_tray()
             for name in ("_outside_timer", "_refresh_timer", "_zorder_timer",
                          "_drag_timer", "_drag_capture_timer", "_corner_timer"):
                 timer = getattr(self, name)
@@ -1639,6 +1611,83 @@ class Strip:
                     setattr(self, name, None)
             self._start = None
             self._dragging = False
+
+    # ---- notification-area icon: the tray thread only queues events; Tk acts here ----
+    def _start_tray(self):
+        if sys.platform != "win32" or self.tray is not None:
+            return self.tray is not None
+        tray = Tray(_icon_file(), "handback — " + self._tray_text)
+        if not tray.start():
+            return False
+        self.tray = tray
+        self._tray_timer = self.root.after(TRAY_POLL_MS, self._poll_tray)
+        return True
+
+    def _stop_tray(self):
+        tray, self.tray = self.tray, None
+        if self._tray_timer is not None:
+            self.root.after_cancel(self._tray_timer)
+            self._tray_timer = None
+        if tray is not None:
+            tray.stop()
+
+    def _poll_tray(self):
+        self._tray_timer = None
+        tray = self.tray
+        if tray is None:
+            return
+        while self.tray is tray:
+            try:
+                kind, point = tray.events.get_nowait()
+            except queue.Empty:
+                break
+            self._tray_event(kind, point)
+        if self.tray is tray:
+            tray.set_tooltip("handback — " + self._tray_text)
+            self._tray_timer = self.root.after(TRAY_POLL_MS, self._poll_tray)
+
+    def _tray_event(self, kind, point):
+        if kind == "left":
+            self._toggle_visible()
+        elif kind == "right":
+            self._tray_menu(point)
+        elif kind == "quit":
+            self.quit()
+
+    def _toggle_visible(self):
+        self.show() if self._user_hidden else self.hide()
+
+    def hide(self):
+        """Withdraw the dashboard to the tray (it keeps running)."""
+        self._collapse_panel()
+        self._close_menu()
+        self.tooltip.hide()
+        self._user_hidden = True
+        self.root.withdraw()
+
+    def show(self):
+        self._user_hidden = False
+        if self._fullscreen_hidden:
+            return  # the full-screen watcher shows it again when the cover ends
+        show_widget_without_activation(self.root, True)
+        self.root.lift()
+
+    def close(self):
+        """Close means hide while the tray can bring it back, otherwise exit."""
+        self.hide() if self.tray is not None else self.root.destroy()
+
+    def quit(self):
+        self._stop_tray()
+        try:
+            self.root.destroy()
+        except self.tk.TclError:
+            pass
+
+    def _tray_menu(self, point):
+        x, y = point or (self.root.winfo_pointerx(), self.root.winfo_pointery())
+        self._menu(SimpleNamespace(x_root=x, y_root=y), None)
+        if self._context_menu is not None:
+            bring_to_foreground(self._context_menu.window)
 
     def _sync_zorder_timer(self):
         if self.mode == "taskbar" and sys.platform == "win32":
@@ -1659,7 +1708,8 @@ class Strip:
                 self._collapse_panel()
                 self._close_menu()
                 self.tooltip.hide()
-            show_widget_without_activation(self.root, not hidden)
+            if not self._user_hidden:  # a widget hidden to the tray stays hidden
+                show_widget_without_activation(self.root, not hidden)
             self._fullscreen_hidden = hidden
         if not hidden:
             keep_above_taskbar(self.root, self._taskbar_hwnd)
@@ -1696,6 +1746,7 @@ class Strip:
     def render(self, rows):
         self._rows = rows
         prefs = load_prefs(self.home)
+        self._tray_text = tray_state_text(rows, prefs["hidden"])
         if self.mode != prefs["mode"]:
             self.tooltip.hide()
             self._collapse_panel()
@@ -2182,7 +2233,11 @@ class Strip:
                 {"label": "해제", "command": lambda: self._hooks("uninstall")}]},
             None,
             {"label": "새로고침", "command": lambda: self.refresh(reschedule=False)},
-                      {"label": "닫기", "command": self.root.destroy}])
+                      ]
+                     + ([{"label": "보이기" if self._user_hidden else "숨기기",
+                          "command": self.show if self._user_hidden else self.hide},
+                         {"label": "종료", "command": self.quit}] if self.tray is not None
+                        else [{"label": "닫기", "command": self.close}]))
         menu = DarkMenu(self, items, _monitor_area(self.root, event.x_root, event.y_root))
         self._context_menu = menu
         menu.show(event.x_root, event.y_root)
@@ -2819,6 +2874,7 @@ class Strip:
 
     def run(self):
         self.refresh()
+        self._start_tray()
         self.root.deiconify()
         if self._fullscreen_hidden:
             show_widget_without_activation(self.root, False)

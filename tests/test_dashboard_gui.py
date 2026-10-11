@@ -237,7 +237,18 @@ class DashboardMenuTests(unittest.TestCase):
                 handles = self.handles()
             name.event_generate("<Enter>")  # Unchanged refresh retains this pending timer.
         self.strip.tooltip.hide()
-        for value, initial in zip(self.handles(), handles):
+        # Windows releases (and creates) some per-process USER/GDI objects asynchronously:
+        # deferred Tk native destroys and OS text-service helper windows (IME, MSCTFIME UI).
+        # Let those messages drain before comparing; a real leak over 400 refreshes persists
+        # and keeps the strict "never above the iteration-99 baseline" check failing.
+        for attempt in range(6):
+            current = self.handles()
+            if all(value <= initial for value, initial in zip(current, handles)):
+                break
+            settled = self.tk.BooleanVar(self.root)
+            self.root.after(150, lambda: settled.set(True))
+            self.root.wait_variable(settled)
+        for value, initial in zip(current, handles):
             self.assertLessEqual(value, initial)
         self.strip.expanded.clear()
         for row in rows:
@@ -264,7 +275,7 @@ class DashboardMenuTests(unittest.TestCase):
         self.strip.render(rows)
         self.assertIs(self.strip.tooltip.window, tooltip)
         self.assertEqual(tuple(map(str, self.strip.icons)), icons)
-        self.assertEqual(len(icons), 5)
+        self.assertEqual(len(icons), 9)  # 16, 20, 24, 32, 40, 48, 64, 128, 256
         self.assertTrue(set(icons).issubset(self.root.tk.call("image", "names")))
 
     def test_overflow_temporary_and_same_menu_setting_resets_it(self):
