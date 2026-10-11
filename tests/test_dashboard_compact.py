@@ -117,6 +117,36 @@ class CompactPureTests(unittest.TestCase):
         self.assertEqual((idle["running"], idle["unread"]), ("대기", ""))
         self.assertEqual(dashboard.compact_lines([], prefs, 4, len), [])
 
+    def test_compact_lines_carry_lead_agent_and_unknown_is_empty(self):
+        leads = ["claude:lead", "codex", "antigravity:x", "", "mystery:y", None]
+        rows = [{"root": str(i), "name": f"p{i}", "last_activity": 100 - i, "running": [],
+                 "unread": [], "lead": lead} for i, lead in enumerate(leads)]
+        rows.append({"root": "missing", "name": "m", "last_activity": 0, "running": [], "unread": []})
+        for index, expected in enumerate(["claude", "codex", "antigravity", "", "", "", ""]):
+            row = rows[index]
+            [line] = dashboard.compact_lines([row], dashboard.DEFAULT_PREFS, 100, len)
+            self.assertEqual(line["lead"], expected, row)
+
+    def test_palette_agent_colors_dark_light_and_unknown_dim(self):
+        self.assertIs(dashboard.Strip.COLORS, dashboard.AGENT_COLORS_DARK)
+        self.assertEqual(dashboard.AGENT_COLORS_DARK["codex"], "#9fb3c8")
+        self.assertNotEqual(dashboard.AGENT_COLORS_DARK["codex"], dashboard.Strip.FG)
+        dark, light = dashboard.compact_palette(), dashboard.compact_palette([(236, 236, 236)])
+        for agent in ("claude", "codex", "antigravity"):
+            self.assertEqual(dark["agent_" + agent], dashboard.AGENT_COLORS_DARK[agent])
+            self.assertEqual(light["agent_" + agent], dashboard.AGENT_COLORS_LIGHT[agent])
+            self.assertEqual(dashboard.agent_color(agent + ":lead", light), light["agent_" + agent])
+        for lead in ("", None, "mystery:y"):
+            self.assertEqual(dashboard.agent_color(lead, dark), dark["dim"])
+            self.assertEqual(dashboard.agent_color(lead, light), light["dim"])
+        for rgb in ((28, 28, 28), (118, 118, 118), (236, 236, 236), (255, 255, 255)):
+            palette = dashboard.compact_palette([rgb])
+            background = dashboard._luminance(rgb)
+            for agent in ("claude", "codex", "antigravity"):
+                color = palette["agent_" + agent]
+                foreground = dashboard._luminance(tuple(int(color[i:i+2], 16) for i in (1, 3, 5)))
+                self.assertGreaterEqual((max(background, foreground)+.05) / (min(background, foreground)+.05), 3)
+
     def test_compact_read_error_is_distinct_from_idle_and_partial_running_counts(self):
         row = {"root": "r", "name": "project", "last_activity": 0,
                "running": [], "unread": [], "unreadable": 2}
@@ -422,11 +452,49 @@ class CompactGuiTests(DashboardMenuTests):
                     name = row.winfo_children()[0]
                     self.assertEqual(name.cget("fg"), "#202020")
                     self.assertEqual(name.cget("bg"), "#ececec")
-                    positions.append(row.winfo_x() + name.winfo_x())
-                    last = row.winfo_children()[-1]
+                    # The lead dot (created last, packed first) starts the line.
+                    dot = row.winfo_children()[-1]
+                    self.assertEqual(dot.cget("text"), dashboard.AGENT_DOT + " ")
+                    self.assertEqual(name.winfo_x(), dot.winfo_x() + dot.winfo_width())
+                    positions.append(row.winfo_x() + dot.winfo_x())
+                    last = row.winfo_children()[-2]
                     self.assertGreaterEqual(self.root.winfo_width() - row.winfo_x()
                                             - last.winfo_x() - last.winfo_width(), padding)
                 self.assertEqual(positions, [padding, padding])
+
+    def dots(self):
+        return [row.winfo_children()[-1] for row in self.strip.frame.winfo_children()]
+
+    def test_lead_dot_uses_agent_color_floating_docked_and_dim_when_unknown(self):
+        rows = self.sample_rows()
+        rows[1]["lead"] = ""
+        dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
+        self.strip.render(rows)
+        dots = self.dots()
+        self.assertEqual([dot.cget("text") for dot in dots], [dashboard.AGENT_DOT + " "] * 2)
+        self.assertEqual([dot.cget("fg") for dot in dots],
+                         [dashboard.Strip.COLORS["claude"], dashboard.Strip.DIM])
+        row = self.strip.frame.winfo_children()[0]
+        self.assertEqual(row.pack_slaves()[:2], [dots[0], row.winfo_children()[0]])
+        dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "docked": True}, self.home)
+        with patch.object(dashboard, "taskbar_colors", return_value=[(236, 236, 236)]):
+            self.strip.render(rows)
+        self.assertEqual([dot.cget("fg") for dot in self.dots()],
+                         [dashboard.AGENT_COLORS_LIGHT["claude"], self.strip._compact_palette["dim"]])
+
+    def test_panel_name_has_lead_dot_that_toggles_like_the_name(self):
+        dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "mode": "panel"}, self.home)
+        rows = self.sample_rows()
+        rows[0]["lead"] = "codex:lead"
+        self.strip.render(rows)
+        cell = self.strip.frame.winfo_children()[0].winfo_children()[0]
+        name, dot = cell.winfo_children()
+        self.assertTrue(name.cget("text").startswith("▸ "))
+        self.assertEqual(dot.cget("fg"), dashboard.Strip.COLORS["codex"])
+        self.assertEqual(cell.pack_slaves(), [dot, name])
+        with patch.object(self.strip, "_toggle") as toggle:
+            dot.event_generate("<Button-1>")
+        toggle.assert_called_once_with(rows[0]["root"])
 
     def test_palette_sampling_is_cached_until_interval_or_position_change(self):
         dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "docked": True}, self.home)

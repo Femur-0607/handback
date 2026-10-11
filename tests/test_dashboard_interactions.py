@@ -98,7 +98,8 @@ class DashboardInteractionTests(compact.CompactGuiTests):
 
         def labels():
             return [widget for widget in self.widgets(self.strip.frame)
-                    if isinstance(widget, self.tk.Label)]
+                    if isinstance(widget, self.tk.Label)
+                    and widget.cget("text") != dashboard.AGENT_DOT + " "]
 
         before = [label.cget("text") for label in labels()]
         self.assertEqual(labels()[-1].cget("text"), "+2")

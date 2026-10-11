@@ -28,9 +28,17 @@ from .state import _read_json, atomic_json, home_lock, state_home
 
 
 AGENT_NAME = {"claude": "Claude", "codex": "Codex", "antigravity": "Antigravity"}
+# One source of truth for agent colours: dark backgrounds (panel, floating
+# widget, dark taskbar) and darker variants for light docked taskbars.
+AGENT_COLORS_DARK = {"claude": "#d97757", "codex": "#9fb3c8", "antigravity": "#5b9bf8"}
+AGENT_COLORS_LIGHT = {"claude": "#b45309", "codex": "#4b5f73", "antigravity": "#1d4ed8"}
+AGENT_DOT = "●"
 REFRESH_MS = 3000
 TASKBAR_ZORDER_MS = 750
 TRAY_POLL_MS = 150
+SHOW_POLL_MS = 300
+DASHBOARD_MUTEX = "Local\\handback-dashboard"
+DASHBOARD_SHOW_EVENT = "Local\\handback-dashboard-show"
 DETAIL_LIMIT = 5
 DEFAULT_PREFS = {"max_rows": 3, "order": [], "hidden": [], "mode": "taskbar",
                  "compact_x": None, "compact_y": None, "docked": False}
@@ -95,6 +103,18 @@ def _pending_results(directory, errors):
 def agent_name(handle):
     agent = str(handle).partition(":")[0]
     return AGENT_NAME.get(agent, agent or "?")
+
+
+def agent_key(handle):
+    """Known agent id of a "agent:name" handle, or "" (rendered with a dim dot)."""
+    agent = str(handle or "").partition(":")[0]
+    return agent if agent in AGENT_COLORS_DARK else ""
+
+
+def agent_color(handle, palette):
+    """Dot colour from a compact palette's "agent_<id>" entries; dim when unknown."""
+    agent = agent_key(handle)
+    return palette.get("agent_" + agent, palette["dim"]) if agent else palette["dim"]
 
 
 def execution_targets(data):
@@ -379,7 +399,8 @@ def arrange(rows, prefs):
 
 def column_widths(measure):
     """Pixel budgets shared by every row, independent of live counts."""
-    columns = (("프로젝트 이름 프로젝트", 26), ("Claude → Codex + Antigravity", 16),
+    # The name column also holds the lead-agent dot ("● ") before "▸ name".
+    columns = ((AGENT_DOT + " 프로젝트 이름 프로젝트", 26), ("Claude → Codex + Antigravity", 16),
                ("● 진행 999", 14), ("✉ 999", 14))
     return tuple(measure(text) + padding for text, padding in columns) + (
         max(measure(text) for text in ("59분 전", "23시간 전", "999일 전")) + 4,)
@@ -1054,7 +1075,8 @@ def compact_lines(rows, prefs, name_width, measure):
     overflow_unread = sum(len(row["unread"]) for row in shown[2:])
     lines = []
     for i, row in enumerate(shown[:2]):
-        lines.append({"row": row, "name": truncate_text(row["name"], name_width, measure),
+        lines.append({"row": row, "lead": agent_key(row.get("lead")),
+                      "name": truncate_text(row["name"], name_width, measure),
                       "running": (f"읽기 오류 {row['unreadable']}" if row.get("unreadable") else
                                   f"● {len(row['running'])}" if row["running"] else "대기"),
                       "unread": f"✉ {len(row['unread'])}" if row["unread"] else "",
@@ -1113,6 +1135,13 @@ def compact_palette(samples=()):
         foreground = _luminance(tuple(int(color[i:i+2], 16) for i in (1, 3, 5)))
         if (max(background, foreground) + .05) / (min(background, foreground) + .05) < 4.5:
             palette[key] = "#000000" if light else "#ffffff"
+    # The lead dot is a small graphic, not text: keep the agent hue on any
+    # taskbar shade and only fall back to the text colour below 3:1.
+    for agent, color in (AGENT_COLORS_LIGHT if light else AGENT_COLORS_DARK).items():
+        foreground = _luminance(tuple(int(color[i:i+2], 16) for i in (1, 3, 5)))
+        if (max(background, foreground) + .05) / (min(background, foreground) + .05) < 3:
+            color = palette["fg"]
+        palette["agent_" + agent] = color
     return {"bg": "#%02x%02x%02x" % rgb, **palette}
 
 
@@ -1466,13 +1495,15 @@ class PanelViewport:
 class Strip:
     BG, FG, DIM = "#1f1f1f", "#e6e6e6", "#8a8a8a"
     BORDER = "#6a6a70"
-    COLORS = {"claude": "#d97757", "codex": "#e6e6e6", "antigravity": "#5b9bf8"}
+    COLORS = AGENT_COLORS_DARK
     GREEN, YELLOW = "#5fd38a", "#f2c94c"
     # Notification-area state (class defaults keep partially built test instances valid).
     tray = None
     _tray_timer = None
     _tray_text = "대기"
     _user_hidden = False
+    _show_event = None
+    _show_timer = None
 
     def __init__(self, home=None, opener=None):
         import tkinter as tk
@@ -1618,11 +1649,12 @@ class Strip:
         if event.widget == self.root:
             self._stop_tray()
             for name in ("_outside_timer", "_refresh_timer", "_zorder_timer",
-                         "_drag_timer", "_drag_capture_timer", "_corner_timer"):
+                         "_drag_timer", "_drag_capture_timer", "_corner_timer", "_show_timer"):
                 timer = getattr(self, name)
                 if timer is not None:
                     self.root.after_cancel(timer)
                     setattr(self, name, None)
+            self._show_event = None  # stop re-arming; the handle closes with the process
             self._start = None
             self._dragging = False
 
@@ -1659,6 +1691,27 @@ class Strip:
         if self.tray is tray:
             tray.set_tooltip("handback — " + self._tray_text)
             self._tray_timer = self.root.after(TRAY_POLL_MS, self._poll_tray)
+
+    # ---- a second launch signals a named event; only this Tk timer reacts ----
+    def watch_show_requests(self, handle):
+        if sys.platform != "win32" or not handle:
+            return False
+        self._show_event = handle
+        self._show_timer = self.root.after(SHOW_POLL_MS, self._poll_show_request)
+        return True
+
+    def _poll_show_request(self):
+        self._show_timer = None
+        try:
+            if show_requested(self._show_event):
+                self.show()  # un-hide from the tray; an open panel stays as is
+                bring_to_foreground(self.root)
+        finally:
+            if self._show_event is not None:
+                try:
+                    self._show_timer = self.root.after(SHOW_POLL_MS, self._poll_show_request)
+                except self.tk.TclError:
+                    pass  # the root is being destroyed
 
     def _tray_event(self, kind, point):
         if kind == "left":
@@ -1834,7 +1887,8 @@ class Strip:
                 self._compact_palette = compact_palette(samples)
             self._palette_key, self._palette_at = key, now
         palette = self._compact_palette if self.docked else {
-            "bg": self.BG, "fg": self.FG, "dim": self.DIM, "green": self.GREEN, "yellow": self.YELLOW}
+            "bg": self.BG, "fg": self.FG, "dim": self.DIM, "green": self.GREEN, "yellow": self.YELLOW,
+            **{"agent_" + agent: color for agent, color in self.COLORS.items()}}
         bg = palette["bg"]
         padding, gap = max(1, round(7 * dpi / 96)), max(1, round(3 * dpi / 96))
         border = 0 if self.docked else max(1, round(dpi / 96))
@@ -1857,7 +1911,8 @@ class Strip:
         name_width = measure("프로젝트 이름 프로젝트")
         lines = compact_lines(rows, prefs, name_width, measure)
         view_key = (self.docked, dpi, self.compact_metrics.cget("size"), tuple(palette.items()),
-                    tuple((line["row"]["root"], line["name"], line["running"], line["unread"], line["more"],
+                    tuple((line["row"]["root"], line["lead"], line["name"], line["running"], line["unread"],
+                           line["more"],
                            line["overflow_unread"],
                            read_error_text(line["row"]),
                            bool(conversation_targets(line["row"], "running")),
@@ -1867,7 +1922,7 @@ class Strip:
             self.root.update_idletasks()
             self._compact_view_key = view_key
         width = max(self.frame.winfo_reqwidth(), name_width + sum(measure(text) for text in
-                    ("● 99", "✉ 99", "+99")) + 3 * gap + 2 * padding) + 2 * border
+                    (AGENT_DOT + " ", "● 99", "✉ 99", "+99")) + 3 * gap + 2 * padding) + 2 * border
         self._compact_free_height = max(self.frame.winfo_reqheight(),
                                         self.compact_metrics.metrics("linespace") * 2 + 6) + 2 * border
         if self.docked and info and info["edge"] in (1, 3) and not info["auto_hide"]:
@@ -1928,6 +1983,8 @@ class Strip:
                                           font=self.compact_metrics, bd=0, padx=0, pady=0)
                     label.pack(side="left", padx=(0, gap if key != "more" else 0))
                     label.bind("<Button-3>", lambda event, project=line["row"]["root"]: self._menu(event, project))
+                    if key == "name":
+                        name = label
                     if key == "more" and line["more"]:
                         self.tooltip.bind(label, f"다른 프로젝트의 미확인 결과 {line['overflow_unread']}개"
                                           if line["overflow_unread"] else "다른 프로젝트 보기",
@@ -1941,6 +1998,16 @@ class Strip:
                             label.configure(cursor="hand2")
                             label.bind("<Button-1>", lambda event, project=line["row"]["root"], kind=key:
                                        self._press_status(event, project, kind))
+                # Lead-agent dot: its own label (a Tk label has one colour), created
+                # last so existing child indices stay stable, packed before the name
+                # and bound like it (press/drag/release come from the root bindings).
+                dot = self.tk.Label(row, text=AGENT_DOT + " ", bg=bg, fg=agent_color(line["lead"], palette),
+                                    font=self.compact_metrics, bd=0, padx=0, pady=0)
+                dot.pack(side="left", before=name)
+                dot.bind("<Button-3>", lambda event, project=line["row"]["root"]: self._menu(event, project))
+                if line["lead"]:
+                    self.tooltip.bind(dot, "리드 · " + agent_name(line["lead"]),
+                                      key=("compact-lead", line["row"]["root"]))
 
     def _collapse_panel(self):
         if self._outside_timer is not None:
@@ -2051,11 +2118,22 @@ class Strip:
                     cell.pack(side="left", fill="y")
                     cell.pack_propagate(False)
                     cells.append(cell)
+                dot_text = AGENT_DOT + " "
                 name = self.tk.Label(cells[0], bg=self.BG, fg=self.FG, font=self.bold, anchor="w",
                                      cursor="hand2", text=("▾ " if key in self.expanded else "▸ ") +
-                                     truncate_text(data["name"], self.widths[0] - 26, self.bold_metrics.measure))
-                name.pack(fill="both", expand=True)
+                                     truncate_text(data["name"], self.widths[0] - 26 -
+                                                   self.bold_metrics.measure(dot_text), self.bold_metrics.measure))
+                name.pack(side="left", fill="both", expand=True)
                 name.bind("<Button-1>", lambda event, key=key: self._toggle(key))
+                # Same lead dot as the compact widget; created after the name so
+                # child indices stay stable, packed before it, and clicks like it.
+                lead = agent_key(data.get("lead"))
+                dot = self.tk.Label(cells[0], bg=self.BG, fg=self.COLORS.get(lead, self.DIM),
+                                    font=self.bold, text=dot_text, cursor="hand2", bd=0, padx=0)
+                dot.pack(side="left", fill="y", before=name)
+                dot.bind("<Button-1>", lambda event, key=key: self._toggle(key))
+                if lead:
+                    self.tooltip.bind(dot, "리드 · " + agent_name(lead), key=("lead", key))
                 parts = ([("프로젝트 확인 불가", False)] if data.get("unresolved") else
                          [(data["lead"], True), ("→", False)])
                 for position, worker in enumerate(data["workers"]):
@@ -3113,13 +3191,97 @@ def role_summary(old_lead, old_workers, new_lead, new_workers):
     return ", ".join(parts)
 
 
+_KERNEL32 = None
+
+
+def _kernel32():
+    """kernel32 with per-thread last-error capture (windll's GetLastError can be stale)."""
+    global _KERNEL32
+    if _KERNEL32 is None:
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel.CreateMutexW.restype = wintypes.HANDLE
+        kernel.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel.CreateEventW.restype = wintypes.HANDLE
+        kernel.SetEvent.argtypes = [wintypes.HANDLE]
+        kernel.SetEvent.restype = wintypes.BOOL
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        _KERNEL32 = kernel
+    return _KERNEL32
+
+
+def _single_instance():
+    """("primary", (mutex, show_event)) or ("secondary", None) for this user session."""
+    if sys.platform != "win32":
+        return "primary", (None, None)
+    import ctypes
+    try:
+        kernel = _kernel32()
+        # One strip per user session: autostart plus a manual launch must not stack.
+        mutex = kernel.CreateMutexW(None, False, DASHBOARD_MUTEX)
+        already = ctypes.get_last_error() == 183  # ERROR_ALREADY_EXISTS
+    except (AttributeError, OSError):
+        return "primary", (None, None)
+    if mutex and already:
+        kernel.CloseHandle(mutex)
+        return "secondary", None
+    try:
+        # Auto-reset, initially clear: a later launch sets it to ask us to show.
+        event = kernel.CreateEventW(None, False, False, DASHBOARD_SHOW_EVENT)
+    except (AttributeError, OSError):
+        event = None
+    return "primary", (mutex, event or None)
+
+
+def signal_running_instance():
+    """Ask the running dashboard to come to the front; False when it cannot be asked."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    try:
+        kernel = _kernel32()
+        # Opens the primary's event (or creates an orphan nobody waits on: harmless).
+        event = kernel.CreateEventW(None, False, False, DASHBOARD_SHOW_EVENT)
+    except (AttributeError, OSError):
+        return False
+    if not event:
+        return False
+    try:
+        try:
+            # This launch owns the user's foreground right; let the primary use it.
+            ctypes.windll.user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
+        except (AttributeError, OSError):
+            pass
+        return bool(kernel.SetEvent(event))
+    except (AttributeError, OSError):
+        return False
+    finally:
+        kernel.CloseHandle(event)
+
+
+def show_requested(handle):
+    """Non-blocking check of the show event; True once per signal (auto-reset)."""
+    if sys.platform != "win32" or not handle:
+        return False
+    try:
+        return _kernel32().WaitForSingleObject(handle, 0) == 0  # WAIT_OBJECT_0
+    except (AttributeError, OSError):
+        return False
+
+
 def main(home=None):
+    role, handles = _single_instance()
+    if role == "secondary":
+        signal_running_instance()  # on failure this stays the old silent exit
+        return 0
+    mutex, show_event = handles  # keep the mutex handle alive for the process lifetime
     if sys.platform == "win32":
         import ctypes
-        # One strip per user session: autostart plus a manual launch must not stack.
-        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\handback-dashboard")
-        if mutex and ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-            return
         try:
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except (AttributeError, OSError):
@@ -3127,4 +3289,6 @@ def main(home=None):
         set_app_user_model_id()
     import threading
     threading.Thread(target=repair_autostart, daemon=True).start()
-    Strip(home).run()
+    strip = Strip(home)
+    strip.watch_show_requests(show_event)
+    strip.run()

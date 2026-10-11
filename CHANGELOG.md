@@ -3,6 +3,22 @@
 All notable changes to this project are documented here. This file follows the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [Unreleased]
+
+### Added
+
+- The compact widget and the expanded panel show a small dot before each
+  project name, coloured by the project's lead agent (dim when unknown); on a
+  light docked taskbar the dot uses darker agent colours.
+- Codex is now shown in a cool slate colour (`#9fb3c8`) instead of the normal
+  text colour, so it is distinguishable in the panel and the lead dot.
+
+### Fixed
+
+- Launching the dashboard again (for example from the Start menu) while it is
+  hidden in the notification area now brings the running dashboard to the
+  front instead of exiting silently.
+
 ## [0.3.2] - 2026-10-12
 
 ### Added
