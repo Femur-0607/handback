@@ -15,20 +15,38 @@ if (-not $Sandbox) { $Sandbox = Join-Path ([IO.Path]::GetTempPath()) ('hb-inst-'
 $Sandbox = [IO.Path]::GetFullPath($Sandbox)
 $prof = Join-Path $Sandbox 'profile'
 $app = Join-Path $Sandbox 'app'
-foreach ($d in $prof, "$prof\AppData\Roaming", "$prof\AppData\Local", "$prof\.handback", "$prof\.claude", "$prof\.codex") {
+$bin = Join-Path $Sandbox 'bin'
+foreach ($d in $prof, "$prof\AppData\Roaming", "$prof\AppData\Local", "$prof\.handback", "$prof\.claude", "$prof\.codex", $bin) {
     New-Item -ItemType Directory -Force -Path $d | Out-Null
 }
+# The installer's `setup --yes` installs skills only when Claude is detected (`claude --version`
+# exits 0). CI runners have no Claude, so point detection at a stand-in that only answers --version.
+$fakeClaude = Join-Path $bin 'claude.cmd'
+[IO.File]::WriteAllText($fakeClaude, "@echo off`r`necho 0.0.0 (handback smoke stand-in)`r`n", [Text.Encoding]::ASCII)
 $saved = @{}
 $vars = @{
     USERPROFILE = $prof; APPDATA = "$prof\AppData\Roaming"; LOCALAPPDATA = "$prof\AppData\Local"
     HANDBACK_HOME = "$prof\.handback"; CLAUDE_CONFIG_DIR = "$prof\.claude"; CODEX_HOME = "$prof\.codex"
-    GEMINI_HOME = "$prof\.gemini"
+    GEMINI_HOME = "$prof\.gemini"; HANDBACK_CLAUDE = $fakeClaude
 }
 foreach ($k in $vars.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k, 'Process'); [Environment]::SetEnvironmentVariable($k, $vars[$k], 'Process') }
+
+function Wait-Exit([Diagnostics.Process]$process, [string]$what, [int]$seconds) {
+    # A [Run]/[UninstallRun] child that blocks (e.g. waiting for a key on a hidden console)
+    # would otherwise hang the job until its global timeout; fail fast with a clear message.
+    if (-not $process.WaitForExit($seconds * 1000)) {
+        Get-Process -Name 'handback*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        throw "FAIL: $what did not finish within ${seconds}s"
+    }
+    return $process.ExitCode
+}
+
 try {
     Write-Host '== silent install'
-    $p = Start-Process -FilePath $Setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$app", '/TASKS=""') -Wait -PassThru
-    if ($p.ExitCode -ne 0) { throw "FAIL: installer exit $($p.ExitCode)" }
+    $p = Start-Process -FilePath $Setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$app", '/TASKS=""') -PassThru
+    $code = Wait-Exit $p 'installer' 600
+    if ($code -ne 0) { throw "FAIL: installer exit $code" }
     $exe = Join-Path $app 'handback.exe'
     if (-not (Test-Path -LiteralPath $exe)) { throw 'FAIL: handback.exe missing' }
     if (-not (Test-Path -LiteralPath (Join-Path $app 'handback-dashboard.exe'))) { throw 'FAIL: handback-dashboard.exe missing' }
@@ -45,8 +63,9 @@ try {
     $unins = Join-Path $app 'unins000.exe'
     if (-not (Test-Path -LiteralPath $unins)) { throw 'FAIL: unins000.exe missing' }
     Write-Host '== silent uninstall'
-    $p = Start-Process -FilePath $unins -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
-    if ($p.ExitCode -ne 0) { throw "FAIL: uninstaller exit $($p.ExitCode)" }
+    $p = Start-Process -FilePath $unins -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -PassThru
+    $code = Wait-Exit $p 'uninstaller' 300
+    if ($code -ne 0) { throw "FAIL: uninstaller exit $code" }
     # The uninstaller removes its own files via a helper process; allow a moment.
     for ($i = 0; $i -lt 30 -and (Test-Path -LiteralPath $app); $i++) { Start-Sleep -Milliseconds 500 }
     if (Test-Path -LiteralPath $app) { throw 'FAIL: app dir still present after uninstall' }

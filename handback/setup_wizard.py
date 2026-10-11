@@ -130,7 +130,9 @@ def run(yes=False, dry_run=False, input_fn=input, interactive=None, detect=detec
             out(f"– {label} 없음" + ("" if required else " (선택)"))
     if not found.get("claude") and not dry_run:
         out("Claude가 필요합니다. 먼저 Claude를 설치하고 로그인한 뒤 다시 실행하세요.")
-        _pause(interactive, input_fn, out)
+        # --yes must never wait for a key: the installer runs this on a hidden
+        # console, where input() would block the whole installation forever.
+        _pause(interactive and not yes, input_fn, out)
         return 1
     prompting = interactive and not yes and not dry_run
     if frozen() and risky_location():

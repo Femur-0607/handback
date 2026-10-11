@@ -50,6 +50,14 @@ class WizardTests(unittest.TestCase):
         self.assertEqual(code, 1)
         install.assert_not_called()
         self.assertTrue(any("Claude가 필요" in line for line in lines))
+        self.assertEqual(len(prompts), 1)  # interactive without --yes pauses so the window stays readable
+
+    def test_claude_missing_with_yes_never_waits_for_input(self):
+        # The installer runs `setup --yes` on a hidden console; a pause there hangs the install.
+        code, lines, install, auto, launch, prompts = run(found={"claude": False}, yes=True)
+        self.assertEqual(code, 1)
+        install.assert_not_called()
+        self.assertEqual(prompts, [])
 
     def test_dry_run_changes_nothing(self):
         code, lines, install, auto, launch, prompts = run(dry_run=True)
