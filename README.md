@@ -45,6 +45,34 @@ It is intended for developers who already use multiple supported coding-agent ap
 
 You can also run these steps from a terminal. The first example below uses terminal commands so you can check the complete handoff before relying on automatic reception in an app.
 
+## Examples
+
+Each worker is an ordinary conversation in its own app. While a task runs, you can open the Claude conversation and the Codex conversation side by side and read both as they work.
+
+**Delegate an investigation.** Keep the Lead conversation small by sending the heavy reading to a worker.
+
+```text
+Use the handback skill. Ask a Codex worker to read <module-path> and report how errors propagate, without changing files.
+```
+
+**Cross-review a change.** Have a different model check the work.
+
+```text
+Use the handback skill. Send my last change to a Codex worker for review. Ask for concrete bugs only, with file and line.
+```
+
+**Debate an idea to sharpen it.** Two models with different blind spots argue the same question, and the Lead relays the rounds. In one real session, Claude and Codex compared two game-prototype plans over three rounds:
+
+1. Claude reviewed a planning document Codex had written. Codex accepted part of the review, rejected part of it, and left some points open pending tests.
+2. Claude, as Lead, sent a reply through handback to the Codex conversation that was already open. The reply marked each point as accepted, conditional, or still disputed, and asked four questions. Codex answered point by point. Both sides withdrew a weak claim. Three disputes remained, and Claude accepted Codex's wording for each.
+3. Claude asked Codex to write the agreement into the document. Then Claude checked the result against checksums taken before the edit and acknowledged both requests.
+
+The outcome was a revised document with an agreement table and four open questions that only the user could answer. During the debate, the user could read each round in the Codex app as Codex wrote it. To try this, give the Lead the question, a round limit, and the format for the last answer:
+
+```text
+Use the handback skill. Debate <topic> with the Codex conversation <thread-id> for at most three rounds. Each round, mark every point as agreed, disputed, or needing my decision. Don't edit files until the last round.
+```
+
 ## Supported combinations
 
 | Lead | Workers | Result reception |
