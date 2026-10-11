@@ -41,7 +41,16 @@ public static class Glyph {
   public static Bitmap RenderA(float[] m,int N){ Bitmap b=new Bitmap(N,N,PixelFormat.Format32bppArgb);
     for(int y=0;y<N;y++)for(int x=0;x<N;x++){ int a=(int)Math.Round(Math.Min(1f,m[y*N+x])*255); b.SetPixel(x,y,Color.FromArgb(a,255,255,255)); } return b; }
   // White-filled hand silhouette, hand strokes blue, arrow (stroke component with no enclosed interior) white.
-  public static Bitmap RenderB(float[] m,int N,Color blue){
+  // Square box dilation of a bool mask (separable, cheap for large radii).
+  static bool[] Box(bool[] a,int N,int r){
+    if(r<=0) return (bool[])a.Clone(); bool[] t=new bool[N*N]; bool[] o=new bool[N*N];
+    for(int y=0;y<N;y++){ int last=-1000000; for(int x=0;x<N;x++){ if(a[y*N+x])last=x; if(x-last<=r)t[y*N+x]=true; }
+      last=1000000; for(int x=N-1;x>=0;x--){ if(a[y*N+x])last=x; if(last-x<=r)t[y*N+x]=true; } }
+    for(int x=0;x<N;x++){ int last=-1000000; for(int y=0;y<N;y++){ if(t[y*N+x])last=y; if(y-last<=r)o[y*N+x]=true; }
+      last=1000000; for(int y=N-1;y>=0;y--){ if(t[y*N+x])last=y; if(last-y<=r)o[y*N+x]=true; } }
+    return o; }
+  // gap: blue clearance (mask px) between the hand and the arrow; grow: extra arrow thickness (mask px).
+  public static Bitmap RenderB(float[] m,int N,Color blue,int gap,int grow){
     bool[] stroke=new bool[N*N]; for(int i=0;i<N*N;i++) stroke[i]=m[i]>0.5f;
     bool[] outside=new bool[N*N]; Stack<int> st=new Stack<int>();
     for(int k=0;k<N;k++){ Push(outside,stroke,st,N,k,0);Push(outside,stroke,st,N,k,N-1);Push(outside,stroke,st,N,0,k);Push(outside,stroke,st,N,N-1,k);}
@@ -54,6 +63,8 @@ public static class Glyph {
         for(int dy=-1;dy<=1;dy++)for(int dx=-1;dx<=1;dx++){int px=x+dx,py=y+dy; if(px<0||py<0||px>=N||py>=N)continue; int j=py*N+px;
           if(interior[j])touches=true; if(stroke[j]&&!hand[j]){hand[j]=true;cs.Push(j);} } }
       if(!touches) foreach(int i in comp) hand[i]=false; }
+    float[] arrow=new float[N*N]; for(int i=0;i<N*N;i++) arrow[i]=(stroke[i]&&!hand[i])?1f:0f;
+    float[] arrowG=Dilate(arrow,N,grow); bool[] halo=Box(hand,N,gap);
     Bitmap b=new Bitmap(N,N,PixelFormat.Format32bppArgb);
     for(int y=0;y<N;y++)for(int x=0;x<N;x++){ int i=y*N+x; float v=Math.Min(1f,m[i]);
       bool nearHand=false; if(!stroke[i]&&v>0){ for(int dy=-2;dy<=2&&!nearHand;dy++)for(int dx=-2;dx<=2;dx++){int px=x+dx,py=y+dy;if(px<0||py<0||px>=N||py>=N)continue;if(hand[py*N+px]){nearHand=true;break;}} }
@@ -61,7 +72,8 @@ public static class Glyph {
         int r=(int)(255*(1-v)+blue.R*v), g=(int)(255*(1-v)+blue.G*v), bl=(int)(255*(1-v)+blue.B*v);
         b.SetPixel(x,y,Color.FromArgb(255,r,g,bl)); }
       else if(interior[i]) b.SetPixel(x,y,Color.FromArgb(255,255,255,255));
-      else b.SetPixel(x,y,Color.FromArgb((int)(v*255),255,255,255)); }
+      else if(halo[i]) b.SetPixel(x,y,Color.FromArgb(255,blue.R,blue.G,blue.B));
+      else b.SetPixel(x,y,Color.FromArgb((int)(Math.Max(v,arrowG[i])*255),255,255,255)); }
     return b; }
   static void Push(bool[] outside,bool[] stroke,Stack<int> st,int N,int x,int y){
     if(x<0||y<0||x>=N||y>=N)return; int i=y*N+x; if(outside[i]||stroke[i])return; outside[i]=true; st.Push(i); }
@@ -81,9 +93,17 @@ function New-Tile([int]$s, [string]$variant, [float[]]$mask, [int]$maskN) {
   $out = New-Object Drawing.Bitmap $s, $s, ([Drawing.Imaging.PixelFormat]::Format32bppArgb)
   $g = [Drawing.Graphics]::FromImage($out); $g.InterpolationMode = 'HighQualityBicubic'; $g.PixelOffsetMode = 'HighQuality'
   $g.CompositingQuality = 'HighQuality'; $g.DrawImage($big, 0, 0, $s, $s)
+  # Variant B keeps the original stroke weight (white fill carries the shape); only the arrow is thickened below.
+  if ($variant -eq 'B') { $r = 0 }
   $m = [Glyph]::Dilate($mask, $maskN, $r)
-  if ($variant -eq 'A') { $gl = [Glyph]::RenderA($m, $maskN) } else { $gl = [Glyph]::RenderB($m, $maskN, $tile) }
+  if ($variant -eq 'A') { $gl = [Glyph]::RenderA($m, $maskN) } else { $gl = $null }
   if ($s -le 24) { $frac = 0.76 } else { $frac = 0.70 }; $gs = [int][math]::Round($s * $frac); $off = [int][math]::Round(($s - $gs) / 2)
+  if ($variant -eq 'B') {
+    # Thicken the arrow and keep a blue gap to the hand, both measured in output pixels.
+    $px = $maskN / $gs
+    $grow = switch ($s) { 16 {0.55} 20 {0.45} 24 {0.4} 32 {0.3} default {0.15} }
+    $gl = [Glyph]::RenderB($m, $maskN, $tile, [int][math]::Round(0.8 * $px), [int][math]::Round($grow * $px))
+  }
   $g.DrawImage($gl, (New-Object Drawing.Rectangle $off, $off, $gs, $gs), 0, 0, $maskN, $maskN, [Drawing.GraphicsUnit]::Pixel)
   $g.Dispose(); $gl.Dispose(); $big.Dispose(); $p.Dispose()
   return ,$out
