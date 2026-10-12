@@ -30,10 +30,14 @@ class PureTests(unittest.TestCase):
                                  "✓ 시작 시 자동 실행"])
         self.assertEqual(calls, [True])
         self.assertEqual(hooked, [["claude", "codex"]])
-        self.assertEqual(setup_gui.run_install(False, False, False, install=lambda *a: [],
+        self.assertEqual(setup_gui.run_install(False, False, None, install=lambda *a: [],
                                                set_autostart=lambda on: None,
                                                install_hooks=hooked.append), [])
         self.assertEqual(len(hooked), 1)
+        self.assertEqual(setup_gui.run_install(False, False, False, install=lambda *a: [],
+                                               set_autostart=lambda on: calls.append(on)),
+                         ["✓ 시작 시 자동 실행 해제"])
+        self.assertEqual(calls, [True, False])
 
 
 class SetupWindowTests(test_dashboard_gui.DashboardMenuTests):

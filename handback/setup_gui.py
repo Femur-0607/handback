@@ -46,7 +46,10 @@ def current_status(found, home=None):
 
 def run_install(skills, hooks, autostart, agents=(), install=None, set_autostart=None,
                 install_hooks=None):
-    """Return result lines; raises on failure. Runs off the Tk thread."""
+    """Return result lines; raises on failure. Runs off the Tk thread.
+
+    autostart: True/False switches the Startup shortcut on/off; None leaves it alone.
+    """
     if install is None:
         from .skill_install import install
     if set_autostart is None:
@@ -59,9 +62,9 @@ def run_install(skills, hooks, autostart, agents=(), install=None, set_autostart
     if hooks and agents:
         install_hooks(agents)
         lines.append(setup_wizard.hook_line(agents))
-    if autostart:
-        set_autostart(True)
-        lines.append("✓ 시작 시 자동 실행")
+    if autostart is not None:
+        set_autostart(autostart)
+        lines.append("✓ 시작 시 자동 실행" if autostart else "✓ 시작 시 자동 실행 해제")
     return lines
 
 
@@ -102,7 +105,8 @@ def open_setup(strip, detect=None, install=None, set_autostart=None, install_hoo
     checking = label("앱 확인 중…", dim)
     state = {"claude": False, "done": False, "agents": []}
     skills_on, hooks_on = tk.BooleanVar(window, True), tk.BooleanVar(window, True)
-    auto_on = tk.BooleanVar(window, False)
+    auto_was = sys.platform == "win32" and dashboard.startup_shortcut().exists()
+    auto_on = tk.BooleanVar(window, auto_was)
 
     risky_text = RISKY if frozen() and setup_wizard.risky_location() else ""
     if risky_text:
@@ -188,7 +192,8 @@ def open_setup(strip, detect=None, install=None, set_autostart=None, install_hoo
             return
         go.configure(state="disabled")
         show_results(["설치 중…"], dim)
-        skills, hooks, auto, agents = skills_on.get(), hooks_on.get(), auto_on.get(), state["agents"]
+        auto = auto_on.get() if auto_on.get() != auto_was else None
+        skills, hooks, agents = skills_on.get(), hooks_on.get(), state["agents"]
         strip._run_async(("setup-install",),
                          lambda: run_install(skills, hooks, auto, agents, install, set_autostart,
                                              install_hooks), installed)
