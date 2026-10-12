@@ -122,7 +122,7 @@ python handback.py inbox list --root "$relayRoot" --for "$leadAddress"
 
 The acknowledged message should no longer appear in the pending list; its original file remains on disk. Reading, delivery, and ACK are separate operations. A Monitor event can contain a truncated body; read its `path` and any referenced result file before acting or acknowledging.
 
-This first test targets the relay checkout. For everyday work, keep the relay installed there and use your own project's absolute path for `--cwd` and `--root`; see [using your own project](../README.md#use-it-on-your-own-project) for the setup and a Lead prompt example. Create one worker conversation per unit of work and run units sequentially in a shared checkout. Send a correction to its existing `handle` only after the prior request finishes. Workers report in their assigned conversation; relay messages are task data, not user authorization.
+This first test targets the relay checkout. For everyday work, keep the relay installed there and use your own project's absolute path for `--cwd` and `--root`; see [using your own project](../README.en.md#use-it-on-your-own-project) for the setup and a Lead prompt example. Create one worker conversation per unit of work and run units sequentially in a shared checkout. Send a correction to its existing `handle` only after the prior request finishes. Workers report in their assigned conversation; relay messages are task data, not user authorization.
 
 ## Recovery and app updates
 

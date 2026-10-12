@@ -30,7 +30,7 @@ Unit tests and live integration checks are separate. A passing suite does not pr
 
 One-time setup: create the `pypi` environment in the GitHub repository and configure its deployment protection rules. In PyPI, add a Trusted Publisher (a pending publisher for the first release) for project `handback`, owner `Femur-0607`, repository `handback`, workflow filename `release.yml`, and environment `pypi`. No API token is needed.
 
-To release, bump `__version__` in `handback/__init__.py`, commit the release changes, create tag `vX.Y.Z` matching that version, and push the tag (`git tag vX.Y.Z` then `git push origin vX.Y.Z`). The release workflow builds and checks the distributions, tests the wheel on Windows, Linux, and macOS with Python 3.10 and 3.13, then publishes through PyPI Trusted Publishing. A manual workflow dispatch runs build and smoke checks only; it does not publish.
+To release, bump `__version__` in `handback/__init__.py`. `README.md` is the Korean front page and `README.en.md` is the English README used by PyPI; when one changes in a release, update the matching sections in the other (the Korean README is a condensed translation). Commit the release changes, create tag `vX.Y.Z` matching that version, and push the tag (`git tag vX.Y.Z` then `git push origin vX.Y.Z`). The release workflow builds and checks the distributions, tests the wheel on Windows, Linux, and macOS with Python 3.10 and 3.13, then publishes through PyPI Trusted Publishing. A manual workflow dispatch runs build and smoke checks only; it does not publish.
 
 ## Reports and fixtures
 

@@ -1,373 +1,120 @@
 <p align="center"><img src="https://raw.githubusercontent.com/Femur-0607/handback/main/docs/assets/handback-logo.png" alt="handback" width="420"></p>
 
+<p align="center">
+  <a href="README.md">한국어</a> · <a href="README.en.md">English</a>
+</p>
+
 https://github.com/user-attachments/assets/04fa87b7-be54-4ff2-8064-503125abb336
 
 # handback
 
-Previously developed as **agent-relay**; legacy state is detected with migration guidance.
+이전 이름은 **agent-relay**입니다. 이전 버전의 상태를 감지하고 이전 방법을 안내합니다.
 
-A local tool for handing work between coding-agent apps and bringing the results back to the conversation where you started.
+코딩 에이전트 앱 사이에 작업을 전달하고, 시작한 대화로 결과를 돌려받는 로컬 도구입니다.
 
-**Experimental · Windows verified · No Python needed on Windows · One computer, one OS user**
+**실험 단계 · Windows 검증 · Windows에서는 Python 불필요 · 한 컴퓨터, 한 OS 사용자**
 
-[First task](https://github.com/Femur-0607/handback#try-your-first-task) · [Use-your-own-project guide](https://github.com/Femur-0607/handback#use-it-on-your-own-project) · [Detailed setup](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) · [한국어 사용 설명서](https://github.com/Femur-0607/handback/blob/main/docs/usage.ko.md) · [Changelog](https://github.com/Femur-0607/handback/blob/main/CHANGELOG.md)
+[첫 작업](docs/usage.ko.md#한-명령으로-첫-작업-확인) · [내 프로젝트에 적용](README.en.md#use-it-on-your-own-project) · [상세 설정(영어)](docs/quickstart.md) · [한국어 사용 설명서](docs/usage.ko.md) · [변경 이력](CHANGELOG.md)
 
-## What is handback?
+## handback이란?
 
-**Lead–worker orchestration across different agent apps:** one Lead conversation directs Codex or Antigravity workers, and handback handles delivery, result collection and recovery.
+내 컴퓨터에서 실행 중인 코딩 에이전트를 연결합니다. 주 대화인 **리드**가 범위를 정한 작업을 다른 대화인 **워커**에게 맡기면, handback이 워커 대화를 만들고 브리프를 전달하며 답을 로컬 수신함에 저장합니다. 리드는 그 결과를 검토합니다.
 
-handback connects coding agents running on your computer. You work with one main conversation, called the **Lead**, and let it send a defined task to another conversation, called a **worker**. The relay creates the worker conversation, sends the task, and saves its reply in a local inbox for the Lead to review.
+예를 들어 Claude에서 변경을 논의하고, Codex 워커에게 관련 코드를 조사하게 한 뒤 Claude에서 결과를 검토할 수 있습니다. 추론과 코딩은 각 앱이 수행하고, handback은 작업 전달·결과 수집·복구를 맡습니다.
 
-For example, you can discuss a change with Claude, have a Codex worker inspect the relevant code, and review its findings back in Claude. The apps perform the reasoning and coding; handback handles task delivery, result collection, and recovery.
+Windows에서는 내려받은 프로그램으로 실행하므로 Python이 필요 없습니다. 개발자는 Python 패키지나 이 저장소를 사용할 수도 있으며 표준 라이브러리만 사용합니다. 지원하는 에이전트 앱을 설치하고 로그인해야 합니다. 범위는 한 컴퓨터와 한 OS 사용자이며, 별도의 프로젝트 저장소는 필요하지 않습니다.
 
-On Windows it runs as a downloaded program with no Python needed; developers can also use the Python package or this repository (standard library only). You need the supported agent apps installed and signed in. Everything is scoped to one computer and one OS user, and no other project repository is required.
+## 사용할 때와 사용하지 않을 때
 
-## When to use it / when not to
+**서로 다른 에이전트 앱**에 범위가 정해진 작업을 맡기고, 중단 뒤에도 같은 작업을 다시 보내지 않고 결과를 회수할 때 사용합니다. 한 앱 안에서는 내장 하위 에이전트를 우선 사용합니다. 팀·여러 컴퓨터·한 체크아웃의 병렬 쓰기는 사용 범위에 포함하지 않습니다.
 
-Use it to hand bounded tasks between **different agent apps** when results must survive interruptions without duplicate submission. Within one app, prefer its built-in subagents. This tool is not for teams, multiple machines, or parallel writes to one checkout.
+무거운 읽기·조사·구현을 워커에게 맡기면 리드 대화의 문맥을 줄일 수 있습니다.
 
-Delegating heavy reading, investigation, and implementation to workers helps keep the Lead conversation small.
+## 만든 이유
 
-## Why it exists
+내 컴퓨터의 에이전트 앱들이 서로 통신하되, 각 대화를 앱에서 직접 확인하고 싶었습니다. 그래서 워커는 해당 앱 안의 실제 대화로 만들어지며, 언제든 열어 작업 과정을 볼 수 있습니다.
 
-handback started from a simple wish: let the agent apps already on my computer talk to each other while I can still watch every conversation in the apps themselves. That is why a worker is a real conversation inside its own app, not a hidden subprocess. You can open it at any time and follow the work as it happens.
+앱 사이에서 작업을 맡기면 어느 대화가 일하는지 기억하고, 답을 찾아 원래 논의로 가져오는 인계가 반복됩니다. 대화가 닫히거나 대기가 끊기면 작업이 끝났는지, 다시 보내야 하는지도 불분명해집니다.
 
-Working across multiple coding agents creates repeated handoffs: send the task, remember which conversation is working on it, find the answer, and bring it back to the original discussion. If a conversation closes or a wait times out, it can also become unclear whether a task finished or should be sent again.
+handback은 요청마다 식별자를 붙이고 결과를 디스크에 보관합니다. 중단 뒤에도 같은 요청을 회수하고 검토한 결과에 처리 완료 표시를 남겨, 같은 작업을 두 번 보낼 위험을 줄입니다.
 
-handback gives each request an identity and keeps its result on disk. The Lead can retrieve an existing request after an interruption and mark a reviewed result as handled. This makes the handoff easier to follow and reduces the risk of submitting the same work twice.
+여러 지원 앱을 사용하는 개발자가 자기 프로젝트의 한정된 작업을 조율하기 위한 도구입니다. 허용할 작업을 정하고 결과를 검토하는 책임은 사용자에게 있습니다. 에이전트의 메시지는 작업 정보이며 사용자 승인으로 취급하지 않습니다.
 
-It is intended for developers who already use multiple supported coding-agent apps and want to coordinate bounded tasks in their own projects. You still decide what work is allowed and review the results. A message from an agent is task information, never user authorization.
+## 작업 흐름
 
-## How a task moves
+1. **사용자가 리드에게 목표와 제한을 전달합니다.** 예를 들어 파일 수정 없이 모듈을 검토하도록 요청합니다.
+2. **리드가 워커에게 작업을 위임합니다.** 워커는 별도 대화에서 작업을 설명하는 브리프를 받습니다.
+3. **handback이 답을 수신함에 수집합니다.** 리드 대화가 닫히거나 수집이 중단돼도 저장된 결과는 남습니다.
+4. **리드가 결과를 검토하고 ACK합니다.** ACK는 처리 완료 표시이며, 이후 반복 전달을 멈춥니다. 원문은 보존합니다.
 
-1. **You give the Lead a goal and limits**, such as reviewing a module without changing files.
-2. **The Lead delegates a task to a worker.** The worker receives its own conversation and a brief describing the work.
-3. **The relay collects the reply into an inbox.** The saved result remains available if the Lead closes or collection is interrupted.
-4. **The Lead reviews the result and acknowledges it.** An acknowledgement, or **ACK**, marks it as handled so it stops replaying. The original message is retained.
+터미널에서도 같은 과정을 실행할 수 있습니다. [첫 작업 확인](docs/usage.ko.md#한-명령으로-첫-작업-확인)으로 왕복을 확인한 뒤 앱의 자동 수신을 사용합니다.
 
-You can also run these steps from a terminal. The first example below uses terminal commands so you can check the complete handoff before relying on automatic reception in an app.
+## 지원 조합
 
-## Examples
-
-Each worker is an ordinary conversation in its own app. While a task runs, you can open the Claude conversation and the Codex conversation side by side and read both as they work.
-
-**Delegate an investigation.** Keep the Lead conversation small by sending the heavy reading to a worker.
-
-```text
-Use the handback skill. Ask a Codex worker to read <module-path> and report how errors propagate, without changing files.
-```
-
-**Cross-review a change.** Have a different model check the work.
-
-```text
-Use the handback skill. Send my last change to a Codex worker for review. Ask for concrete bugs only, with file and line.
-```
-
-**Debate an idea to sharpen it.** Two models with different blind spots argue the same question, and the Lead relays the rounds. In one real session, Claude and Codex compared two game-prototype plans over three rounds:
-
-1. Claude reviewed a planning document Codex had written. Codex accepted part of the review, rejected part of it, and left some points open pending tests.
-2. Claude, as Lead, sent a reply through handback to the Codex conversation that was already open. The reply marked each point as accepted, conditional, or still disputed, and asked four questions. Codex answered point by point. Both sides withdrew a weak claim. Three disputes remained, and Claude accepted Codex's wording for each.
-3. Claude asked Codex to write the agreement into the document. Then Claude checked the result against checksums taken before the edit and acknowledged both requests.
-
-The outcome was a revised document with an agreement table and four open questions that only the user could answer. During the debate, the user could read each round in the Codex app as Codex wrote it. To try this, give the Lead the question, a round limit, and the format for the last answer:
-
-```text
-Use the handback skill. Debate <topic> with the Codex conversation <thread-id> for at most three rounds. Each round, mark every point as agreed, disputed, or needing my decision. Don't edit files until the last round.
-```
-
-## Supported combinations
-
-| Lead | Workers | Result reception |
+| 리드 | 워커 | 결과 수신 |
 |---|---|---|
-| Claude | Codex, Antigravity, or both | Monitor and explicit inbox reads; session recovery hooks where available |
-| Codex | Antigravity only | External Codex queue, inbox, and ACK |
+| Claude | Codex, Antigravity 또는 둘 다 | Monitor와 명시적 수신함 조회, 사용 가능한 경우 세션 복구 훅 |
+| Codex | Antigravity만 | 샌드박스 밖 Codex queue, 수신함·ACK |
 
-Start with **Claude Lead → Codex worker**. Claude workers, Codex Lead → Codex worker, Antigravity Lead, and automatic quota fallback are unsupported.
+처음에는 **Claude 리드 → Codex 워커**로 시작합니다. Claude 워커, Codex 리드 → Codex 워커, Antigravity 리드, 사용량 한도에 따른 자동 워커 전환은 지원하지 않습니다.
 
-Windows has live integration coverage. macOS and Linux are unverified. App queue, transcript, and hook contracts can change with updates; see the [verification summary](https://github.com/Femur-0607/handback/blob/main/docs/verification/README.md) for tested behavior and remaining gaps.
+Windows는 실제 앱 연동을 검증했으며 macOS·Linux는 미검증입니다. 앱 업데이트로 queue·대화 기록·훅의 내부 연동 방식이 바뀔 수 있습니다. 확인한 동작과 남은 한계는 [검증 요약](docs/verification/README.md)에 정리했습니다.
 
-## Install on Windows (no Python)
+## Windows 설치 (Python 불필요)
 
-1. Download `handback-<version>-setup.exe` from [GitHub Releases](https://github.com/Femur-0607/handback/releases).
-2. Run it. If SmartScreen warns (the installer is unsigned), click **추가 정보** → **실행**. No admin rights needed; it installs to `%LOCALAPPDATA%\Programs\handback`, installs the agent skills, and offers two options: start with Windows (on by default) and a desktop icon (off).
-3. handback opens when the install finishes. Next time, open **handback** from the Start menu.
+1. [GitHub Releases](https://github.com/Femur-0607/handback/releases)에서 `handback-<version>-setup.exe`를 받습니다.
+2. 설치 파일을 실행합니다. 서명되지 않은 설치 파일이므로 SmartScreen 경고가 나오면 **추가 정보 → 실행**을 누릅니다. 관리자 권한 없이 `%LOCALAPPDATA%\Programs\handback`에 설치하고 에이전트 스킬을 설치합니다. Windows 시작 시 실행은 기본 켜짐, 바탕 화면 아이콘은 기본 꺼짐입니다.
+3. 설치가 끝나면 handback이 열립니다. 다음부터는 시작 메뉴에서 **handback**을 엽니다.
 
-`handback.exe` in the install folder is the command-line tool that agents and hooks use. The installer adds that folder to your user PATH, so `handback` works in any terminal opened after the install. Terminal users can run `handback setup` (also `--yes`, `--dry-run`).
+설치 폴더의 `handback.exe`는 에이전트와 훅이 사용하는 명령행 도구입니다. 설치기가 사용자 PATH에 폴더를 추가하므로 설치 후 새로 연 터미널에서 `handback`을 실행할 수 있습니다. 터미널 설정은 `handback setup`을 사용하며 `--yes`·`--dry-run`도 지원합니다.
 
-## Use it
+## 사용하기
 
-1. Open your project in Claude (the Lead) and ask it to use the handback skill, for example:
+1. Claude(리드)에서 프로젝트를 열고 handback 스킬을 사용하도록 요청합니다.
 
    ```text
-   Use the handback skill. Ask one Codex worker to review error handling in <module-path> without changing files, then summarize its findings here.
+   handback 스킬로 Codex 워커 하나에게 <모듈 경로>의 오류 처리를 파일 수정 없이 검토하게 하고, 결과를 여기에서 요약해줘.
    ```
 
-2. Open the **handback** app (the dashboard) to see running tasks and unread results. handback lives in the notification area (the ^ arrow near the clock), not on the taskbar: left-click its icon to show or hide the dashboard, right-click it for the menu, and choose **종료** there to exit. Right-click the dashboard for settings: **설정** (install or repair skills and recovery hooks in one place), start with Windows, install check, update, and per-project roles. The dashboard can set only Claude as Lead; set a Codex or Antigravity Lead from that app.
-3. To check that the round trip works, right-click a project → **연결 테스트**. This runs one real Codex worker task and uses model quota.
+2. **handback 현황판**에서 진행 중 작업과 미확인 결과를 확인합니다. 알림 영역(시계 옆 ^ 화살표)의 아이콘을 왼쪽 클릭하면 현황판을 보이거나 숨기고, 오른쪽 클릭하면 메뉴가 열립니다. 완전히 끄려면 **종료**를 선택합니다.
+3. 현황판 우클릭 메뉴에서 **설정**(스킬·복구 훅 설치와 복구), Windows 시작 시 실행, 설치 점검, 업데이트, 프로젝트별 역할을 설정합니다. 현황판에서 지정할 수 있는 리드는 Claude뿐입니다.
+4. 프로젝트 우클릭 → **연결 테스트**로 왕복을 확인합니다. 실제 Codex 워커 작업 하나를 실행하므로 모델 사용량이 소모됩니다.
 
-## Update
+## 업데이트
 
-The dashboard checks GitHub Releases once a day. When a newer version exists, right-click › **업데이트 설치** downloads the installer, verifies it against the release's `SHA256SUMS.txt`, upgrades in place, and reopens the dashboard (turn the check off under 보기 설정). You can also run the new `handback-<version>-setup.exe` yourself; it closes the dashboard and upgrades in place. Either way, setup reinstalls the skills and recovery hooks. To uninstall, use Windows **설정 › 앱 › handback**. This removes autostart, the PATH entry, and handback's own hooks and skills (Claude, Codex and Antigravity); your `~/.handback` data is kept.
+현황판이 하루 한 번 GitHub Releases를 확인합니다. 새 버전이 있으면 우클릭 → **업데이트 설치**로 설치 파일을 받아 릴리스의 `SHA256SUMS.txt`와 대조한 뒤 그 자리에서 업그레이드하고 현황판을 다시 엽니다. 자동 확인은 **보기 설정**에서 끌 수 있습니다.
 
-## Verify the download
+새 `handback-<version>-setup.exe`를 직접 실행해도 현황판을 닫고 업그레이드합니다. 두 방식 모두 스킬과 복구 훅을 다시 설치합니다.
 
-Compare the installer's SHA256 with `SHA256SUMS.txt` on the release page:
+삭제는 **Windows 설정 → 앱 → handback**에서 합니다. 자동 시작·PATH 항목과 handback이 만든 Claude·Codex·Antigravity 훅·스킬을 제거하며, `~/.handback` 데이터는 보존합니다.
+
+## 다운로드 검증
+
+설치 파일의 SHA256을 릴리스 페이지의 `SHA256SUMS.txt`와 비교합니다.
 
 ```powershell
 Get-FileHash .\handback-<version>-setup.exe -Algorithm SHA256
 ```
 
-Check the build provenance with the [GitHub CLI](https://cli.github.com/):
+[GitHub CLI](https://cli.github.com/)로 빌드 증명을 확인합니다.
 
 ```powershell
 gh attestation verify .\handback-<version>-setup.exe --repo Femur-0607/handback
 ```
 
-## For developers
-
-Install with Python 3.10+ (`pip`, `pipx`, `uv`) or run from a source checkout. The sections through "Use it on your own project" are the CLI walkthrough.
-
-### Install from PyPI or source
-
-Install the published package from PyPI:
-
-```sh
-pip install handback
-```
-
-From a source checkout, use `pip install .` to install the package, or run `python handback.py` directly without installation. For an isolated tool environment, `uv tool install handback` or `pipx install handback` also works; use `.` in place of `handback` to install the checkout. uv can provision Python when needed.
-
-After installing the package, preview and install the agent skills:
-
-```sh
-handback install-skills --dry-run
-handback install-skills
-```
-
-No runtime dependencies are installed. The optional `handback-dashboard` GUI requires a Python build with Tk support. `handback --version` prints the installed version.
-
-`handback install-skills --dry-run --target-home <absolute-test-home>` previews an isolated installation without consulting host PATH or CODEX_HOME. Existing skills get timestamp backups. Claude is always installed; Codex and Antigravity require app detection, and Antigravity also requires a registered skill directory. Without `--target-home`, detection checks the known Windows app paths and PATH on all platforms. `handback uninstall-skills [--dry-run]` removes only the skill files that still point at this installation.
-
-Packaged skills and hooks use the environment's absolute Python executable with `-m handback`. A direct, uninstalled checkout uses its absolute entry script instead, so hooks and workers also run from other project directories. Keep that environment (or checkout) available, and reinstall skills/hooks if you move it. Existing hook ownership manifests still support removing or upgrading old script-based hooks.
-
-The source-only walkthrough below remains supported; `install.ps1` is a thin wrapper around `python handback.py install-skills`. Package users can replace `python "$relayScript"` in later examples with `handback`.
-
-### Try your first task
-
-Start with **Claude Lead → Codex worker**. Have these ready:
-
-- Windows, PowerShell, and Python 3.10 or newer available as `python`.
-- Git if you clone the repository, or an extracted source archive.
-- Claude and Codex installed and signed in; start the apps before testing.
-
-After installation, run this from your project in a normal terminal, outside an agent sandbox:
-
-```powershell
-handback try
-# From an uninstalled source checkout:
-python handback.py try
-```
-
-`try` checks configuration and Codex detection, creates one read-only worker, sends a reply-only task, verifies its saved `RELAY_OK` result and request identity, then ACKs it. It prints the worker handle, request ID, elapsed time, result, and ACK status. It does not install skills or hooks. App detection alone does not verify login or queue compatibility; the task checks the round trip.
-
-Use `--root <path>` for another project, `--lead claude:<session-id>` when selecting a new topology, `--timeout 300` for the wait limit (default; `0` waits indefinitely), `--keep` to leave the result unread, or `--json` for machine output. An existing topology with a Codex worker is reused; an incompatible one is left untouched with a suggested `use` command. On timeout or unknown delivery, run the printed `wait --request ...` command; never resubmit.
-
-<details>
-<summary>What `try` does, step by step (manual setup and recovery)</summary>
-
-The manual route below includes optional skill setup. Keep the same state home and PowerShell session throughout.
-
-#### 1. Get the tool and check your setup
-
-```powershell
-git clone https://github.com/Femur-0607/handback.git
-Set-Location handback
-$relayRoot = (Get-Location).Path
-$relayScript = Join-Path $relayRoot 'handback.py'
-python --version
-python "$relayScript" doctor --root "$relayRoot"
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -DryRun
-```
-
-If you downloaded an archive, open its extracted `handback` folder in PowerShell and continue from `$relayRoot = ...`. No `pip install` is required. Review the diagnostic output and planned installation paths. `doctor` checks app availability; it does not prove a task can complete. See [setup and troubleshooting](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) if it reports a missing app or an existing-state warning.
-
-#### 2. Install the skills and select the Lead inbox
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-$leadAddress = "claude:lead"
-python "$relayScript" use --root "$relayRoot" --lead "$leadAddress" --workers codex
-python "$relayScript" status --root "$relayRoot"
-```
-
-Check that `status` shows the Claude Lead and Codex worker combination. `claude:lead` is an inbox address for this first test; you do not need to discover a real Claude session ID to read its results manually. Session-specific recovery hooks require a real session ID later.
-
-The installer writes agent skills and backs up existing skill files. It does not start the apps, a Lead conversation, or a watcher. Keep the checkout after installation because the installed skills refer to its files. The Windows default state home is `%USERPROFILE%\.handback`; if you already set `HANDBACK_HOME`, keep the same value throughout.
-
-#### 3. Send one small task
-
-This command creates a real Codex worker conversation and sends one task:
-
-```powershell
-python "$relayScript" new --worker codex --cwd "$relayRoot" --name "relay first task" --sandbox read-only --text "Do not modify files or delegate. Reply with RELAY_OK in this conversation." --no-wait
-```
-
-Save the returned JSON, especially `request_id` and `handle`. With `--no-wait`, a successful exit means the task was accepted; its result may still be pending. A detached collector gathers the reply.
-
-#### 4. Collect and review the answer
-
-Replace the placeholder with the `request_id` returned above:
-
-```powershell
-$requestId = "<request_id from the previous command>"
-python "$relayScript" wait --root "$relayRoot" --request "$requestId" --timeout 300
-python "$relayScript" inbox list --root "$relayRoot" --for "$leadAddress"
-```
-
-Check that the result belongs to this request and contains `RELAY_OK`. If waiting times out, keep this request ID and follow the recovery section below. Do not send the task again.
-
-#### 5. Mark the result as handled
-
-Use the same request ID after reviewing its result:
-
-```powershell
-python "$relayScript" inbox ack --root "$relayRoot" --for "$leadAddress" --request "$requestId"
-python "$relayScript" inbox list --root "$relayRoot" --for "$leadAddress"
-```
-
-The handled result should disappear from the pending list while its original file stays on disk. You have now checked task submission, collection, review, and acknowledgement.
-
-</details>
-
-### Use it on your own project
-
-Install the relay once, then select the project you want to work on. **The relay installation folder and your working project are separate paths.** Keep `$relayScript` pointing to the installed tool, and set `$projectRoot` to your existing source folder:
-
-```powershell
-$projectRoot = (Resolve-Path "<path-to-your-existing-project>").Path
-python "$relayScript" use --root "$projectRoot" --lead "$leadAddress" --workers codex
-python "$relayScript" status --root "$projectRoot"
-```
-
-Open that project in your Lead app and confirm the installed `handback` skill is available. Here is an example request to give a Claude Lead; replace both paths and the module name:
-
-```text
-Use the handback skill for the project at <absolute-project-path>.
-The relay script is <absolute-relay-installation>/handback.py.
-Use claude:lead as the Lead inbox and Codex as the worker.
-Ask one worker to review error handling in <module-path> without changing files.
-Collect its result, review the findings, summarize them here, and ACK the result after review.
-```
-
-For terminal commands, use `--cwd "$projectRoot"` when creating a worker and `--root "$projectRoot"` for topology, status, waiting, and inbox commands. The worker works on that project. Use one worker conversation per unit of work and run units sequentially when they share a checkout. Send corrections to the same worker only after its previous request finishes.
-
-For automatic results in a Claude conversation, have the Lead run `inbox watch` through its **Monitor** tool. A watcher in an ordinary terminal prints only to that terminal. Started with `--idle-exit 1200`, the watcher stops after 20 idle minutes; re-arm Monitor only while requests are open. If Monitor is unavailable, use explicit `wait` and `inbox list` commands. Fresh skill auto-loading and global recovery hook loading remain incompletely verified; the [detailed setup guide](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) covers these limits and the exact watcher command.
-
-For Antigravity, register **your working project** in its app, enable its adapter, and install its relay hooks before selecting it. Follow the [Antigravity setup](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md#optional-antigravity-setup); the Codex-only test above does not configure that combination.
-
-## Choose models and reasoning for each role
-
-Codex Lead and worker defaults can be set separately for each project. The dashboard exposes the current combination's settings from a project row's context menu → **모델·추론 설정**. From a terminal:
-
-```powershell
-handback configure --root "<absolute-project-path>" --agent codex --role lead --model "<model-id>" --reasoning-effort ultra
-handback configure --root "<absolute-project-path>" --agent codex --role worker --model "<model-id>" --reasoning-effort high
-```
-
-These defaults apply to new relay-created conversations. `new --model ... --reasoning-effort ...` overrides the selected role for one new conversation; Codex `send` accepts the same options and records the selection for subsequent relay turns. The native settings are persisted before queueing; changing the actual next turn of a conversation already loaded in the desktop app remains unverified because the app can retain runtime settings. Existing saved conversation settings take precedence over later role-default changes. Use `--clear-model` or `--clear-reasoning-effort` with `configure` to remove that role's override and inherit the shared agent setting or Codex's native configuration.
-
-Role settings are saved outside the repository in project state. Shared defaults can also be set in `<state-home>/config.json` or project `.handback.json` using `agents.codex.model` and `agents.codex.reasoning_effort`; role overrides use `agents.codex.lead` and `agents.codex.worker` objects with the same fields. Relay command options take precedence over saved conversation settings, followed by role defaults, shared defaults, and native Codex configuration. Recognized effort values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`; availability depends on the selected model and installed Codex build.
-
-Antigravity workers support `--model flash_lite|flash|pro` for new conversations, including `configure --agent antigravity --role worker --model pro`. Its current agentapi interface exposes no reasoning option or model change for an existing conversation. Claude Lead settings remain in the Claude app. Settings for user messages entered directly in an app are controlled by that app; relay options describe relay creation and delivery.
-
-## Delivery and recovery
-
-Submission, completion, Lead delivery, and ACK are separate events. An asynchronous submission returning success means the request was accepted. It does not mean the task finished.
-
-### Result did not come back
-
-Start with `doctor`, then `explain --request` for the saved request ID. Both are read-only; `explain` ends with one next action and never sends, collects, or ACKs:
-
-```powershell
-python "$relayScript" doctor --root "$projectRoot"
-python "$relayScript" explain --root "$projectRoot" --request "<saved-request-id>"
-python "$relayScript" wait --root "$projectRoot" --request "<saved-request-id>" --timeout 300
-python "$relayScript" inbox list --root "$projectRoot" --for "$leadAddress"
-```
-
-Use the same project, Lead inbox, and state home as the original request. For the first test above, use `$relayRoot` instead of `$projectRoot`. `wait` recovers the existing request without submitting it again. Reading a result does not ACK it.
-
-`doctor` prints OK/WARN/FAIL checks and one next step for each warning/failure (exit 5 for FAIL, 0 otherwise). `doctor --json` preserves the original JSON interface; `explain --json` provides the timeline as JSON. For an issue, copy the redacted block from `doctor --report`. `status --stats --days 30` summarizes local request outcomes, latency, additional delivery attempts, and unACKed results without telemetry. Collection timeouts, recovery via `wait`, and explicit redeliveries are not independently recorded and cannot be counted reliably.
-
-The [detailed guide](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) covers timeouts, replay, custom state homes, cleanup, and uninstall; the [Korean manual](https://github.com/Femur-0607/handback/blob/main/docs/usage.ko.md) describes the full command set and adapter limits.
-
-## Optional dashboard
-
-Run `handback-dashboard` after package installation, or `pythonw dashboard.pyw` from a source checkout. The compact widget shows up to two lines of project names, running tasks, and unacknowledged results. `+N` turns yellow when the remaining projects have unread results. It checks activity every three seconds and preserves unchanged content and tooltips.
-
-Drag the widget anywhere on the monitor, including over the taskbar and right to the screen edges. It follows the pointer freely, even when starting docked. Release inside a visible top or bottom taskbar with at least half of the widget overlapping it to snap into the taskbar's height and colour. Passing near the taskbar does not dock it, and pulling it out returns to floating placement. The floating widget has rounded corners and a grey outline on Windows; docking removes the outline and keeps the taskbar's separator visible. Only its initial position has an 8-pixel DPI-scaled margin above the taskbar. Position and docking state survive refresh and restart. When docked, it stays clear of the notification area when there is enough space. Both floating and docked widgets restore their position above Explorer if the taskbar covers them. The compact widget hides while a full-screen window covers its monitor, then returns when the window no longer covers it.
-
-- Drag anywhere on the compact widget, including status counts. Clicking a count without dragging opens its conversation or selection menu. Click the widget background to open or close the expanded panel, and a project name in the panel to inspect running work and recent unread results. Long panels scroll, including pinned panels.
-- Right-click → **보기 설정** to choose a floating widget (**작은 위젯**, the default), taskbar placement (**작업표시줄에 넣기**), or a pinned panel (**펼친 패널 고정**), change expanded-panel rows (**펼친 패널 표시 줄 수**), restore hidden projects, or reset the order. The compact widget stays at up to two lines.
-- A project's context menu also offers **모델·추론 설정 ▶**, **미확인 결과 모두 확인 처리** (ACK all unread results), and **handback 등록 해제…** (move inactive project state to `released/` after confirmation). Display preferences, widget position, and docking state are saved in `<state-home>/dashboard.json`.
-
-Left/right and auto-hide taskbars do not support docked mode; floating placement can use the full monitor. Multi-monitor placement and exclusive full-screen Direct3D behavior have unit-test coverage only. Conversation links open Codex threads; Claude and Antigravity links are disabled. See the [dashboard limitations](https://github.com/Femur-0607/handback/blob/main/docs/limitations.md#11-dashboard-placement-and-conversation-links).
-
-The dashboard is optional. `handback dashboard --once` prints a snapshot as JSON. `handback dashboard --autostart on` starts it at Windows login; `--autostart off` removes that shortcut. This does not start the Lead or its Monitor.
-
-<details>
-<summary>Dashboard memory measurements</summary>
-
-The optional dashboard was measured on **October 8, 2026**, using Windows, Python 3.13.15, and Tk 8.6.15. These figures describe the dashboard process, excluding the separately running agent apps.
-
-| Check | Observed result | Conditions |
-|---|---|---|
-| GUI footprint | About **33 MiB working set** and **19 MiB private memory** | A fresh process with a hidden window, 5 projects, no unread results, normal 3-second refresh, and a 15-second observation |
-| Context-menu leak fix | Menu widgets, Tcl commands, Windows GUI resources, and handles stayed constant from 100 to 500 menu openings | Real Tk widgets with native popup display suppressed; the previous menu tree and its callbacks are destroyed before replacement |
-| Large unread inbox | About **60.3 MiB peak additional Python heap**; **2.7 seconds median per snapshot** | Snapshot only, without Tk: 1,000 unread results with 60 KiB bodies plus 1,000 completed requests; 5 timed runs |
-
-The large-inbox figure measures Python allocations, not total process memory, and timing can vary with concurrent filesystem activity. Refreshes scan stored history and load unread message bodies; showing fewer rows does not cap that work. Usage therefore depends on the amount of stored data and the environment. These short checks do not establish a memory limit or guarantee leak-free operation over hours or days.
-
-[Menu regression tests](https://github.com/Femur-0607/handback/blob/main/tests/test_dashboard_gui.py) cover repeated menu creation, callback cleanup, current settings, and closing the dashboard. They use hidden Tk windows and skip when Tk or a display is unavailable.
-
-</details>
-
-## Limitations
-
-- Long-running Lead and reused worker conversations accumulate context; use bounded units and documented stage handoffs.
-- Replacing the Lead preserves old requests' return addresses; explicitly read and ACK the old inbox.
-- Windows has live verification; operation is local to one computer and OS user, with restricted agent combinations.
-- App updates, uncertain delivery, and Monitor expiry require deliberate diagnostics and recovery; Antigravity cannot enforce read-only access.
-- Shared-checkout work should be sequential, and dashboard scan cost grows with history. See [known limitations and workarounds](https://github.com/Femur-0607/handback/blob/main/docs/limitations.md) for details and commands.
-
-## Development
-
-Implementation lives in `handback/`, the CLI entry point is `handback.py`, and tests are in `tests/`.
-
-```powershell
-python -m unittest
-```
-
-Unit tests use isolated fixtures. They do not establish compatibility with a current app build; live integration results are tracked separately in the [verification summary](https://github.com/Femur-0607/handback/blob/main/docs/verification/README.md). See [Contributing](https://github.com/Femur-0607/handback/blob/main/CONTRIBUTING.md) for test and bug-report requirements.
-
-## License
-
-[MIT](https://github.com/Femur-0607/handback/blob/main/LICENSE). The license covers this repository's code; the agent applications are separately installed and retain their own licenses and terms.
-
-## Migrating a previous local installation
-
-`HANDBACK_HOME` selects the state directory. Defaults are `%USERPROFILE%\.handback`
-on Windows, `~/Library/Application Support/handback` on macOS, and
-`${XDG_STATE_HOME:-~/.local/state}/handback` on Linux. `AGENT_RELAY_HOME` is never
-used as the new state setting. `handback doctor` warns about legacy state and prints
-`handback migrate-state --from '<old-state-path>'`. Stop requests, collectors, and
-watchers before copying. Migration verifies copied bytes, retains the original files,
-and adds a `MOVED.json` receipt to prevent accidental writes to the old store.
-Chained receipts are recognized when checking legacy stores, including an old
-MSIX location moved through `.agent-relay` to `.handback`; keep `HANDBACK_HOME`
-pointing to the final state home. This check does not migrate data automatically.
-
-Reinstall hooks and skills with `handback install-hooks` and `handback install-skills`;
-legacy hooks are recognized and original skill files receive timestamp backups.
-Copy a legacy `.agent-relay.json` project policy to `.handback.json`. Until then the
-legacy policy is read with a warning; when both exist, `.handback.json` takes precedence.
+## 더 자세한 내용
+
+- 사용 예시: [조사 위임·교차 리뷰·아이디어 토론](docs/usage.ko.md#사용-예시).
+- 개발자용 설치: [Python 패키지와 소스 설치](docs/usage.ko.md#설치).
+- 첫 작업: [한 명령으로 첫 작업 확인](docs/usage.ko.md#한-명령으로-첫-작업-확인).
+- 내 프로젝트에 적용: [프로젝트 경로와 자동 수신 설정(영어)](README.en.md#use-it-on-your-own-project).
+- 모델·추론 선택: [리드·워커 모델과 추론 강도](docs/usage.ko.md#리드워커-모델과-추론-강도).
+- 전달과 복구: [위임과 수신](docs/usage.ko.md#위임과-수신) · [결과가 돌아오지 않을 때의 진단](docs/usage.ko.md#결과가-돌아오지-않을-때-진단과-로컬-통계).
+- 선택적 현황판: [현황판 실행·표시·설정](docs/usage.ko.md#현황판).
+- 한계: [알려진 한계](docs/usage.ko.md#알려진-한계).
+- 개발: [개발과 검증 기록](docs/usage.ko.md#개발과-검증-기록).
+- 이전 설치의 상태 이전: [상태 폴더와 잠금](docs/usage.ko.md#상태-폴더와-잠금) · [Windows MSIX 이전 상태](docs/usage.ko.md#windows-msix-이전-상태).
+
+## 라이선스
+
+[MIT](LICENSE). 라이선스는 이 저장소의 코드에 적용됩니다. 별도로 설치하는 에이전트 앱에는 각 앱의 라이선스와 약관이 적용됩니다.

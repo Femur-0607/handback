@@ -34,7 +34,7 @@ handback inbox ack --root "<absolute-project-path>" --for "claude:<old-session-i
 - **Current feature:** A new session can explicitly list and ACK the old address's results with these commands. `--for` selects the stored recipient; it is not authentication of the running session. `inbox list --request` filters pending messages; `inbox ack --request` acknowledges that recipient's result/error messages. `--id "<message-id>"` remains an alternative ACK selector. Reading does not ACK or move the result.
 - **Current feature:** A watch for the new address neither collects old-address requests nor displays old-address mail. To receive the old backlog explicitly, run `handback inbox watch --root "<absolute-project-path>" --for "claude:<old-session-id>" --timeout 60`. It can still collect and display old results after the switch. A detached collector already following an old request also keeps its original destination.
 - **Current feature:** Recovery hooks require both the configured Lead and the mail recipient to match the session. The new Lead's hook does not inherit old mail; after the switch, the old Lead's recovery hook also no longer matches that project's topology. Use explicit old-address reads/watch. Claude global recovery hook loading and Codex recovery-hook trust retain the live-verification gaps described in the [verification summary](verification/README.md).
-- **Operating tip:** Before leaving the old session, record its address, the state home, open request IDs, pending results, decisions, and next actions in a handoff document. Review and ACK old results deliberately from the new session. This example preserves the Claude → Codex combination; keep any replacement topology within the [supported combinations](../README.md#supported-combinations).
+- **Operating tip:** Before leaving the old session, record its address, the state home, open request IDs, pending results, decisions, and next actions in a handoff document. Review and ACK old results deliberately from the new session. This example preserves the Claude → Codex combination; keep any replacement topology within the [supported combinations](../README.en.md#supported-combinations).
 - **Future improvement:** Reassigning already-open requests or unACKed results to a replacement Lead is not supported by a dedicated command. Do not treat `use` or `inbox redeliver` as reassignment; redelivery uses the saved recipient.
 
 ### Keep briefs and returned results focused
@@ -140,7 +140,7 @@ handback inbox ack --root "<absolute-project-path>" --for "claude:<old-session-i
 **Fix or workaround:**
 
 - **Operating tip:** ACK results after review to reduce unread bodies retained in the snapshot, and close the optional dashboard when its refresh cost is undesirable; relay delegation does not require it. The inbox scan still reads stored envelopes before filtering ACKed messages, so ACK does not remove historical read/scan cost.
-- **Current feature:** `dashboard --once` produces one snapshot instead of a continuously refreshing GUI. The [README measurements](../README.md#optional-dashboard) describe specific short checks, not a memory cap or long-duration stability guarantee.
+- **Current feature:** `dashboard --once` produces one snapshot instead of a continuously refreshing GUI. The [README measurements](../README.en.md#optional-dashboard) describe specific short checks, not a memory cap or long-duration stability guarantee.
 
 ## 10. Model and reasoning controls depend on the agent
 
