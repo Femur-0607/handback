@@ -14,6 +14,8 @@ A local tool for handing work between coding-agent apps and bringing the results
 
 ## What is handback?
 
+**Lead–worker orchestration across different agent apps:** one Lead conversation directs Codex or Antigravity workers, and handback handles delivery, result collection and recovery.
+
 handback connects coding agents running on your computer. You work with one main conversation, called the **Lead**, and let it send a defined task to another conversation, called a **worker**. The relay creates the worker conversation, sends the task, and saves its reply in a local inbox for the Lead to review.
 
 For example, you can discuss a change with Claude, have a Codex worker inspect the relevant code, and review its findings back in Claude. The apps perform the reasoning and coding; handback handles task delivery, result collection, and recovery.
@@ -100,12 +102,12 @@ Windows has live integration coverage. macOS and Linux are unverified. App queue
    Use the handback skill. Ask one Codex worker to review error handling in <module-path> without changing files, then summarize its findings here.
    ```
 
-2. Open the **handback** app (the dashboard) to see running tasks and unread results. handback lives in the notification area (the ^ arrow near the clock), not on the taskbar: left-click its icon to show or hide the dashboard, right-click it for the menu, and choose **종료** there to exit. Right-click the dashboard for settings: **설정**, start with Windows, install check, reinstall skills, hooks, and per-project roles. The dashboard can set only Claude as Lead; set a Codex or Antigravity Lead from that app.
+2. Open the **handback** app (the dashboard) to see running tasks and unread results. handback lives in the notification area (the ^ arrow near the clock), not on the taskbar: left-click its icon to show or hide the dashboard, right-click it for the menu, and choose **종료** there to exit. Right-click the dashboard for settings: **설정** (install or repair skills and recovery hooks in one place), start with Windows, install check, update, and per-project roles. The dashboard can set only Claude as Lead; set a Codex or Antigravity Lead from that app.
 3. To check that the round trip works, right-click a project → **연결 테스트**. This runs one real Codex worker task and uses model quota.
 
 ## Update
 
-Run the new `handback-<version>-setup.exe`. It closes the dashboard and upgrades in place. To uninstall, use Windows **설정 › 앱 › handback**. This removes autostart, the PATH entry, and handback's own hooks and skills (Claude, Codex and Antigravity); your `~/.handback` data is kept.
+The dashboard checks GitHub Releases once a day. When a newer version exists, right-click › **업데이트 설치** downloads the installer, verifies it against the release's `SHA256SUMS.txt`, upgrades in place, and reopens the dashboard (turn the check off under 보기 설정). You can also run the new `handback-<version>-setup.exe` yourself; it closes the dashboard and upgrades in place. Either way, setup reinstalls the skills and recovery hooks. To uninstall, use Windows **설정 › 앱 › handback**. This removes autostart, the PATH entry, and handback's own hooks and skills (Claude, Codex and Antigravity); your `~/.handback` data is kept.
 
 ## Verify the download
 

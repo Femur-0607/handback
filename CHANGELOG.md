@@ -5,6 +5,25 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-10-12
+
+### Added
+
+- In-app update for the Windows installer build: the dashboard checks GitHub
+  Releases once a day (toggle under 보기 설정, or check now from there). When a
+  newer release exists, right-click › **업데이트 설치** downloads the installer,
+  verifies it against the release's `SHA256SUMS.txt`, runs it silently, and the
+  installer reopens the dashboard.
+
+### Changed
+
+- Setup now installs the Claude/Codex recovery hooks by default, alongside the
+  skills (existing settings are backed up). This covers the installer, the
+  `handback setup` wizard and the dashboard's 설정 window.
+- The 설정 window is the single place to install or repair skills and hooks: it
+  shows whether each is installed, and its **훅 해제** button removes hooks. The
+  separate **스킬 다시 설치** and **Hook ▶** menu items are gone.
+
 ## [0.3.4] - 2026-10-12
 
 ### Fixed
@@ -228,6 +247,7 @@ All notable changes to this project are documented here. This file follows the
 - The release version check imports the checkout when run from a temporary
   directory.
 
+[0.3.5]: https://github.com/Femur-0607/handback/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/Femur-0607/handback/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/Femur-0607/handback/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/Femur-0607/handback/compare/v0.3.1...v0.3.2
