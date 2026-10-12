@@ -8,7 +8,7 @@
 
 설치 폴더의 `handback.exe`는 에이전트와 훅이 쓰는 명령줄 도구입니다. 설치 프로그램이 이 폴더를 사용자 PATH에 추가하므로, 설치 후 새로 연 터미널에서 `handback`을 바로 쓸 수 있습니다. 터미널에서는 `handback setup`(`--yes`, `--dry-run`)입니다. 설정은 현황판 우클릭 › **설정**에서 다시 열 수 있습니다.
 
-업데이트: 새 `setup.exe`를 실행하면 현황판을 자동으로 닫고 그 자리에서 업그레이드합니다. 삭제: Windows 설정 › 앱 › handback (자동 시작, PATH 항목, handback이 만든 Claude·Codex·Antigravity 훅과 스킬은 지우고, `~/.handback` 데이터는 남깁니다). 다운로드 검증: `SHA256SUMS.txt`와 `Get-FileHash`로 비교하고, `gh attestation verify <setup.exe> --repo Femur-0607/handback`로 빌드 증명을 확인합니다. 아래 명령 설명에서 현황판 우클릭 메뉴로 같은 일을 하는 항목은 함께 적었습니다.
+업데이트: 현황판이 하루 한 번 새 버전을 확인합니다. 새 버전이 있으면 우클릭 › **업데이트 설치**로 설치 파일을 받아 `SHA256SUMS.txt`로 검증한 뒤 그 자리에서 업그레이드하고 현황판을 다시 엽니다(보기 설정에서 자동 확인을 끌 수 있습니다). 새 `setup.exe`를 직접 실행해도 됩니다. 어느 쪽이든 스킬과 복구 훅이 다시 설치됩니다. 삭제: Windows 설정 › 앱 › handback (자동 시작, PATH 항목, handback이 만든 Claude·Codex·Antigravity 훅과 스킬은 지우고, `~/.handback` 데이터는 남깁니다). 다운로드 검증: `SHA256SUMS.txt`와 `Get-FileHash`로 비교하고, `gh attestation verify <setup.exe> --repo Femur-0607/handback`로 빌드 증명을 확인합니다. 아래 명령 설명에서 현황판 우클릭 메뉴로 같은 일을 하는 항목은 함께 적었습니다.
 
 ## 만든 이유
 
@@ -97,7 +97,7 @@ PyPI에 배포된 패키지는 `pip install handback`로 설치합니다. 소스
 
 ### 스킬 설치
 
-현황판: 우클릭 → **스킬 다시 설치**.
+현황판: 우클릭 → **설정 (스킬·훅 설치·복구)**.
 
 ```powershell
 handback install-skills --dry-run
@@ -122,7 +122,7 @@ handback install-skills --target-home "<absolute-test-home>" --dry-run
 
 ### 훅과 Antigravity 준비
 
-현황판: 우클릭 → **Hook ▶ 설치/해제**(설정 파일과 백업 경로를 보여 줍니다).
+현황판: 우클릭 → **설정**에서 설치(기본으로 켜짐), 같은 창의 **훅 해제** 버튼으로 제거합니다(설정 파일과 백업 경로를 보여 줍니다).
 
 1. Antigravity를 쓴다면 체크아웃을 앱에서 프로젝트로 등록합니다. relay는 프로젝트를 만들지 않습니다.
 2. 선택한 상태 홈의 `config.json`에서 `agents.antigravity.enabled`를 `true`로 설정합니다. 기존 설정에 병합합니다. 선택적 `model`은 `flash_lite`, `flash`, `pro`이며 기본값은 `flash`입니다.

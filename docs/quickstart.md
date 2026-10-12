@@ -2,7 +2,7 @@
 
 ## Windows without Python
 
-Download `handback-<version>-setup.exe` from [GitHub Releases](https://github.com/Femur-0607/handback/releases) and run it (SmartScreen: **추가 정보** → **실행**). It needs no admin rights, installs the agent skills, and opens handback when done; afterwards use **handback** in the Start menu. Right-click the dashboard › 설정 to reopen setup. To update, run the new setup; to uninstall, use Windows 설정 › 앱 › handback (removes autostart, the PATH entry, and handback's own hooks and skills; `~/.handback` data is kept). `handback.exe` in the install folder is the command-line tool used by agents and hooks; the installer adds that folder to your user PATH, so `handback` works in terminals opened after the install. The steps below are for the Python/CLI route; where a dashboard menu does the same job, it is noted.
+Download `handback-<version>-setup.exe` from [GitHub Releases](https://github.com/Femur-0607/handback/releases) and run it (SmartScreen: **추가 정보** → **실행**). It needs no admin rights, installs the agent skills and the Claude/Codex recovery hooks (settings are backed up first), and opens handback when done; afterwards use **handback** in the Start menu. Right-click the dashboard › 설정 to reopen setup. To update, right-click › **업데이트 설치** when the dashboard offers it, or run the new setup; to uninstall, use Windows 설정 › 앱 › handback (removes autostart, the PATH entry, and handback's own hooks and skills; `~/.handback` data is kept). `handback.exe` in the install folder is the command-line tool used by agents and hooks; the installer adds that folder to your user PATH, so `handback` works in terminals opened after the install. The steps below are for the Python/CLI route; where a dashboard menu does the same job, it is noted.
 
 ## One-command first task
 
@@ -61,7 +61,7 @@ The default Windows state home is `%USERPROFILE%\.handback`. If you already use 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Dashboard: right-click → **스킬 다시 설치**. The installer always writes the Claude skill and installs Codex or Antigravity skills when their app and target location are detected. It prints every installed path and backs up an existing `SKILL.md` beside it. It does not install hooks or edit shared `AGENTS.md` / `GEMINI.md` files. Confirm the installed skill is available in each app; automatic loading and triggering from a fresh installation are not yet fully verified.
+Dashboard: right-click → **설정 (스킬·훅 설치·복구)**. The installer always writes the Claude skill and installs Codex or Antigravity skills when their app and target location are detected. It prints every installed path and backs up an existing `SKILL.md` beside it. `install-skills` alone does not install hooks or edit shared `AGENTS.md` / `GEMINI.md` files; the dashboard's 설정 window and the installer also install recovery hooks. Confirm the installed skill is available in each app; automatic loading and triggering from a fresh installation are not yet fully verified.
 
 Codex results can be collected from its local transcript without observation hooks. To add Codex observations and Claude session recovery, preview and install these hooks:
 
@@ -70,7 +70,7 @@ python handback.py install-hooks --agents codex,claude --dry-run
 python handback.py install-hooks --agents codex,claude
 ```
 
-Dashboard: right-click → **Hook ▶ 설치/해제** (shows the settings file and backup path). Hooks are merged into app settings and backed up. Review and trust new or changed Codex hooks through the Codex CLI `/hooks` interface; the relay does not change hook trust. Claude Desktop's global recovery hook loading is not fully verified, so use Monitor or explicit inbox reads for reception. `--state-home` selects relay state and ownership records; it does not isolate app settings.
+Dashboard: right-click → **설정** installs hooks (on by default); its **훅 해제** button removes them (shows the settings file and backup path). Hooks are merged into app settings and backed up. Review and trust new or changed Codex hooks through the Codex CLI `/hooks` interface; the relay does not change hook trust. Claude Desktop's global recovery hook loading is not fully verified, so use Monitor or explicit inbox reads for reception. `--state-home` selects relay state and ownership records; it does not isolate app settings.
 
 ## 3. Select the Lead and start reception
 

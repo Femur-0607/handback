@@ -21,7 +21,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 
-from . import config, envelope, inbox
+from . import __version__, config, envelope, inbox, updater
 from .collector import OPEN_STATES
 from .tray import Tray
 from .state import _read_json, atomic_json, home_lock, state_home
@@ -41,7 +41,8 @@ DASHBOARD_MUTEX = "Local\\handback-dashboard"
 DASHBOARD_SHOW_EVENT = "Local\\handback-dashboard-show"
 DETAIL_LIMIT = 5
 DEFAULT_PREFS = {"max_rows": 3, "order": [], "hidden": [], "mode": "taskbar",
-                 "compact_x": None, "compact_y": None, "docked": False}
+                 "compact_x": None, "compact_y": None, "docked": False, "update_check": True}
+UPDATE_FIRST_MS = 60_000
 
 
 def _read(path, errors=None):
@@ -378,6 +379,8 @@ def load_prefs(home=None):
         prefs["compact_y"] = stored["compact_y"]
     if type(stored.get("docked")) is bool:
         prefs["docked"] = stored["docked"]
+    if type(stored.get("update_check")) is bool:
+        prefs["update_check"] = stored["update_check"]
     return prefs
 
 
@@ -1501,6 +1504,7 @@ class Strip:
     tray = None
     _tray_timer = None
     _tray_text = "대기"
+    _update = None  # newer release found by the update check
     _user_hidden = False
     _show_event = None
     _show_timer = None
@@ -1813,7 +1817,8 @@ class Strip:
     def render(self, rows):
         self._rows = rows
         prefs = load_prefs(self.home)
-        self._tray_text = tray_state_text(rows, prefs["hidden"])
+        self._tray_text = tray_state_text(rows, prefs["hidden"]) + (
+            f" · 업데이트 {self._update['version']} 있음" if self._update else "")
         if self.mode != prefs["mode"]:
             self.tooltip.hide()
             self._collapse_panel()
@@ -2307,6 +2312,12 @@ class Strip:
             settings.append({"label": "숨긴 프로젝트 없음", "enabled": False})
         settings.extend([None, {"label": "순서 초기화 (최근 활동순)",
                                 "command": lambda: self._save({**prefs, "order": []})}])
+        if updater.supported():
+            on = prefs["update_check"]
+            settings.extend([None, {"label": ("✓ " if on else "    ") + "업데이트 자동 확인",
+                                    "command": lambda: self._save({**prefs, "update_check": not on})},
+                             {"label": f"지금 업데이트 확인 (현재 {__version__})",
+                              "enabled": not self._is_busy(("update",)), "command": self._check_update}])
         items.extend([{"label": "보기 설정 ▶", "children": settings}, None])
         if sys.platform == "win32":
             on = startup_shortcut().exists()
@@ -2314,16 +2325,14 @@ class Strip:
                           "enabled": not self._is_busy(("autostart",)),
                           "command": lambda: self._toggle_autostart(not on)})
         checking = self._is_busy(("doctor",))
-        installing = self._is_busy(("skills",))
+        if self._update and not project:
+            updating = self._is_busy(("update",))
+            items[:0] = [{"label": "업데이트 받는 중…" if updating else f"업데이트 설치 ({self._update['version']})",
+                          "enabled": not updating, "command": self._install_update}, None]
         items.extend([
             {"label": "설치 상태 점검 (점검 중…)" if checking else "설치 상태 점검",
              "enabled": not checking, "command": self._check_install},
-            {"label": "스킬 다시 설치 (설치 중…)" if installing else "스킬 다시 설치",
-             "enabled": not installing, "command": self._reinstall_skills},
-            {"label": "설정", "command": self._open_setup},
-            {"label": "Hook ▶", "children": [
-                {"label": "설치", "command": lambda: self._hooks("install")},
-                {"label": "해제", "command": lambda: self._hooks("uninstall")}]},
+            {"label": "설정 (스킬·훅 설치·복구)", "command": self._open_setup},
             None,
             {"label": "새로고침", "command": lambda: self.refresh(reschedule=False)},
                       ]
@@ -2618,20 +2627,49 @@ class Strip:
                 self._dialog("설치 상태 점검", "\n".join(lines) if lines else "문제 없음")
         self._run_async(("doctor",), lambda: doctor_problems(root, self.home), done)
 
-    def _reinstall_skills(self):
-        if not self._dialog(
-                "스킬 다시 설치",
-                "에이전트별 handback 스킬 폴더를 덮어씁니다. 직접 고친 내용은 바뀌고 백업은 남습니다.",
+    def _update_timer(self):
+        if load_prefs(self.home)["update_check"]:
+            self._check_update(manual=False)
+        self.root.after(updater.CHECK_INTERVAL * 1000, self._update_timer)
+
+    def _check_update(self, manual=True):
+        if self._is_busy(("update",)):
+            return
+
+        def done(release, error):
+            if release:
+                self._update = release
+                self.refresh(reschedule=False)
+            if not manual:
+                return
+            if error:
+                self._dialog("업데이트 확인", "확인하지 못했습니다 — " + " ".join(ui_error(error).split())[:80])
+            elif release:
+                self._install_update()
+            else:
+                self._dialog("업데이트 확인", f"최신 버전입니다 ({__version__})")
+        self._run_async(("update",), updater.check, done)
+
+    def _install_update(self):
+        release = self._update
+        if not release or self._is_busy(("update",)) or not self._dialog(
+                "업데이트", f"handback {release['version']}(으)로 업데이트합니다.\n"
+                f"설치 파일을 받아 SHA-256을 확인한 뒤 설치합니다. 현황판이 잠시 닫혔다가 다시 열립니다.",
                 confirm=True):
             return
 
-        def done(lines, error):
+        def done(path, error):
             if error:
-                self._dialog("스킬 다시 설치", "설치하지 못했습니다 — " + " ".join(ui_error(error).split())[:80])
-            else:
-                count = sum(1 for line in lines if line.startswith("installed:"))
-                self._dialog("스킬 다시 설치", f"스킬 {count}개를 설치했습니다")
-        self._run_async(("skills",), run_skill_install, done)
+                self._dialog("업데이트", "업데이트하지 못했습니다 — " + " ".join(ui_error(error).split())[:80])
+                return
+            try:
+                updater.run_installer(path)
+            except OSError as failure:
+                self._dialog("업데이트", "설치 파일을 실행하지 못했습니다 — " + str(failure)[:80])
+                return
+            self.quit()  # the installer replaces these files, then relaunches the dashboard
+        folder = Path(self.home) / "updates"
+        self._run_async(("update",), lambda: updater.download(release, folder), done)
 
     def _open_setup(self):
         from . import setup_gui
@@ -2978,6 +3016,8 @@ class Strip:
             show_widget_without_activation(self.root, False)
         if getattr(sys, "frozen", False):  # source/PyPI users keep the current behaviour
             self.root.after(400, self._auto_setup)
+        if updater.supported():
+            self.root.after(UPDATE_FIRST_MS, self._update_timer)
         self.root.mainloop()
 
 
@@ -3068,7 +3108,7 @@ def repair_autostart():
 # ---- right-click menu helpers (pure logic; Strip wires them to dialogs) ----
 HOOK_AGENTS = ("claude", "codex")
 ROLE_MIGRATION_ENV = ("HANDBACK_LEAD", "HANDBACK_WORKERS")
-_SKILL_FIX = "우클릭 › 스킬 다시 설치"
+_SETUP_FIX = "우클릭 › 설정"
 
 
 def _problem_line(row):
@@ -3082,18 +3122,18 @@ def _problem_line(row):
     if name in ("Codex executable", "Codex queue --thread"):
         return "Codex 실행 파일을 쓸 수 없음 — Codex 앱을 설치·업데이트하세요"
     if name.startswith("Antigravity hooks"):
-        return "Antigravity hook 없음 — 우클릭 › Hook › 설치"
+        return "Antigravity hook 없음 — handback install-hooks --agents antigravity"
     if name == "Antigravity":
         return "Antigravity 실행 파일 없음 — Antigravity를 설치하세요"
     if name.endswith(" skill"):
         who = agent_name(name.split()[0])
         kind = ("스킬 없음" if detail.startswith("missing") else "예전 스킬만 있음"
                 if detail.startswith("legacy") else "스킬이 다른 설치를 가리킴")
-        return f"{who} {kind} — {_SKILL_FIX}"
+        return f"{who} {kind} — {_SETUP_FIX}"
     if name == "Topology":
         return "역할 설정 문제 — 프로젝트 우클릭 › 역할 지정"
     if name.endswith(" recovery hooks"):
-        return f"{agent_name(name.split()[0])} 복구 hook 없음 — 우클릭 › Hook › 설치"
+        return f"{agent_name(name.split()[0])} 복구 훅 없음 — {_SETUP_FIX}"
     if name.startswith("Collector "):
         return "결과 수집이 멈춤 — 잠시 후 다시 점검하세요"
     if name == "Lead delivery":
@@ -3143,12 +3183,6 @@ def run_hooks(action, home=None, config_paths=None):
     run = hook_install.install if action == "install" else hook_install.uninstall
     result = run(list(HOOK_AGENTS), home=home, config_paths=config_paths)
     return [change["backup"] for change in result.get("changes", []) if change.get("backup")]
-
-
-def run_skill_install():
-    from .skill_install import install
-    messages = install(None, False)
-    return [m for m in messages if m.startswith(("installed:", "backup:"))]
 
 
 def run_connection_test(root):

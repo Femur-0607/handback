@@ -8,6 +8,7 @@ from . import __version__
 from .invocation import frozen, self_argv
 
 APPS = (("claude", "Claude", True), ("codex", "Codex", False), ("antigravity", "Antigravity", False))
+HOOK_AGENTS = ("claude", "codex")
 
 
 def _reason(error):
@@ -27,6 +28,21 @@ def detect_apps():
         except Exception:
             found[agent] = False
     return found
+
+
+def hook_agents(found):
+    """Recovery hooks go only to detected apps whose hooks handback supports."""
+    return [agent for agent in HOOK_AGENTS if found.get(agent)]
+
+
+def install_hooks(agents, dry_run=False):
+    from .hook_install import install
+    return install(list(agents), dry_run=dry_run)
+
+
+def hook_line(agents, dry_run=False):
+    names = ", ".join(label for agent, label, _ in APPS if agent in agents)
+    return f"– 복구 훅 설치 예정 ({names})" if dry_run else f"✓ 복구 훅 설치됨 ({names})"
 
 
 def _skill_lines(messages):
@@ -109,7 +125,7 @@ def _ask(prompt, default, input_fn):
 
 
 def run(yes=False, dry_run=False, input_fn=input, interactive=None, detect=detect_apps,
-        install=None, set_autostart=None, launch=_launch_dashboard, out=print):
+        install=None, set_autostart=None, launch=_launch_dashboard, out=print, hooks=install_hooks):
     """Run the wizard; return an exit code."""
     if interactive is None:
         interactive = _interactive()
@@ -145,6 +161,9 @@ def run(yes=False, dry_run=False, input_fn=input, interactive=None, detect=detec
         out("변경 없이 계획만 표시합니다." + ("" if dry_run else " 적용하려면 --yes를 붙이세요."))
     code = 2 if plan_only and not dry_run else 0
     do_skills = _ask("에이전트 스킬을 설치할까요?", True, input_fn) if prompting else True
+    agents = hook_agents(found)
+    do_hooks = bool(agents) and (_ask("복구 훅을 설치할까요? (설정 파일은 백업 후 수정)", True, input_fn)
+                                 if prompting else True)
     do_auto = (_ask("Windows 시작 시 현황판을 실행할까요?", False, input_fn)
                if prompting and sys.platform == "win32" else False)
     do_open = _ask("지금 현황판을 열까요?", True, input_fn) if prompting else False
@@ -154,6 +173,13 @@ def run(yes=False, dry_run=False, input_fn=input, interactive=None, detect=detec
                 out(line)
         except Exception as error:
             out(f"실패: 스킬 설치 ({_reason(error)})")
+            code = 1
+    if do_hooks:
+        try:
+            hooks(agents, dry_run=plan_only)
+            out(hook_line(agents, plan_only))
+        except Exception as error:
+            out(f"실패: 복구 훅 설치 ({_reason(error)})")
             code = 1
     if do_auto:
         try:

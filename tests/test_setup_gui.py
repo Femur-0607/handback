@@ -21,14 +21,19 @@ class PureTests(unittest.TestCase):
         self.assertEqual(setup_gui.app_lines({})[0], "– Claude 없음")
 
     def test_run_install_lines_and_autostart(self):
-        calls = []
+        calls, hooked = [], []
         lines = setup_gui.run_install(
-            True, True, install=lambda *a: ["installed: C:/u/.claude/skills/handback"],
-            set_autostart=lambda on: calls.append(on))
-        self.assertEqual(lines, ["✓ Claude 스킬 설치됨", "✓ 시작 시 자동 실행"])
+            True, True, True, ["claude", "codex"],
+            install=lambda *a: ["installed: C:/u/.claude/skills/handback"],
+            set_autostart=lambda on: calls.append(on), install_hooks=hooked.append)
+        self.assertEqual(lines, ["✓ Claude 스킬 설치됨", "✓ 복구 훅 설치됨 (Claude, Codex)",
+                                 "✓ 시작 시 자동 실행"])
         self.assertEqual(calls, [True])
-        self.assertEqual(setup_gui.run_install(False, False, install=lambda *a: [],
-                                               set_autostart=lambda on: None), [])
+        self.assertEqual(hooked, [["claude", "codex"]])
+        self.assertEqual(setup_gui.run_install(False, False, False, install=lambda *a: [],
+                                               set_autostart=lambda on: None,
+                                               install_hooks=hooked.append), [])
+        self.assertEqual(len(hooked), 1)
 
 
 class SetupWindowTests(test_dashboard_gui.DashboardMenuTests):
@@ -48,24 +53,39 @@ class SetupWindowTests(test_dashboard_gui.DashboardMenuTests):
         return next(w for w in self.widgets(window)
                     if isinstance(w, self.tk.Button) and w.cget("text") == text)
 
+    def open(self, **kwargs):
+        kwargs.setdefault("status", lambda found: {"skills": False, "hooks": True})
+        kwargs.setdefault("install_hooks", lambda agents: None)
+        return setup_gui.open_setup(self.strip, **kwargs)
+
     def test_claude_missing_disables_install(self):
         with self.sync():
-            window = setup_gui.open_setup(self.strip, detect=lambda: {"claude": False})
+            window = self.open(detect=lambda: {"claude": False})
         texts = self.texts(window)
         self.assertIn("handback 설정", texts)
         self.assertIn(setup_gui.NEED_CLAUDE, texts)
-        self.assertEqual(str(self.button(window, "설치").cget("state")), "disabled")
+        self.assertEqual(str(self.button(window, setup_gui.INSTALL).cget("state")), "disabled")
+
+    def test_status_marks_each_item(self):
+        with self.sync():
+            window = self.open(detect=lambda: {"claude": True})
+        boxes = [w.cget("text") for w in self.widgets(window) if isinstance(w, self.tk.Checkbutton)]
+        self.assertIn(setup_gui.SKILLS_LABEL + "  · 필요", boxes)
+        self.assertIn(setup_gui.HOOKS_LABEL + "  · 설치됨", boxes)
 
     def test_install_flow_shows_result_and_done_button(self):
         with self.sync():
-            window = setup_gui.open_setup(
-                self.strip, detect=lambda: {"claude": True},
+            hooked = []
+            window = self.open(
+                detect=lambda: {"claude": True},
                 install=lambda *a: ["installed: C:/u/.claude/skills/handback"],
-                set_autostart=lambda on: None)
+                set_autostart=lambda on: None, install_hooks=hooked.append)
             self.assertIn("✓ Claude", self.texts(window))
-            self.button(window, "설치").invoke()
+            self.button(window, setup_gui.INSTALL).invoke()
         texts = self.texts(window)
         self.assertIn("✓ Claude 스킬 설치됨", texts)
+        self.assertIn("✓ 복구 훅 설치됨 (Claude)", texts)
+        self.assertEqual(hooked, [["claude"]])
         self.assertIn(setup_gui.NEXT_STEP, texts)
         self.assertEqual(self.button(window, "완료").cget("text"), "완료")
         window.destroy()
@@ -75,16 +95,23 @@ class SetupWindowTests(test_dashboard_gui.DashboardMenuTests):
         def boom(*args):
             raise OSError("디스크 가득")
         with self.sync():
-            window = setup_gui.open_setup(self.strip, detect=lambda: {"claude": True}, install=boom,
-                                          set_autostart=lambda on: None)
-            self.button(window, "설치").invoke()
+            window = self.open(detect=lambda: {"claude": True}, install=boom,
+                               set_autostart=lambda on: None)
+            self.button(window, setup_gui.INSTALL).invoke()
         self.assertIn("실패: 디스크 가득", self.texts(window))
-        self.assertEqual(str(self.button(window, "설치").cget("state")), "normal")
+        self.assertEqual(str(self.button(window, setup_gui.INSTALL).cget("state")), "normal")
+
+    def test_unhook_button_uses_confirmed_dashboard_action(self):
+        with self.sync():
+            window = self.open(detect=lambda: {"claude": True})
+        with patch.object(self.strip, "_hooks") as hooks:
+            self.button(window, "훅 해제").invoke()
+        hooks.assert_called_once_with("uninstall")
 
     def test_reopen_reuses_window(self):
         with self.sync():
-            first = setup_gui.open_setup(self.strip, detect=lambda: {})
-            self.assertIs(setup_gui.open_setup(self.strip, detect=lambda: {}), first)
+            first = self.open(detect=lambda: {})
+            self.assertIs(self.open(detect=lambda: {}), first)
 
     def test_auto_setup_only_when_needed(self):
         with patch("handback.setup_gui.needs_setup", return_value=False), \

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from handback import dashboard
+from handback import dashboard, skill_install
 from tests.test_dashboard_gui import DashboardMenuTests
 
 
@@ -29,10 +29,50 @@ class MenuActionTests(DashboardMenuTests):
             done(result, error)
         return patch.object(self.strip, "_run_async", side_effect=run)
 
+    def test_update_item_and_settings_toggle(self):
+        release = {"version": "9.0.0", "installer": "i", "sums": "s"}
+        with patch.object(dashboard.updater, "supported", return_value=True):
+            self.strip._update = release
+            menu = self.context_menu()
+            self.assertEqual(self.labels(menu)[0], "업데이트 설치 (9.0.0)")
+            settings = [item["label"] for item in self.submenu(menu).items if item]
+            self.assertIn("✓ 업데이트 자동 확인", settings)
+            self.strip._close_menu()
+            self.assertNotIn("업데이트 설치 (9.0.0)", self.labels(self.context_menu(self.project())))
+        self.strip._update = None
+        self.assertTrue(dashboard.load_prefs(self.home)["update_check"])
+
+    def test_install_update_confirms_then_quits_after_launch(self):
+        release = {"version": "9.0.0", "installer": "i", "sums": "s"}
+        self.strip._update = release
+        with self.sync_async(), patch.object(dashboard.updater, "download", return_value="C:/u/setup.exe") as get,                 patch.object(dashboard.updater, "run_installer") as launch,                 patch.object(self.strip, "quit") as quit_:
+            with patch.object(self.strip, "_dialog", return_value=False):
+                self.strip._install_update()
+            get.assert_not_called()
+            with patch.object(self.strip, "_dialog", return_value=True):
+                self.strip._install_update()
+            launch.assert_called_once_with("C:/u/setup.exe")
+            quit_.assert_called_once()
+        self.strip._update = None
+
+    def test_failed_download_keeps_running(self):
+        self.strip._update = {"version": "9.0.0", "installer": "i", "sums": "s"}
+        with self.sync_async(), patch.object(dashboard.updater, "download",
+                                             side_effect=dashboard.updater.UpdateError("hash")),                 patch.object(dashboard.updater, "run_installer") as launch,                 patch.object(self.strip, "quit") as quit_,                 patch.object(self.strip, "_dialog", return_value=True) as dialog:
+            self.strip._install_update()
+        launch.assert_not_called(); quit_.assert_not_called()
+        self.assertIn("업데이트하지 못했습니다", dialog.call_args[0][1])
+        self.strip._update = None
+
+    def test_manual_check_reports_up_to_date(self):
+        with self.sync_async(), patch.object(dashboard.updater, "check", return_value=None),                 patch.object(self.strip, "_dialog") as dialog:
+            self.strip._check_update()
+        self.assertIn("최신 버전", dialog.call_args[0][1])
+
     def test_root_menu_order_and_project_items(self):
         root = self.project()
         menu = self.context_menu()
-        expected = ["보기 설정 ▶", "설치 상태 점검", "스킬 다시 설치", "설정", "Hook ▶", "새로고침", "닫기"]
+        expected = ["보기 설정 ▶", "설치 상태 점검", "설정 (스킬·훅 설치·복구)", "새로고침", "닫기"]
         if dashboard.sys.platform == "win32":
             expected.insert(1, "Windows 시작 시 실행")
         self.assertEqual(self.labels(menu), expected)
@@ -151,23 +191,12 @@ class MenuActionTests(DashboardMenuTests):
                 run.assert_called_once_with("install", self.home)
                 self.assertIn("b.bak", dialog.call_args[0][1])
 
-    def test_skill_reinstall_requires_confirmation(self):
-        with self.sync_async(), patch.object(dashboard, "run_skill_install",
-                                             return_value=["installed: a"]) as run:
-            with patch.object(self.strip, "_dialog", return_value=False):
-                self.strip._reinstall_skills()
-                run.assert_not_called()
-            with patch.object(self.strip, "_dialog", return_value=True) as dialog:
-                self.strip._reinstall_skills()
-                run.assert_called_once()
-                self.assertIn("1개", dialog.call_args[0][1])
-
     def test_doctor_lists_problems_only(self):
         self.project()
         rows = [{"check": "claude skill", "level": "WARN", "detail": "missing"},
                 {"check": "Python", "level": "OK"},
                 {"check": "codex version", "level": "WARN"}]
-        self.assertEqual(dashboard.problem_lines(rows), ["Claude 스킬 없음 — 우클릭 › 스킬 다시 설치"])
+        self.assertEqual(dashboard.problem_lines(rows), ["Claude 스킬 없음 — 우클릭 › 설정"])
         with self.sync_async(), patch.object(dashboard, "doctor_problems", return_value=[]), \
                 patch.object(self.strip, "_dialog") as dialog:
             self.strip._check_install()
@@ -219,7 +248,7 @@ class MenuActionTests(DashboardMenuTests):
         with patch.object(dashboard.sys, "stdout", None), patch.object(dashboard.sys, "stderr", None),                 patch.dict(dashboard.os.environ, env, clear=True),                 patch.object(Path, "home", return_value=fake_home):
             dashboard.doctor_problems(root, self.home, adapter_for=lambda a, v: SimpleNamespace(
                 detect=lambda: {"agent": a, "installed": False}))
-            dashboard.run_skill_install()
+            skill_install.install(None, False)
             dashboard.config.use_topology(root, "claude:lead", ["codex"], "ask", home=self.home)
             paths = {"claude": fake_home / "c.json", "codex": fake_home / "x.json"}
             dashboard.run_hooks("install", self.home, config_paths=paths)

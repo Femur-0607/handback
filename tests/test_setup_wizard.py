@@ -19,20 +19,23 @@ def run(answers=(), found=ALL, **kwargs):
         prompts.append(prompt)
         return queue.pop(0) if queue else ""
     install = MagicMock(return_value=["installed: C:/Users/a/.claude/skills/handback/SKILL.md"])
-    auto, launch = MagicMock(), MagicMock()
+    auto, launch, hooks = MagicMock(), MagicMock(), MagicMock()
     options = dict(input_fn=fake_input, interactive=True, detect=lambda: found, install=install,
-                   set_autostart=auto, launch=launch, out=lines.append)
+                   set_autostart=auto, launch=launch, out=lines.append, hooks=hooks)
     options.update(kwargs)
     code = setup_wizard.run(**options)
+    run.hooks = options["hooks"]
     return code, lines, install, auto, launch, prompts
 
 
 class WizardTests(unittest.TestCase):
     def test_happy_path(self):
         with patch("sys.platform", "win32"):
-            code, lines, install, auto, launch, prompts = run(["", "y", ""])
+            code, lines, install, auto, launch, prompts = run(["", "", "y", ""])
         self.assertEqual(code, 0)
         install.assert_called_once_with(None, False)
+        run.hooks.assert_called_once_with(["claude"], dry_run=False)
+        self.assertIn("✓ 복구 훅 설치됨 (Claude)", lines)
         auto.assert_called_once_with(True)
         launch.assert_called_once()
         print("\n".join(lines))
@@ -42,8 +45,9 @@ class WizardTests(unittest.TestCase):
 
     def test_declined(self):
         with patch("sys.platform", "win32"):
-            code, lines, install, auto, launch, _ = run(["n", "n", "n"])
+            code, lines, install, auto, launch, _ = run(["n", "n", "n", "n"])
         install.assert_not_called(); auto.assert_not_called(); launch.assert_not_called()
+        run.hooks.assert_not_called()
 
     def test_claude_missing_exits(self):
         code, lines, install, auto, launch, prompts = run(found={"claude": False})
@@ -63,6 +67,7 @@ class WizardTests(unittest.TestCase):
         code, lines, install, auto, launch, prompts = run(dry_run=True)
         self.assertEqual(code, 0)
         install.assert_called_once_with(None, True)
+        run.hooks.assert_called_once_with(["claude"], dry_run=True)
         auto.assert_not_called(); launch.assert_not_called()
         self.assertEqual(prompts, [])
 
@@ -73,17 +78,25 @@ class WizardTests(unittest.TestCase):
         auto.assert_not_called(); launch.assert_not_called()
         self.assertEqual(prompts, [])
 
-    def test_non_tty_yes_installs_skills_only(self):
-        code, lines, install, auto, launch, prompts = run(interactive=False, yes=True)
+    def test_non_tty_yes_installs_skills_and_hooks(self):
+        # The installer runs this: recovery hooks are on by default.
+        code, lines, install, auto, launch, prompts = run(
+            interactive=False, yes=True, found={"claude": True, "codex": True})
         install.assert_called_once_with(None, False)
+        run.hooks.assert_called_once_with(["claude", "codex"], dry_run=False)
         auto.assert_not_called(); launch.assert_not_called()
         self.assertEqual(prompts, [])
 
     def test_step_failure_is_one_line_not_traceback(self):
         install = MagicMock(side_effect=OSError("권한 없음\n자세히"))
-        code, lines, *_ = run(["y", "n", "n"], install=install)
+        code, lines, *_ = run(["y", "n", "n", "n"], install=install)
         self.assertEqual(code, 1)
         self.assertIn("실패: 스킬 설치 (권한 없음 자세히)", lines)
+
+    def test_hook_failure_is_one_line(self):
+        code, lines, *_ = run(["n", "y", "n", "n"], hooks=MagicMock(side_effect=ValueError("JSON 깨짐")))
+        self.assertEqual(code, 1)
+        self.assertIn("실패: 복구 훅 설치 (JSON 깨짐)", lines)
 
 
 class LocationTests(unittest.TestCase):

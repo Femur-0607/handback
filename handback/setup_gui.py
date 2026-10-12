@@ -7,6 +7,9 @@ from .invocation import frozen
 NEED_CLAUDE = "Claude가 필요합니다. 설치·로그인 후 다시 여세요."
 RISKY = "권장: 공백 없는 고정 폴더(예: C:\\handback)로 옮긴 뒤 다시 실행하세요."
 NEXT_STEP = "다음: Claude에서 /handback 스킬로 작업을 맡기세요."
+INSTALL = "설치·복구"
+SKILLS_LABEL = "에이전트 스킬"
+HOOKS_LABEL = "복구 훅 (Claude·Codex 설정 백업 후 수정)"
 
 
 def needs_setup():
@@ -28,22 +31,41 @@ def app_lines(found):
     return lines
 
 
-def run_install(skills, autostart, install=None, set_autostart=None):
+def current_status(found, home=None):
+    """{"skills": bool, "hooks": bool} for the detected apps; None when unreadable."""
+    from . import diagnostics
+    status = {}
+    try:
+        status["skills"] = not needs_setup()
+        status["hooks"] = all(diagnostics.hooks_present(agent, home)
+                              for agent in setup_wizard.hook_agents(found))
+    except Exception:
+        return None
+    return status
+
+
+def run_install(skills, hooks, autostart, agents=(), install=None, set_autostart=None,
+                install_hooks=None):
     """Return result lines; raises on failure. Runs off the Tk thread."""
     if install is None:
         from .skill_install import install
     if set_autostart is None:
         from .dashboard import set_autostart
+    if install_hooks is None:
+        install_hooks = setup_wizard.install_hooks
     lines = []
     if skills:
         lines.extend(setup_wizard._skill_lines(install(None, False)))
+    if hooks and agents:
+        install_hooks(agents)
+        lines.append(setup_wizard.hook_line(agents))
     if autostart:
         set_autostart(True)
         lines.append("✓ 시작 시 자동 실행")
     return lines
 
 
-def open_setup(strip, detect=None, install=None, set_autostart=None):
+def open_setup(strip, detect=None, install=None, set_autostart=None, install_hooks=None, status=None):
     """Show (or raise) the setup window; the dashboard keeps running when it closes."""
     from . import dashboard
     existing = getattr(strip, "_setup_window", None)
@@ -51,6 +73,7 @@ def open_setup(strip, detect=None, install=None, set_autostart=None):
         existing.lift()
         return existing
     detect = detect or setup_wizard.detect_apps
+    status = status or (lambda found: current_status(found, strip.home))
     tk = strip.tk
     window = tk.Toplevel(strip.root)
     window.withdraw()
@@ -76,35 +99,39 @@ def open_setup(strip, detect=None, install=None, set_autostart=None):
     label("handback 설정", font=("Segoe UI Semibold", 13), pady=(0, 8))
     apps_box = tk.Frame(body, bg=bg)
     apps_box.pack(fill="x")
-    status = label("앱 확인 중…", dim)
-    state = {"claude": False, "done": False}
-    skills_on, auto_on = tk.BooleanVar(window, True), tk.BooleanVar(window, False)
+    checking = label("앱 확인 중…", dim)
+    state = {"claude": False, "done": False, "agents": []}
+    skills_on, hooks_on = tk.BooleanVar(window, True), tk.BooleanVar(window, True)
+    auto_on = tk.BooleanVar(window, False)
 
     risky_text = RISKY if frozen() and setup_wizard.risky_location() else ""
     if risky_text:
         label(risky_text, strip.YELLOW, pady=(8, 0))
     options = tk.Frame(body, bg=bg)
     options.pack(fill="x", pady=(10, 0))
-    body_options = [tk.Checkbutton(options, text="에이전트 스킬 설치", variable=skills_on, bg=bg, fg=fg,
-                                   selectcolor="#3a3a3a", activebackground=bg, activeforeground=fg,
-                                   font=("Segoe UI", 10), anchor="w", bd=0, highlightthickness=0,
-                                   cursor="hand2")]
-    if sys.platform == "win32":
-        body_options.append(tk.Checkbutton(options, text="Windows 시작 시 실행", variable=auto_on, bg=bg,
-                                           fg=fg, selectcolor="#3a3a3a", activebackground=bg,
-                                           activeforeground=fg, font=("Segoe UI", 10), anchor="w",
-                                           bd=0, highlightthickness=0, cursor="hand2"))
-    for box in body_options:
+
+    def checkbox(text, variable):
+        box = tk.Checkbutton(options, text=text, variable=variable, bg=bg, fg=fg, selectcolor="#3a3a3a",
+                             activebackground=bg, activeforeground=fg, font=("Segoe UI", 10), anchor="w",
+                             bd=0, highlightthickness=0, cursor="hand2")
         box.pack(fill="x", pady=1)
+        return box
+
+    skills_box = checkbox(SKILLS_LABEL, skills_on)
+    hooks_box = checkbox(HOOKS_LABEL, hooks_on)
+    if sys.platform == "win32":
+        checkbox("Windows 시작 시 실행", auto_on)
     result_box = tk.Frame(body, bg=bg)
     result_box.pack(fill="x", pady=(8, 0))
     footer = tk.Frame(window, bg=bg, padx=18, pady=12)
     footer.pack(fill="x")
     close = strip._button(footer, "닫기", window.destroy)
     close.pack(side="right", padx=(8, 0))
-    go = strip._button(footer, "설치", lambda: start())
+    go = strip._button(footer, INSTALL, lambda: start())
     go.pack(side="right")
     go.configure(state="disabled")
+    unhook = strip._button(footer, "훅 해제", lambda: strip._hooks("uninstall"))
+    unhook.pack(side="left")
 
     def fit():
         """A fixed-size window must be re-fitted by hand when its content changes."""
@@ -121,14 +148,24 @@ def open_setup(strip, detect=None, install=None, set_autostart=None):
                      anchor="w", wraplength=380).pack(fill="x", pady=1)
         fit()
 
-    def detected(found, error):
+    def mark(ok):
+        return "  · 설치됨" if ok else "  · 필요"
+
+    def detected(result, error):
         if not window.winfo_exists():
             return
-        found = found if isinstance(found, dict) and not error else {}
-        status.destroy()
+        found, current = result if isinstance(result, tuple) and not error else ({}, None)
+        checking.destroy()
         for line in app_lines(found):
             tk.Label(apps_box, text=line, bg=bg, fg=fg, font=("Segoe UI", 10), anchor="w").pack(fill="x")
         state["claude"] = bool(found.get("claude"))
+        state["agents"] = setup_wizard.hook_agents(found)
+        if current:
+            skills_box.configure(text=SKILLS_LABEL + mark(current["skills"]))
+            hooks_box.configure(text=HOOKS_LABEL + mark(current["hooks"]))
+        if not state["agents"]:
+            hooks_on.set(False)
+            hooks_box.configure(state="disabled")
         fit()
         if state["claude"]:
             go.configure(state="normal")
@@ -151,9 +188,10 @@ def open_setup(strip, detect=None, install=None, set_autostart=None):
             return
         go.configure(state="disabled")
         show_results(["설치 중…"], dim)
-        skills, auto = skills_on.get(), auto_on.get()
+        skills, hooks, auto, agents = skills_on.get(), hooks_on.get(), auto_on.get(), state["agents"]
         strip._run_async(("setup-install",),
-                         lambda: run_install(skills, auto, install, set_autostart), installed)
+                         lambda: run_install(skills, hooks, auto, agents, install, set_autostart,
+                                             install_hooks), installed)
 
     window.protocol("WM_DELETE_WINDOW", window.destroy)
     window.bind("<Escape>", lambda event: window.destroy())
@@ -168,5 +206,9 @@ def open_setup(strip, detect=None, install=None, set_autostart=None):
         dashboard._dark_titlebar(window)
     except tk.TclError:
         pass
-    strip._run_async(("setup-detect",), detect, detected)
+    def check():
+        found = detect()
+        return found, status(found)
+
+    strip._run_async(("setup-detect",), check, detected)
     return window
