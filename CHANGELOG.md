@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-10-12
+
 ### Fixed
 
 - Setup and the dashboard now recognise Claude when only the Claude desktop
@@ -226,6 +228,7 @@ All notable changes to this project are documented here. This file follows the
 - The release version check imports the checkout when run from a temporary
   directory.
 
+[0.3.4]: https://github.com/Femur-0607/handback/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/Femur-0607/handback/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/Femur-0607/handback/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Femur-0607/handback/compare/v0.3.0...v0.3.1
