@@ -5,6 +5,14 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Fixed
+
+- Setup and the dashboard now recognise Claude when only the Claude desktop
+  app is installed (Microsoft Store/MSIX or the older installer) and no
+  `claude` CLI is on PATH. Previously setup stopped with "Claude가 필요합니다"
+  even though the desktop app's Code tab can act as the Lead. First reported by
+  an early outside user installing 0.3.3.
+
 ## [0.3.3] - 2026-10-12
 
 ### Added

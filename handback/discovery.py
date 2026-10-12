@@ -32,3 +32,24 @@ def codex_bundled_candidates(target_home=None):
         if os.path.isfile(path) and (not isolated or Path(path).resolve().is_relative_to(home)):
             unique[os.path.normcase(os.path.abspath(path))] = path
     return sorted(unique.values(), key=os.path.getmtime, reverse=True)
+
+
+def claude_desktop_app():
+    """Path of an installed Claude desktop app, or None. Never runs the app.
+
+    The desktop app's Code tab can be the Lead without a `claude` CLI on PATH.
+    """
+    roots = []
+    for value in (os.environ.get("LOCALAPPDATA"),
+                  os.environ.get("USERPROFILE") and os.path.join(os.environ["USERPROFILE"], "AppData", "Local")):
+        if value and value not in roots:
+            roots.append(value)
+    candidates = []
+    for root in roots:
+        # Microsoft Store / MSIX install keeps a per-user package folder.
+        candidates.extend(glob.glob(os.path.join(root, "Packages", "Claude_*")))
+        # Older Squirrel installer.
+        candidates.append(os.path.join(root, "AnthropicClaude", "claude.exe"))
+    if sys.platform == "darwin":
+        candidates += [str(Path.home() / "Applications/Claude.app"), "/Applications/Claude.app"]
+    return next((path for path in candidates if os.path.exists(path)), None)

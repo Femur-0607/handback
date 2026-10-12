@@ -4,6 +4,7 @@ import shutil
 import subprocess
 
 from .base import BaseAdapter
+from ..discovery import claude_desktop_app
 
 
 class ClaudeAdapter(BaseAdapter):
@@ -27,7 +28,12 @@ class ClaudeAdapter(BaseAdapter):
                     warnings.append("Claude --version failed")
             except (OSError, subprocess.TimeoutExpired) as exc:
                 warnings.append(str(exc))
-        return {"agent": self.name, "installed": bool(version), "executable": executable, "version": version,
+        # The desktop app's Code tab is a full Lead; the CLI is optional.
+        desktop = None if version else claude_desktop_app()
+        if desktop:
+            warnings.append(f"Claude CLI not found; using the Claude desktop app ({desktop})")
+        return {"agent": self.name, "installed": bool(version or desktop), "executable": executable,
+                "desktop_app": desktop, "version": version,
                 "warnings": warnings, "capabilities": {"lead": True, "worker": False, "inbox": True,
                                                         "hooks_verified": False}}
 
