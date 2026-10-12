@@ -1,7 +1,7 @@
 <p align="center"><img src="https://raw.githubusercontent.com/Femur-0607/handback/main/docs/assets/handback-logo.png" alt="handback" width="420"></p>
 
 <p align="center">
-  <a href="README.md">한국어</a> · <a href="README.en.md">English</a>
+  <b>한국어</b> · <a href="README.en.md">English</a>
 </p>
 
 https://github.com/user-attachments/assets/04fa87b7-be54-4ff2-8064-503125abb336
@@ -14,7 +14,7 @@ https://github.com/user-attachments/assets/04fa87b7-be54-4ff2-8064-503125abb336
 
 **실험 단계 · Windows 검증 · Windows에서는 Python 불필요 · 한 컴퓨터, 한 OS 사용자**
 
-[첫 작업](docs/usage.ko.md#한-명령으로-첫-작업-확인) · [내 프로젝트에 적용](README.en.md#use-it-on-your-own-project) · [상세 설정(영어)](docs/quickstart.md) · [한국어 사용 설명서](docs/usage.ko.md) · [변경 이력](CHANGELOG.md)
+[첫 작업](docs/usage.ko.md#한-명령으로-첫-작업-확인) · [상세 설명서](docs/usage.ko.md) · [변경 이력](CHANGELOG.md)
 
 ## handback이란?
 
@@ -107,7 +107,8 @@ gh attestation verify .\handback-<version>-setup.exe --repo Femur-0607/handback
 - 사용 예시: [조사 위임·교차 리뷰·아이디어 토론](docs/usage.ko.md#사용-예시).
 - 개발자용 설치: [Python 패키지와 소스 설치](docs/usage.ko.md#설치).
 - 첫 작업: [한 명령으로 첫 작업 확인](docs/usage.ko.md#한-명령으로-첫-작업-확인).
-- 내 프로젝트에 적용: [프로젝트 경로와 자동 수신 설정(영어)](README.en.md#use-it-on-your-own-project).
+- 내 프로젝트에 적용: [프로젝트 경로와 자동 수신 설정](README.en.md#use-it-on-your-own-project) (영어).
+- 단계별 설정과 문제 해결: [quickstart](docs/quickstart.md) (영어).
 - 모델·추론 선택: [리드·워커 모델과 추론 강도](docs/usage.ko.md#리드워커-모델과-추론-강도).
 - 전달과 복구: [위임과 수신](docs/usage.ko.md#위임과-수신) · [결과가 돌아오지 않을 때의 진단](docs/usage.ko.md#결과가-돌아오지-않을-때-진단과-로컬-통계).
 - 선택적 현황판: [현황판 실행·표시·설정](docs/usage.ko.md#현황판).

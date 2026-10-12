@@ -1,7 +1,7 @@
 <p align="center"><img src="https://raw.githubusercontent.com/Femur-0607/handback/main/docs/assets/handback-logo.png" alt="handback" width="420"></p>
 
 <p align="center">
-  <a href="https://github.com/Femur-0607/handback/blob/main/README.md">한국어</a> · <a href="https://github.com/Femur-0607/handback/blob/main/README.en.md">English</a>
+  <a href="https://github.com/Femur-0607/handback/blob/main/README.md">한국어</a> · <b>English</b>
 </p>
 
 https://github.com/user-attachments/assets/04fa87b7-be54-4ff2-8064-503125abb336
@@ -14,7 +14,7 @@ A local tool for handing work between coding-agent apps and bringing the results
 
 **Experimental · Windows verified · No Python needed on Windows · One computer, one OS user**
 
-[First task](https://github.com/Femur-0607/handback#try-your-first-task) · [Use-your-own-project guide](https://github.com/Femur-0607/handback#use-it-on-your-own-project) · [Detailed setup](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) · [Korean manual (full command reference)](https://github.com/Femur-0607/handback/blob/main/docs/usage.ko.md) · [Changelog](https://github.com/Femur-0607/handback/blob/main/CHANGELOG.md)
+[First task](https://github.com/Femur-0607/handback/blob/main/README.en.md#try-your-first-task) · [Use-your-own-project guide](https://github.com/Femur-0607/handback/blob/main/README.en.md#use-it-on-your-own-project) · [Detailed setup](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) · [Changelog](https://github.com/Femur-0607/handback/blob/main/CHANGELOG.md)
 
 ## What is handback?
 
