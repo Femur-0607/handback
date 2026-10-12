@@ -73,9 +73,11 @@ Name: "{autoprograms}\handback"; Filename: "{app}\handback-dashboard.exe"; AppUs
 Name: "{autodesktop}\handback"; Filename: "{app}\handback-dashboard.exe"; AppUserModelID: "Femur0607.handback.dashboard"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\handback.exe"; Parameters: "setup --yes"; Flags: runhidden waituntilterminated; StatusMsg: "에이전트 스킬을 설치하는 중..."
+Filename: "{app}\handback.exe"; Parameters: "setup --yes"; Flags: runhidden waituntilterminated; StatusMsg: "스킬과 복구 훅을 설치하는 중..."
 Filename: "{app}\handback.exe"; Parameters: "dashboard --autostart on"; Flags: runhidden waituntilterminated; Tasks: autostart
 Filename: "{app}\handback-dashboard.exe"; Description: "handback 실행"; Flags: nowait postinstall skipifsilent
+; In-app update runs silently with /RELAUNCH=1, so bring the dashboard back.
+Filename: "{app}\handback-dashboard.exe"; Flags: nowait; Check: RelaunchRequested
 
 [UninstallRun]
 Filename: "{app}\handback.exe"; Parameters: "dashboard --autostart off"; Flags: runhidden waituntilterminated; RunOnceId: "AutostartOff"
@@ -83,6 +85,11 @@ Filename: "{app}\handback.exe"; Parameters: "uninstall-hooks --agents codex,clau
 Filename: "{app}\handback.exe"; Parameters: "uninstall-skills"; Flags: runhidden waituntilterminated; RunOnceId: "UninstallSkills"
 
 [Code]
+function RelaunchRequested: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
+end;
+
 // Per-user PATH (HKCU\Environment\Path): append {app} once on install, remove exactly that entry on uninstall.
 // Works with PrivilegesRequired=lowest because only HKCU is touched.
 const
