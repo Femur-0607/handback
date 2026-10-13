@@ -1,3 +1,4 @@
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -510,6 +511,51 @@ class CompactGuiTests(DashboardMenuTests):
             with patch.object(self.root, "winfo_ismapped", return_value=True):
                 self.strip.render(self.sample_rows())
             self.assertEqual(sample.call_count, 3)
+
+    @unittest.skipUnless(dashboard.sys.platform == "win32", "Windows timer")
+    def test_zorder_tick_follows_taskbar_colour_faster_after_foreground_change(self):
+        dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "docked": True}, self.home)
+        watcher = SimpleNamespace(changed=threading.Event(), target=None, taskbar=None, stop=Mock())
+        self.strip._foreground = watcher
+        with patch.object(dashboard, "taskbar_colors", return_value=[(32, 32, 32)]) as sample, \
+                patch.object(dashboard, "keep_above_taskbar"), \
+                patch.object(dashboard.time, "monotonic", return_value=100) as clock:
+            self.strip.render(self.sample_rows())
+            self.root.deiconify()
+            self.root.update_idletasks()
+            self.strip.render(self.sample_rows())  # mapped: the widget is excluded from sampling
+            sample.reset_mock()
+            dark = self.root.cget("bg")
+
+            def tick(now):
+                clock.return_value = now
+                self.root.after_cancel(self.strip._zorder_timer)
+                self.strip._watch_zorder()
+
+            tick(100.5)  # within the one-second interval
+            self.assertEqual(sample.call_count, 0)
+            self.assertEqual(watcher.target, dashboard._root_hwnd(self.root))
+            self.assertEqual(watcher.taskbar, self.strip._taskbar_hwnd)
+            watcher.changed.set()  # the hook thread saw a foreground change
+            tick(100.6)
+            self.assertFalse(watcher.changed.is_set())
+            self.assertEqual(sample.call_count, 1)
+            sample.return_value = [(240, 240, 240)]
+            tick(100.7)  # burst interval not yet elapsed
+            self.assertEqual(sample.call_count, 1)
+            with patch.object(dashboard, "snapshot", return_value=self.sample_rows()):
+                tick(100.85)
+            self.assertEqual(sample.call_count, 2)
+            self.assertNotEqual(self.root.cget("bg"), dark)
+            self.assertEqual(self.root.cget("bg"), self.strip._compact_palette["bg"])
+            self.assertEqual(len(self.root.tk.call("after", "info")), 2)  # z-order + refresh
+            tick(103)  # burst over: back to the one-second interval
+            self.assertEqual(sample.call_count, 3)
+            with patch.object(dashboard, "widget_fullscreen_covered", return_value=True):
+                tick(105)
+            self.assertIsNone(watcher.target)
+            self.assertEqual(sample.call_count, 3)
+        self.strip._foreground = None
 
     def test_unchanged_visuals_do_not_rebuild_style_font_or_geometry(self):
         import copy

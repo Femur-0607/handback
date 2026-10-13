@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from . import __version__, config, envelope, inbox, updater
 from .collector import OPEN_STATES
 from .tray import Tray
+from .winevents import ForegroundWatcher
 from .state import _read_json, atomic_json, home_lock, state_home
 
 
@@ -34,7 +35,13 @@ AGENT_COLORS_DARK = {"claude": "#d97757", "codex": "#9fb3c8", "antigravity": "#5
 AGENT_COLORS_LIGHT = {"claude": "#b45309", "codex": "#4b5f73", "antigravity": "#1d4ed8"}
 AGENT_DOT = "●"
 REFRESH_MS = 3000
-TASKBAR_ZORDER_MS = 750
+# Cheap native checks; a short tick keeps full-screen hiding prompt.
+TASKBAR_ZORDER_MS = 100
+# One taskbar colour readback costs a few ms: sample every second, and more
+# often for a moment after the foreground window changes.
+PALETTE_SECONDS = 1.0
+PALETTE_BURST_SECONDS = 0.2
+PALETTE_BURST_LENGTH = 2.0
 TRAY_POLL_MS = 150
 SHOW_POLL_MS = 300
 DASHBOARD_MUTEX = "Local\\handback-dashboard"
@@ -731,6 +738,21 @@ def widget_fullscreen_covered(widget, point=None):
         return False
 
 
+def _root_hwnd(widget):
+    """Tk's native wrapper (GA_ROOT) for a mapped widget, or None."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+    try:
+        user = ctypes.windll.user32
+        user.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        user.GetAncestor.restype = wintypes.HWND
+        return user.GetAncestor(widget.winfo_id(), 2) or None
+    except (AttributeError, OSError):
+        return None
+
+
 def show_widget_without_activation(widget, visible):
     # Keep Tk's mapping state in sync; ShowWindow(SW_HIDE) alone is undone
     # when a subsequent idle geometry update remaps the wrapper.
@@ -1163,27 +1185,60 @@ def taskbar_sample_points(info, dpi, excluded=None):
 
 
 def taskbar_colors(info, dpi, excluded=None):
-    """Read a few composited screen pixels; always release the borrowed screen DC."""
+    """Read a few composited screen pixels; always release the borrowed GDI objects.
+
+    One BitBlt of the sampled band reads the screen back once. GetPixel on the
+    screen DC pays that readback per point (~90 ms for the whole set), which is
+    too slow to follow taskbar colour changes promptly.
+    """
     points = taskbar_sample_points(info, dpi, excluded)
     if sys.platform != "win32" or not points:
         return []
     import ctypes
     from ctypes import wintypes
+    left, top = min(x for x, _ in points), min(y for _, y in points)
+    width = max(x for x, _ in points) - left + 1
+    height = max(y for _, y in points) - top + 1
     try:
         user, gdi = ctypes.windll.user32, ctypes.windll.gdi32
         user.GetDC.argtypes = [wintypes.HWND]
         user.GetDC.restype = wintypes.HDC
         user.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+        gdi.CreateCompatibleDC.argtypes = [wintypes.HDC]
+        gdi.CreateCompatibleDC.restype = wintypes.HDC
+        gdi.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+        gdi.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+        gdi.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+        gdi.SelectObject.restype = wintypes.HGDIOBJ
+        gdi.BitBlt.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                               wintypes.HDC, ctypes.c_int, ctypes.c_int, wintypes.DWORD]
+        gdi.BitBlt.restype = wintypes.BOOL
+        gdi.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+        gdi.DeleteDC.argtypes = [wintypes.HDC]
         gdi.GetPixel.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
         gdi.GetPixel.restype = wintypes.DWORD
         dc = user.GetDC(None)
         if not dc:
             return []
+        memory = bitmap = old = None
         try:
-            colors = [gdi.GetPixel(dc, x, y) for x, y in points]
+            memory = gdi.CreateCompatibleDC(dc)
+            bitmap = gdi.CreateCompatibleBitmap(dc, width, height) if memory else None
+            if not bitmap:
+                return []
+            old = gdi.SelectObject(memory, bitmap)
+            if not gdi.BitBlt(memory, 0, 0, width, height, dc, left, top, 0x00CC0020):  # SRCCOPY
+                return []
+            colors = [gdi.GetPixel(memory, x - left, y - top) for x, y in points]
             return [(color & 255, (color >> 8) & 255, (color >> 16) & 255)
                     for color in colors if color != 0xffffffff]
         finally:
+            if old:
+                gdi.SelectObject(memory, old)
+            if bitmap:
+                gdi.DeleteObject(bitmap)
+            if memory:
+                gdi.DeleteDC(memory)
             user.ReleaseDC(None, dc)
     except (AttributeError, OSError):
         return []
@@ -1508,6 +1563,7 @@ class Strip:
     _user_hidden = False
     _show_event = None
     _show_timer = None
+    _foreground = None  # foreground-change hook thread (winevents)
 
     def __init__(self, home=None, opener=None):
         import tkinter as tk
@@ -1529,6 +1585,9 @@ class Strip:
         self._outside_timer = None
         self._refresh_timer = None
         self._zorder_timer = None
+        self._foreground = None
+        self._palette_burst_until = 0
+        self._palette_source = None
         self._fullscreen_hidden = False
         self.docked = load_prefs(home)["docked"]
         self._dragging = False
@@ -1652,6 +1711,7 @@ class Strip:
     def _destroyed(self, event):
         if event.widget == self.root:
             self._stop_tray()
+            self._stop_foreground()
             for name in ("_outside_timer", "_refresh_timer", "_zorder_timer",
                          "_drag_timer", "_drag_capture_timer", "_corner_timer", "_show_timer"):
                 timer = getattr(self, name)
@@ -1767,6 +1827,13 @@ class Strip:
         elif self._zorder_timer is not None:
             self.root.after_cancel(self._zorder_timer)
             self._zorder_timer = None
+        if self.mode == "taskbar" and sys.platform == "win32":
+            if self._foreground is None:
+                watcher = ForegroundWatcher()
+                if watcher.start():
+                    self._foreground = watcher
+        else:
+            self._stop_foreground()
         if self.mode != "taskbar" and self._fullscreen_hidden:
             show_widget_without_activation(self.root, True)
             self._fullscreen_hidden = False
@@ -1784,7 +1851,49 @@ class Strip:
             self._fullscreen_hidden = hidden
         if not hidden:
             keep_above_taskbar(self.root, self._taskbar_hwnd)
+        # Schedule first: a colour change re-renders, and rendering must find the
+        # timer already armed instead of starting a second one.
         self._zorder_timer = self.root.after(TASKBAR_ZORDER_MS, self._watch_zorder)
+        self._follow_foreground(hidden)
+
+    def _stop_foreground(self):
+        watcher, self._foreground = self._foreground, None
+        if watcher is not None:
+            watcher.stop()
+
+    def _follow_foreground(self, hidden):
+        """Hand the hook thread fresh handles; resample the taskbar colour on time."""
+        now = time.monotonic()
+        watcher = self._foreground
+        if watcher is not None:
+            if watcher.changed.is_set():
+                watcher.changed.clear()
+                self._palette_burst_until = now + PALETTE_BURST_LENGTH
+            watcher.target = None if hidden or self._user_hidden else _root_hwnd(self.root)
+            watcher.taskbar = self._taskbar_hwnd
+        if (hidden or self._user_hidden or not self.docked or self._dragging
+                or self._palette_source is None or not self.root.winfo_ismapped()):
+            return
+        interval = PALETTE_BURST_SECONDS if now < self._palette_burst_until else PALETTE_SECONDS
+        if now - self._palette_at < interval:
+            return
+        info, dpi = self._palette_source
+        x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
+        excluded = (x, y, x + self.root.winfo_width(), y + self.root.winfo_height())
+        if self._sample_taskbar_palette(info, dpi, excluded):
+            self._compact_view_key = None
+            self.refresh()
+
+    def _sample_taskbar_palette(self, info, dpi, excluded):
+        """Return True when the docked colours changed."""
+        self._palette_at = time.monotonic()
+        samples = [rgb for rgb in taskbar_colors(info, dpi, excluded) if rgb != (0, 0, 0)]
+        if not samples:
+            return False
+        palette = compact_palette(samples)
+        changed = palette != self._compact_palette
+        self._compact_palette = palette
+        return changed
 
     def _label(self, text, row, column, fg=None, font=None, padx=(0, 10), project=None):
         label = self.tk.Label(self.frame, text=text, bg=self.BG, fg=fg or self.FG,
@@ -1887,10 +1996,9 @@ class Strip:
         if (self.docked and not self._dragging and not self._fullscreen_hidden
                 and not widget_fullscreen_covered(self.root, point)
                 and (key != self._palette_key or now - self._palette_at >= 30)):
-            samples = [rgb for rgb in taskbar_colors(info, dpi, excluded) if rgb != (0, 0, 0)]
-            if samples:
-                self._compact_palette = compact_palette(samples)
-            self._palette_key, self._palette_at = key, now
+            self._sample_taskbar_palette(info, dpi, excluded)
+            self._palette_key = key
+        self._palette_source = (info, dpi) if self.docked and info else None
         palette = self._compact_palette if self.docked else {
             "bg": self.BG, "fg": self.FG, "dim": self.DIM, "green": self.GREEN, "yellow": self.YELLOW,
             **{"agent_" + agent: color for agent, color in self.COLORS.items()}}

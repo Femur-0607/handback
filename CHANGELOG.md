@@ -7,6 +7,12 @@ All notable changes to this project are documented here. This file follows the
 
 ### Fixed
 
+- The widget docked in the taskbar no longer flickers when a taskbar button is
+  clicked: a foreground-change hook puts it back above the taskbar at once
+  instead of on the next 750 ms check. It also hides within about 0.1 s when a
+  full-screen app (such as a game) opens, and follows a taskbar colour change
+  within a second instead of up to 30 seconds; colour sampling reads the screen
+  once per check (about 5 ms instead of 90 ms).
 - `doctor` kept warning "untested version" for a Codex build after `selftest`
   had passed against it, and its next step was that same `selftest`
   ([#1](https://github.com/Femur-0607/handback/issues/1)). A passing `selftest`
