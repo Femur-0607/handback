@@ -5,6 +5,20 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Changed
+
+- The update check is available in every run, including a source checkout,
+  and moved out of **보기 설정** into the right-click menu itself, next to
+  **Windows 시작 시 실행**: **최신 버전 확인** reports "최신 버전입니다" or adds an
+  **업그레이드 (version)** item at the top of the menu. The installer build
+  downloads, verifies and installs as before; a source checkout opens the
+  GitHub release page instead. The menu items were renamed from
+  **지금 업데이트 확인** and **업데이트 설치**.
+- **보기 설정** now offers two views only, **작게 보기** and **펼쳐 보기**. The
+  **작업표시줄에 넣기** item is gone: either view docks by dragging it onto a
+  top/bottom taskbar and undocks by dragging it away. The expanded panel docks
+  flush against the taskbar and keeps its position across restarts.
+
 ### Fixed
 
 - The widget docked in the taskbar no longer flickers when a taskbar button is
@@ -30,6 +44,10 @@ All notable changes to this project are documented here. This file follows the
   English skill text and relay output filled the conversation, even when the
   user wrote in another language. The skill now tells agents to reply in the
   user's language. Run `install-skills` to update installed copies.
+- Docking placed the widget mid-screen after the display scale changed while
+  the dashboard was running (for example 150% → 100%): the taskbar rectangle
+  came from a shell query in physical pixels while the window used Windows'
+  DPI-virtualized coordinates. Both now share one coordinate space.
 - A second Claude session in the same project root could send a request whose
   result silently went to the configured Lead's inbox instead of its own
   ([#3](https://github.com/Femur-0607/handback/issues/3)). `new`/`send` now

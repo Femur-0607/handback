@@ -277,6 +277,27 @@ class CompactPureTests(unittest.TestCase):
         self.assertEqual(drop(partial, monitor, 1075, 1040, 250, 32, cursor=(1101, 1041)),
                          (True, (950, 1033, 250, 47)))
 
+    def test_panel_drop_docks_only_with_pointer_inside_a_horizontal_taskbar(self):
+        drop = dashboard.panel_drop_geometry
+        monitor = (0, 0, 1920, 1080)
+        bottom = {"rect": (0, 1032, 1920, 1080), "edge": 3, "auto_hide": False}
+        top = {"rect": (0, 0, 1920, 48), "edge": 1, "auto_hide": False}
+        # Released with the pointer in the taskbar: flush against it, x kept, clamped.
+        self.assertEqual(drop(bottom, monitor, 700, 950, 300, 200, cursor=(710, 1040)),
+                         (True, (700, 832, 300, 200)))
+        self.assertEqual(drop(bottom, monitor, 1800, 950, 300, 200, cursor=(1900, 1079)),
+                         (True, (1620, 832, 300, 200)))
+        self.assertEqual(drop(top, monitor, 700, 10, 300, 200, cursor=(710, 20)),
+                         (True, (700, 48, 300, 200)))
+        # Pointer above the taskbar, or an unsupported taskbar: free placement.
+        self.assertEqual(drop(bottom, monitor, 700, 950, 300, 200, cursor=(710, 1031)),
+                         (False, (700, 880, 300, 200)))
+        for unavailable in (None, {**bottom, "auto_hide": True}, {**bottom, "edge": 0},
+                            {**bottom, "edge": 2}, {**bottom, "rect": (0, 1080, 1920, 1080)}):
+            with self.subTest(taskbar=unavailable):
+                self.assertEqual(drop(unavailable, monitor, 700, 950, 300, 200, cursor=(710, 1040)),
+                                 (False, (700, 880, 300, 200)))
+
     def test_drop_supports_top_negative_monitor_and_tray_clamping(self):
         drop = dashboard.compact_drop_geometry
         monitor = (0, 0, 1920, 1080)
@@ -956,22 +977,18 @@ class CompactGuiTests(DashboardMenuTests):
             border = max(1, round(dashboard._window_dpi(self.root) / 96))
             self.assertEqual(self.root.cget("bg"), self.strip.BORDER)
             self.assertEqual(int(self.strip._root_frame.pack_info()["padx"]), border)
-            # Taskbar attachment is an explicit menu action, including palette refresh.
+            # Docking (normally a drop on the taskbar) refreshes the palette.
             self.root.deiconify()
             self.root.update_idletasks()
-            menu = self.context_menu()
-            settings = self.submenu(menu)
             with patch.object(dashboard, "snapshot", return_value=[]):
-                settings.invoke(self.entry(settings, "작업표시줄에 넣기"))
+                self.strip._save({**dashboard.load_prefs(self.home), "docked": True})
             self.assertTrue(self.strip.docked)
             self.assertTrue(dashboard.load_prefs(self.home)["docked"])
             self.assertEqual(sample.call_count, 3)
             self.assertEqual(self.root.cget("bg"), self.strip._compact_palette["bg"])
             self.assertEqual(int(self.strip._root_frame.pack_info()["padx"]), 0)
-            menu = self.context_menu()
-            settings = self.submenu(menu)
             with patch.object(dashboard, "snapshot", return_value=[]):
-                settings.invoke(self.entry(settings, "작은 위젯"))
+                self.strip._save({**dashboard.load_prefs(self.home), "docked": False})
             self.root.update()  # Dispatch native Configure before checking the inset frame.
             self.assertFalse(self.strip.docked)
             self.assertFalse(dashboard.load_prefs(self.home)["docked"])

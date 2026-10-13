@@ -45,11 +45,35 @@ class ReleaseTests(unittest.TestCase):
     def test_assets_outside_this_repository_are_refused(self):
         evil = "https://example.com/handback-0.4.0-setup.exe"
         fetch = fetcher({updater.API_LATEST: release_json(installer=evil)})
-        self.assertIsNone(updater.check(fetch, current="0.3.4"))
+        self.assertIsNone(updater.check(fetch, current="0.3.4", installer_required=True))
+        # A source checkout still learns about the release, without any download URL.
+        release = updater.check(fetch, current="0.3.4", installer_required=False)
+        self.assertEqual((release["version"], release["installer"], release["sums"]), ("0.4.0", None, None))
+        with self.assertRaises(updater.UpdateError):
+            updater.download(release, "C:/never", fetch)
 
-    def test_release_without_installer_is_ignored(self):
+    def test_release_without_installer_is_ignored_only_when_this_build_installs_itself(self):
         data = json.dumps({"tag_name": "v0.4.0", "assets": []}).encode()
-        self.assertIsNone(updater.check(fetcher({updater.API_LATEST: data}), current="0.3.4"))
+        fetch = fetcher({updater.API_LATEST: data})
+        self.assertIsNone(updater.check(fetch, current="0.3.4", installer_required=True))
+        self.assertEqual(updater.check(fetch, current="0.3.4", installer_required=False)["version"], "0.4.0")
+        with mock.patch("handback.updater.supported", return_value=True):
+            self.assertIsNone(updater.check(fetch, current="0.3.4"))
+        with mock.patch("handback.updater.supported", return_value=False):
+            self.assertEqual(updater.check(fetch, current="0.3.4")["version"], "0.4.0")
+
+    def test_release_page_comes_from_this_repository_only(self):
+        fetch = fetcher({updater.API_LATEST: release_json()})
+        self.assertEqual(updater.latest_release(fetch, installer_required=False)["page"],
+                         "https://github.com/Femur-0607/handback/releases/tag/v0.4.0")
+        data = json.loads(release_json())
+        data["html_url"] = "https://github.com/Femur-0607/handback/releases/tag/v0.4.0"
+        fetch = fetcher({updater.API_LATEST: json.dumps(data).encode()})
+        self.assertEqual(updater.latest_release(fetch, installer_required=False)["page"], data["html_url"])
+        data["html_url"] = "https://example.com/phish"
+        fetch = fetcher({updater.API_LATEST: json.dumps(data).encode()})
+        self.assertEqual(updater.latest_release(fetch, installer_required=False)["page"],
+                         "https://github.com/Femur-0607/handback/releases/tag/v0.4.0")
 
 
 class DownloadTests(unittest.TestCase):

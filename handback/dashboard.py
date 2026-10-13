@@ -48,7 +48,8 @@ DASHBOARD_MUTEX = "Local\\handback-dashboard"
 DASHBOARD_SHOW_EVENT = "Local\\handback-dashboard-show"
 DETAIL_LIMIT = 5
 DEFAULT_PREFS = {"max_rows": 3, "order": [], "hidden": [], "mode": "taskbar",
-                 "compact_x": None, "compact_y": None, "docked": False, "update_check": True}
+                 "compact_x": None, "compact_y": None, "panel_x": None, "panel_y": None,
+                 "docked": False, "update_check": True}
 UPDATE_FIRST_MS = 60_000
 
 
@@ -384,6 +385,9 @@ def load_prefs(home=None):
         prefs["compact_x"] = stored["compact_x"]
     if type(stored.get("compact_y")) is int:
         prefs["compact_y"] = stored["compact_y"]
+    for key in ("panel_x", "panel_y"):  # bottom-right anchor of the expanded panel
+        if type(stored.get(key)) is int:
+            prefs[key] = stored[key]
     if type(stored.get("docked")) is bool:
         prefs["docked"] = stored["docked"]
     if type(stored.get("update_check")) is bool:
@@ -673,7 +677,12 @@ def taskbar_info(point=None):
         tray = user.FindWindowExW(hwnd, None, "TrayNotifyWnd", None)
         rect = wintypes.RECT()
         notification = rect.left if tray and user.GetWindowRect(tray, ctypes.byref(rect)) else None
-        r = data.rc
+        # ABM_GETTASKBARPOS reports physical pixels even when Windows DPI-virtualizes
+        # this process (the display scale changed after launch). GetWindowRect is
+        # virtualized like Tk's own geometry, so it keeps every rectangle in one space.
+        r = wintypes.RECT()
+        if not (hwnd and user.GetWindowRect(hwnd, ctypes.byref(r))):
+            r = data.rc
         return {"rect": (r.left, r.top, r.right, r.bottom), "edge": data.uEdge,
                 "auto_hide": auto_hide, "notification_left": notification, "hwnd": hwnd}
     except (AttributeError, OSError):
@@ -985,6 +994,30 @@ def compact_drop_geometry(info, monitor, x, y, width, height, *, cursor=None, dp
         if (width > 0 and height > 0 and left <= px < right and top <= py < bottom
                 and 2 * overlap_width * overlap_height >= width * height):
             return True, compact_geometry(info, monitor, width, height, x, dpi=dpi)
+    return False, geometry
+
+
+def taskbar_dockable(info):
+    return bool(info and info["edge"] in (1, 3) and not info["auto_hide"]
+                and info["rect"][2] > info["rect"][0] and info["rect"][3] > info["rect"][1])
+
+
+def panel_dock_geometry(info, area, width, height, x):
+    """Sit the expanded panel flush against a horizontal taskbar, keeping its x."""
+    left, top, right, bottom = area
+    width, height = min(width, right - left), min(height, bottom - top)
+    tb_left, tb_top, tb_right, tb_bottom = info["rect"]
+    y = tb_top - height if info["edge"] == 3 else tb_bottom
+    return (max(left, min(x, right - width)), max(top, min(y, bottom - height)), width, height)
+
+
+def panel_drop_geometry(info, area, x, y, width, height, *, cursor):
+    """Magnetize the expanded panel when it is released with the pointer in the taskbar."""
+    geometry = clamp_compact(x, y, width, height, area)
+    if taskbar_dockable(info):
+        left, top, right, bottom = info["rect"]
+        if left <= cursor[0] < right and top <= cursor[1] < bottom:
+            return True, panel_dock_geometry(info, area, width, height, geometry[0])
     return False, geometry
 
 
@@ -1821,20 +1854,21 @@ class Strip:
             bring_to_foreground(self._context_menu.window)
 
     def _sync_zorder_timer(self):
-        if self.mode == "taskbar" and sys.platform == "win32":
+        watched = self.mode == "taskbar" or self.docked
+        if watched and sys.platform == "win32":
             if self._zorder_timer is None:
                 self._watch_zorder()
         elif self._zorder_timer is not None:
             self.root.after_cancel(self._zorder_timer)
             self._zorder_timer = None
-        if self.mode == "taskbar" and sys.platform == "win32":
+        if watched and sys.platform == "win32":
             if self._foreground is None:
                 watcher = ForegroundWatcher()
                 if watcher.start():
                     self._foreground = watcher
         else:
             self._stop_foreground()
-        if self.mode != "taskbar" and self._fullscreen_hidden:
+        if not watched and self._fullscreen_hidden:
             show_widget_without_activation(self.root, True)
             self._fullscreen_hidden = False
 
@@ -2399,18 +2433,10 @@ class Strip:
             settings.append({"label": ("✓ " if prefs["max_rows"] == count else "    ") + label,
                              "command": lambda count=count: self._set_max_rows(prefs, count)})
         settings.extend([None, {"label": "표시 방식", "enabled": False}])
-        info = taskbar_info((self.root.winfo_x(), self.root.winfo_y()))
-        can_dock = bool(info and info["edge"] in (1, 3) and not info["auto_hide"])
-        for mode, docked, label in (("taskbar", False, "작은 위젯"),
-                                    ("taskbar", True, "작업표시줄에 넣기"),
-                                    ("panel", prefs["docked"], "펼친 패널 고정")):
-            selected = prefs["mode"] == mode and (mode == "panel" or prefs["docked"] == docked)
-            settings.append({"label": ("✓ " if selected else "    ") + label,
-                             "enabled": mode != "taskbar" or not docked or can_dock,
-                             "tooltip": "위쪽·아래쪽의 항상 표시된 작업표시줄에서 사용할 수 있습니다"
-                                        if mode == "taskbar" and docked and not can_dock else "",
-                             "command": lambda mode=mode, docked=docked: self._save(
-                                 {**prefs, "mode": mode, "docked": docked})})
+        for mode, label in (("taskbar", "작게 보기"), ("panel", "펼쳐 보기")):
+            settings.append({"label": ("✓ " if prefs["mode"] == mode else "    ") + label,
+                             "tooltip": "작업표시줄로 끌어다 놓으면 붙고, 바깥으로 끌면 떨어집니다",
+                             "command": lambda mode=mode: self._save({**prefs, "mode": mode})})
         settings.extend([None, {"label": "숨긴 프로젝트", "enabled": False}])
         for root in prefs["hidden"]:
             settings.append({"label": self.names.get(root, Path(root).name) + " 다시 표시",
@@ -2420,22 +2446,23 @@ class Strip:
             settings.append({"label": "숨긴 프로젝트 없음", "enabled": False})
         settings.extend([None, {"label": "순서 초기화 (최근 활동순)",
                                 "command": lambda: self._save({**prefs, "order": []})}])
-        if updater.supported():
-            on = prefs["update_check"]
-            settings.extend([None, {"label": ("✓ " if on else "    ") + "업데이트 자동 확인",
-                                    "command": lambda: self._save({**prefs, "update_check": not on})},
-                             {"label": f"지금 업데이트 확인 (현재 {__version__})",
-                              "enabled": not self._is_busy(("update",)), "command": self._check_update}])
         items.extend([{"label": "보기 설정 ▶", "children": settings}, None])
         if sys.platform == "win32":
             on = startup_shortcut().exists()
             items.append({"label": ("✓ " if on else "    ") + "Windows 시작 시 실행",
                           "enabled": not self._is_busy(("autostart",)),
                           "command": lambda: self._toggle_autostart(not on)})
+        auto = prefs["update_check"]
+        items.extend([{"label": ("✓ " if auto else "    ") + "업데이트 자동 확인",
+                       "command": lambda: self._save({**prefs, "update_check": not auto})},
+                      {"label": f"최신 버전 확인 (현재 {__version__})",
+                       "enabled": not self._is_busy(("update",)), "command": self._check_update}])
         checking = self._is_busy(("doctor",))
         if self._update and not project:
             updating = self._is_busy(("update",))
-            items[:0] = [{"label": "업데이트 받는 중…" if updating else f"업데이트 설치 ({self._update['version']})",
+            items[:0] = [{"label": "업데이트 받는 중…" if updating else f"업그레이드 ({self._update['version']})",
+                          "tooltip": ("설치 파일을 받아 검증한 뒤 그 자리에서 설치합니다" if updater.supported()
+                                      else "소스 실행 중이라 GitHub 릴리스 페이지를 엽니다"),
                           "enabled": not updating, "command": self._install_update}, None]
         items.extend([
             {"label": "설치 상태 점검 (점검 중…)" if checking else "설치 상태 점검",
@@ -2760,8 +2787,17 @@ class Strip:
 
     def _install_update(self):
         release = self._update
-        if not release or self._is_busy(("update",)) or not self._dialog(
-                "업데이트", f"handback {release['version']}(으)로 업데이트합니다.\n"
+        if not release or self._is_busy(("update",)):
+            return
+        if not updater.supported():
+            # A source checkout (or a non-Windows run) cannot replace itself.
+            if self._dialog("업그레이드", f"handback {release['version']}이(가) 나왔습니다 (현재 {__version__}).\n"
+                            "소스 체크아웃으로 실행 중이라 자동 설치는 하지 않고 GitHub 릴리스 페이지를 엽니다.",
+                            confirm=True):
+                webbrowser.open(release["page"])
+            return
+        if not self._dialog(
+                "업그레이드", f"handback {release['version']}(으)로 업그레이드합니다 (현재 {__version__}).\n"
                 f"설치 파일을 받아 SHA-256을 확인한 뒤 설치합니다. 현황판이 잠시 닫혔다가 다시 열립니다.",
                 confirm=True):
             return
@@ -2903,14 +2939,25 @@ class Strip:
             self.panel.geometry(f"{width}x{height}+{x}+{y}")
             return
         if self.mode == "panel" and self._fixed_viewport is not None:
+            if self.anchor is None:
+                prefs = load_prefs(self.home)
+                if prefs["panel_x"] is not None and prefs["panel_y"] is not None:
+                    self.anchor = (prefs["panel_x"], prefs["panel_y"])
             point = ((self.anchor[0] - 1, self.anchor[1] - 1) if self.anchor is not None
                      else (self.root.winfo_x(), self.root.winfo_y()))
             area = _monitor_area(self.root, *point)
             if self.anchor is None:
                 self.anchor = (area[2] - 8, area[3] - 4)
             width, height = self._fixed_viewport.dimensions(area[2] - area[0], area[3] - area[1])
-            x, y, width, height = clamp_compact(self.anchor[0] - width, self.anchor[1] - height,
-                                               width, height, area)
+            info = taskbar_info(point) if self.docked and not self._dragging else None
+            if taskbar_dockable(info):
+                self._taskbar_hwnd = info.get("hwnd")
+                full = _monitor_area(self.root, *point, full=True)
+                x, y, width, height = panel_dock_geometry(info, full, width, height,
+                                                          self.anchor[0] - width)
+            else:
+                x, y, width, height = clamp_compact(self.anchor[0] - width, self.anchor[1] - height,
+                                                   width, height, area)
             self._fixed_viewport.layout(width, height)
             self.root.geometry(f"{width}x{height}+{x}+{y}")
             return
@@ -3011,6 +3058,7 @@ class Strip:
                 self._compact_geometry = geometry
                 self._move_drag_window(geometry)
             return
+        self.docked = False
         self._move_drag_window(clamp_compact(x, y, self._drag_width, self._drag_height, area))
 
     def _move_drag_window(self, geometry):
@@ -3059,7 +3107,7 @@ class Strip:
         status_press, self._status_press = self._status_press, None
         self._start = None
         self._dragging = False
-        self._drag_context = None
+        drag_context, self._drag_context = self._drag_context, None
         if self.root.grab_current() == self.root:
             self.root.grab_release()
         self._drag_native_capture = None
@@ -3074,8 +3122,19 @@ class Strip:
                 save_prefs({**prefs, "compact_x": self.root.winfo_x(),
                             "compact_y": self.root.winfo_y(), "docked": self.docked}, self.home)
             else:
-                self.anchor = (self.root.winfo_x() + self.root.winfo_width(),
-                               self.root.winfo_y() + self.root.winfo_height())
+                x, y = self.root.winfo_x(), self.root.winfo_y()
+                width, height = self.root.winfo_width(), self.root.winfo_height()
+                if click and drag_context is not None:
+                    info, area, _ = drag_context
+                    docked, (x, y, width, height) = panel_drop_geometry(
+                        info, area, x, y, width, height, cursor=self._drag_cursor)
+                    self.docked = docked
+                self.anchor = (x + width, y + height)
+                prefs = load_prefs(self.home)
+                save_prefs({**prefs, "panel_x": self.anchor[0], "panel_y": self.anchor[1],
+                            "docked": self.docked}, self.home)
+                self._place()
+                self._sync_zorder_timer()
         elif click and self.mode == "taskbar":
             if status_press is not None:
                 self._conversations(event, self._compact_targets(*status_press))
@@ -3124,8 +3183,7 @@ class Strip:
             show_widget_without_activation(self.root, False)
         if getattr(sys, "frozen", False):  # source/PyPI users keep the current behaviour
             self.root.after(400, self._auto_setup)
-        if updater.supported():
-            self.root.after(UPDATE_FIRST_MS, self._update_timer)
+        self.root.after(UPDATE_FIRST_MS, self._update_timer)
         self.root.mainloop()
 
 

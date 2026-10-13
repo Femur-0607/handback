@@ -18,6 +18,7 @@ from . import __version__
 REPO = "Femur-0607/handback"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 DOWNLOAD_PREFIX = f"https://github.com/{REPO}/releases/download/"
+RELEASE_PAGE_PREFIX = f"https://github.com/{REPO}/releases/"
 CHECK_INTERVAL = 24 * 60 * 60
 TIMEOUT = 20
 INSTALLER_FLAGS = ("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS", "/RELAUNCH=1")
@@ -39,7 +40,11 @@ def is_newer(latest, current=__version__):
 
 
 def supported():
-    """Only the frozen Windows build was installed by setup.exe and can replace itself."""
+    """Only the frozen Windows build was installed by setup.exe and can replace itself.
+
+    Checking for a newer release works everywhere; a source checkout is pointed
+    at the release page instead of installing anything.
+    """
     from .invocation import frozen
     return sys.platform == "win32" and frozen()
 
@@ -51,10 +56,18 @@ def _get(url, timeout=TIMEOUT):
         return response.read()
 
 
-def latest_release(fetch=_get):
-    """{"version", "installer", "sums"} for the latest release, or None if it has no installer."""
+def latest_release(fetch=_get, installer_required=None):
+    """{"version", "installer", "sums", "page"} for the latest release.
+
+    installer and sums are None when the release carries no installer from this
+    repository; with installer_required (default: whether this build can install
+    itself) such a release is reported as None instead.
+    """
+    if installer_required is None:
+        installer_required = supported()
     data = json.loads(fetch(API_LATEST).decode("utf-8"))
-    version = str(data.get("tag_name") or "").lstrip("v")
+    tag = str(data.get("tag_name") or "")
+    version = tag.lstrip("v")
     if not parse_version(version):
         return None
     assets = {asset.get("name"): asset.get("browser_download_url") for asset in data.get("assets", [])
@@ -62,13 +75,18 @@ def latest_release(fetch=_get):
     installer = assets.get(f"handback-{version}-setup.exe")
     sums = assets.get("SHA256SUMS.txt")
     if not (installer and sums and all(str(url).startswith(DOWNLOAD_PREFIX) for url in (installer, sums))):
+        installer = sums = None
+    if installer_required and not installer:
         return None
-    return {"version": version, "installer": installer, "sums": sums}
+    page = str(data.get("html_url") or "")
+    if not page.startswith(RELEASE_PAGE_PREFIX):
+        page = f"{RELEASE_PAGE_PREFIX}tag/{tag}"
+    return {"version": version, "installer": installer, "sums": sums, "page": page}
 
 
-def check(fetch=_get, current=__version__):
+def check(fetch=_get, current=__version__, installer_required=None):
     """The latest release when it is newer than this build, else None."""
-    release = latest_release(fetch)
+    release = latest_release(fetch, installer_required)
     return release if release and is_newer(release["version"], current) else None
 
 
@@ -82,6 +100,8 @@ def expected_hash(sums_text, name):
 
 def download(release, folder, fetch=_get):
     """Save the installer into folder and verify it; returns its path."""
+    if not (release.get("installer") and release.get("sums")):
+        raise UpdateError("this release has no installer to download")
     name = f"handback-{release['version']}-setup.exe"
     want = expected_hash(fetch(release["sums"]).decode("utf-8", "replace"), name)
     data = fetch(release["installer"], timeout=300)

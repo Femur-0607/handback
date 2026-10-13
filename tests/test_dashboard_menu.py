@@ -30,22 +30,49 @@ class MenuActionTests(DashboardMenuTests):
         return patch.object(self.strip, "_run_async", side_effect=run)
 
     def test_update_item_and_settings_toggle(self):
-        release = {"version": "9.0.0", "installer": "i", "sums": "s"}
-        with patch.object(dashboard.updater, "supported", return_value=True):
-            self.strip._update = release
-            menu = self.context_menu()
-            self.assertEqual(self.labels(menu)[0], "업데이트 설치 (9.0.0)")
-            settings = [item["label"] for item in self.submenu(menu).items if item]
-            self.assertIn("✓ 업데이트 자동 확인", settings)
-            self.strip._close_menu()
-            self.assertNotIn("업데이트 설치 (9.0.0)", self.labels(self.context_menu(self.project())))
+        release = {"version": "9.0.0", "installer": "i", "sums": "s", "page": "https://github.com/x"}
+        for supported in (True, False):
+            with self.subTest(supported=supported), \
+                    patch.object(dashboard.updater, "supported", return_value=supported):
+                self.strip._update = release
+                menu = self.context_menu()
+                self.assertEqual(self.labels(menu)[0], "업그레이드 (9.0.0)")
+                self.assertIn("릴리스 페이지" if not supported else "설치", menu.items[0]["tooltip"])
+                labels = [item["label"] for item in menu.items if item]
+                self.assertIn("✓ 업데이트 자동 확인", labels)
+                self.assertIn(f"최신 버전 확인 (현재 {dashboard.__version__})", labels)
+                settings = [item["label"] for item in self.submenu(menu).items if item]
+                self.assertNotIn("✓ 업데이트 자동 확인", settings)
+                self.strip._close_menu()
+                self.assertNotIn("업그레이드 (9.0.0)", self.labels(self.context_menu(self.project())))
+                self.strip._close_menu()
         self.strip._update = None
         self.assertTrue(dashboard.load_prefs(self.home)["update_check"])
+
+    def test_source_checkout_upgrade_opens_the_release_page_instead_of_installing(self):
+        release = {"version": "9.0.0", "installer": None, "sums": None,
+                   "page": "https://github.com/Femur-0607/handback/releases/tag/v9.0.0"}
+        self.strip._update = release
+        with self.sync_async(), patch.object(dashboard.updater, "supported", return_value=False), \
+                patch.object(dashboard.updater, "download") as get, \
+                patch.object(dashboard.webbrowser, "open") as browser, \
+                patch.object(self.strip, "quit") as quit_:
+            with patch.object(self.strip, "_dialog", return_value=False):
+                self.strip._install_update()
+            browser.assert_not_called()
+            with patch.object(self.strip, "_dialog", return_value=True) as dialog:
+                self.strip._install_update()
+            browser.assert_called_once_with(release["page"])
+            self.assertIn("릴리스 페이지", dialog.call_args[0][1])
+            get.assert_not_called()
+            quit_.assert_not_called()
+        self.strip._update = None
 
     def test_install_update_confirms_then_quits_after_launch(self):
         release = {"version": "9.0.0", "installer": "i", "sums": "s"}
         self.strip._update = release
-        with self.sync_async(), patch.object(dashboard.updater, "download", return_value="C:/u/setup.exe") as get,                 patch.object(dashboard.updater, "run_installer") as launch,                 patch.object(self.strip, "quit") as quit_:
+        with self.sync_async(), patch.object(dashboard.updater, "supported", return_value=True), \
+                patch.object(dashboard.updater, "download", return_value="C:/u/setup.exe") as get,                 patch.object(dashboard.updater, "run_installer") as launch,                 patch.object(self.strip, "quit") as quit_:
             with patch.object(self.strip, "_dialog", return_value=False):
                 self.strip._install_update()
             get.assert_not_called()
@@ -57,7 +84,8 @@ class MenuActionTests(DashboardMenuTests):
 
     def test_failed_download_keeps_running(self):
         self.strip._update = {"version": "9.0.0", "installer": "i", "sums": "s"}
-        with self.sync_async(), patch.object(dashboard.updater, "download",
+        with self.sync_async(), patch.object(dashboard.updater, "supported", return_value=True), \
+                patch.object(dashboard.updater, "download",
                                              side_effect=dashboard.updater.UpdateError("hash")),                 patch.object(dashboard.updater, "run_installer") as launch,                 patch.object(self.strip, "quit") as quit_,                 patch.object(self.strip, "_dialog", return_value=True) as dialog:
             self.strip._install_update()
         launch.assert_not_called(); quit_.assert_not_called()
@@ -72,7 +100,8 @@ class MenuActionTests(DashboardMenuTests):
     def test_root_menu_order_and_project_items(self):
         root = self.project()
         menu = self.context_menu()
-        expected = ["보기 설정 ▶", "설치 상태 점검", "설정 (스킬·훅 설치·복구)", "새로고침", "닫기"]
+        expected = ["보기 설정 ▶", "업데이트 자동 확인", f"최신 버전 확인 (현재 {dashboard.__version__})",
+                    "설치 상태 점검", "설정 (스킬·훅 설치·복구)", "새로고침", "닫기"]
         if dashboard.sys.platform == "win32":
             expected.insert(1, "Windows 시작 시 실행")
         self.assertEqual(self.labels(menu), expected)

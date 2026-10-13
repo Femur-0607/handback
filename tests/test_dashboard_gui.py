@@ -478,11 +478,12 @@ class DashboardMenuTests(unittest.TestCase):
         menu = self.context_menu()
         self.assertEqual([item["label"] for item in menu.items if item],
                          ["보기 설정 ▶", *(["    Windows 시작 시 실행"] if dashboard.sys.platform == "win32" else []),
+                          "✓ 업데이트 자동 확인", f"최신 버전 확인 (현재 {dashboard.__version__})",
                           "설치 상태 점검", "설정 (스킬·훅 설치·복구)", "새로고침", "닫기"])
         settings = self.submenu(menu)
         self.assertFalse(settings.items[self.entry(settings, "펼친 패널 표시 줄 수")]["enabled"])
         self.assertEqual([item["label"] for item in settings.items if item and item["label"].startswith("✓")],
-                         ["✓ 3줄", "✓ 펼친 패널 고정"])
+                         ["✓ 3줄", "✓ 펼쳐 보기"])
         index = self.entry(settings, "숨긴 프로젝트 없음")
         self.assertFalse(settings.items[index]["enabled"])
         menu = self.context_menu("project")
@@ -491,7 +492,7 @@ class DashboardMenuTests(unittest.TestCase):
         menu.invoke(index)
         self.assertIs(self.strip._context_menu, menu)
         self.assertEqual(len([item for item in menu.items if item]),
-                         12 + (dashboard.sys.platform == "win32"))
+                         14 + (dashboard.sys.platform == "win32"))
 
     def test_keyboard_skips_disabled_and_submenu_returns_to_parent(self):
         menu = self.context_menu("project")
@@ -511,35 +512,81 @@ class DashboardMenuTests(unittest.TestCase):
         self.assertIsNone(menu.child)
         self.assertIs(self.strip._context_menu, menu)
 
-    @patch.object(dashboard, "taskbar_info", return_value={
-        "rect": (0, 1032, 1920, 1080), "edge": 3, "auto_hide": False})
-    def test_view_menu_separates_small_widget_taskbar_and_pinned_panel(self, _taskbar):
-        for label, mode, docked in (("작은 위젯", "taskbar", False),
-                                    ("작업표시줄에 넣기", "taskbar", True),
-                                    ("펼친 패널 고정", "panel", False)):
-            with self.subTest(label=label):
-                menu = self.context_menu()
-                settings = self.submenu(menu)
-                with patch.object(self.strip, "_save") as save:
-                    settings.invoke(self.entry(settings, label))
-                prefs = save.call_args.args[0]
-                self.assertEqual((prefs["mode"], prefs["docked"]), (mode, docked))
-
-    def test_view_menu_disables_taskbar_attachment_when_unavailable(self):
+    def test_view_menu_offers_two_modes_and_keeps_docking_to_dragging(self):
+        """Docking is only ever decided by a drop on the taskbar, never by the menu."""
         bottom = {"rect": (0, 1032, 1920, 1080), "edge": 3, "auto_hide": False}
-        for info in (None, {**bottom, "auto_hide": True},
-                     {**bottom, "rect": (0, 0, 48, 1080), "edge": 0},
-                     {**bottom, "rect": (1872, 0, 1920, 1080), "edge": 2}):
-            with self.subTest(taskbar=info), patch.object(dashboard, "taskbar_info", return_value=info):
-                menu = self.context_menu()
-                settings = self.submenu(menu)
-                index = self.entry(settings, "작업표시줄에 넣기")
-                self.assertFalse(settings.items[index]["enabled"])
-                self.assertTrue(settings.items[index]["tooltip"])
-                self.assertTrue(settings.items[self.entry(settings, "작은 위젯")]["enabled"])
-                with patch.object(self.strip, "_save") as save:
-                    settings.invoke(index)
-                    save.assert_not_called()
+        for info in (bottom, None, {**bottom, "auto_hide": True},
+                     {**bottom, "rect": (0, 0, 48, 1080), "edge": 0}):
+            for docked in (False, True):
+                dashboard.save_prefs({**dashboard.load_prefs(self.home), "docked": docked}, self.home)
+                for label, mode in (("작게 보기", "taskbar"), ("펼쳐 보기", "panel")):
+                    with self.subTest(taskbar=info, docked=docked, label=label), \
+                            patch.object(dashboard, "taskbar_info", return_value=info):
+                        menu = self.context_menu()
+                        settings = self.submenu(menu)
+                        labels = [item["label"].strip("✓ ") for item in settings.items if item]
+                        self.assertNotIn("작업표시줄에 넣기", labels)
+                        index = self.entry(settings, label)
+                        self.assertTrue(settings.items[index].get("enabled", True))
+                        with patch.object(self.strip, "_save") as save:
+                            settings.invoke(index)
+                        prefs = save.call_args.args[0]
+                        self.assertEqual((prefs["mode"], prefs["docked"]), (mode, docked))
+
+    def test_docked_expanded_panel_sits_on_the_taskbar_and_restores_its_anchor(self):
+        info = {"rect": (0, 1032, 1920, 1080), "edge": 3, "auto_hide": False, "hwnd": 7}
+        dashboard.save_prefs({**dashboard.load_prefs(self.home), "mode": "panel", "docked": True,
+                              "panel_x": 900, "panel_y": 700}, self.home)
+        self.strip.anchor = None
+        self.root.deiconify()
+        with patch.object(dashboard, "taskbar_info", return_value=info), \
+                patch.object(dashboard, "_monitor_area", return_value=(0, 0, 1920, 1080)), \
+                patch.object(dashboard, "snapshot", return_value=[]):
+            self.strip.refresh(reschedule=False)
+            self.root.update_idletasks()
+            width, height = self.root.winfo_width(), self.root.winfo_height()
+            self.assertTrue(self.strip.docked)
+            self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), (900 - width, 1032 - height))
+            self.assertEqual(self.strip._taskbar_hwnd, 7)
+            # A left-hand taskbar cannot host the panel: the saved anchor is used instead.
+            with patch.object(dashboard, "taskbar_info", return_value={**info, "edge": 0}):
+                self.strip.anchor = None
+                self.strip.refresh(reschedule=False)
+                self.root.update_idletasks()
+            self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), (900 - width, 700 - height))
+
+    def test_dropping_the_expanded_panel_in_the_taskbar_docks_and_saves_it(self):
+        info = {"rect": (0, 1032, 1920, 1080), "edge": 3, "auto_hide": False, "hwnd": 7}
+        dashboard.save_prefs({**dashboard.load_prefs(self.home), "mode": "panel"}, self.home)
+        self.strip.anchor = None
+        self.root.deiconify()
+        with patch.object(dashboard, "taskbar_info", return_value=info), \
+                patch.object(dashboard, "_monitor_area", return_value=(0, 0, 1920, 1080)), \
+                patch.object(dashboard, "_monitor_rects", return_value=[(0, 0, 1920, 1080)]), \
+                patch.object(dashboard, "snapshot", return_value=[]), \
+                patch.object(dashboard, "_native_drag_mover", return_value=None), \
+                patch.object(dashboard, "_pointer_capture", return_value=None), \
+                patch.object(dashboard, "_pointer_capture_owned", return_value=True):
+            self.strip.refresh(reschedule=False)
+            self.root.update_idletasks()
+            width, height = self.root.winfo_width(), self.root.winfo_height()
+            self.assertFalse(self.strip.docked)
+            x0, y0 = self.root.winfo_x(), self.root.winfo_y()
+            cursors = iter([(x0 + 5, y0 + 5), (x0 + 5, y0 + 5), (300, 1050), (300, 1050), (300, 1050)])
+            with patch.object(self.root, "winfo_pointerxy", side_effect=lambda: next(cursors, (300, 1050))):
+                self.strip._press(self.event)
+                self.strip._drag(self.event)
+                self.strip._drag(self.event)
+                self.strip._flush_drag(read_pointer=True)
+                self.strip._release(self.event)
+            self.root.update_idletasks()
+            prefs = dashboard.load_prefs(self.home)
+            self.assertTrue(self.strip.docked)
+            self.assertTrue(prefs["docked"])
+            self.assertEqual(self.root.winfo_y(), 1032 - height)
+            self.assertEqual((prefs["panel_x"], prefs["panel_y"]),
+                             (self.root.winfo_x() + width, self.root.winfo_y() + height))
+            self.assertIsNotNone(self.strip._zorder_timer if dashboard.sys.platform == "win32" else 1)
 
     def test_keyboard_bindings_invoke_and_mouse_hover_opens_submenu(self):
         menu = self.context_menu()
