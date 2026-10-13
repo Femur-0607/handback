@@ -22,6 +22,31 @@ from .state_transition import legacy_warnings
 # October 7 preflight versions in docs/verification/README.md. These are
 # historical observations, not a claim that every later live run used them.
 VERIFIED_VERSIONS = {"codex": "0.153.4", "claude": "2.1.292", "antigravity": None}
+VERSION_PATTERN = r"\d+\.\d+\.\d+(?:[-+][\w.-]+)?"
+# A passing `handback selftest` records the app version it ran against here, under
+# the state home, so doctor can tell a locally tested version from an untested one.
+SELFTEST_RECORD = "selftest.json"
+
+
+def selftest_record(home):
+    """Per-agent results of the last passing local selftest; {} when absent or unreadable."""
+    try:
+        data = json.loads((Path(home) / SELFTEST_RECORD).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def record_selftest(home, agent, version, ok):
+    """Write the selftest outcome for one agent; the version is reduced to its number."""
+    from .state import atomic_json
+    match = re.search(VERSION_PATTERN, version or "")
+    data = selftest_record(home)
+    data[agent] = {"version": match[0] if match else (version or "unknown"), "ok": bool(ok),
+                   "utc": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    path = Path(home) / SELFTEST_RECORD
+    atomic_json(path, data)
+    return path
 
 
 def timestamp(value):
@@ -192,7 +217,18 @@ def skill_status(agent):
         return "legacy agent-relay skill; reinstall" if (root / "skills/agent-relay/SKILL.md").is_file() else "missing"
     current = command_text() in content or (not frozen() and len(entry_args()) == 1 and
               entry_args()[0].replace("\\", "/").lower() in content.replace("\\", "/").lower())
-    return "points at this installation" if current else "installation reference differs or is unverified"
+    if current:
+        return "points at this installation"
+    # The installed skill names the entry point that wrote it. Another handback (a second
+    # checkout, a pip copy, a frozen build) is not a broken skill, so say which one it is.
+    other = re.search(r"Run `(.+?) <command>`", content)
+    if other:
+        return "points at another handback installation (" + other.group(1) + "); this run is " + command_text()
+    return "installation reference differs or is unverified"
+
+
+def other_installation(detail):
+    return detail.startswith("points at another handback installation")
 
 
 def hooks_present(agent, home):
@@ -202,6 +238,26 @@ def hooks_present(agent, home):
     # Compare actual config, not merely an installer receipt. No installation or trust writes.
     return all(h._spec(agent, event, None, home)[0] in h._hook_groups(data, event, path)
                for event in h.EVENTS[agent])
+
+
+def hooks_entry(agent, home):
+    """Entry point of a handback hook that another installation registered, or None."""
+    from . import hook_install as h
+    path = h._config_path(agent, None)
+    data = h._object(h._bytes(path), path)
+    for event in h.EVENTS[agent]:
+        for group in h._hook_groups(data, event, path):
+            handlers = group.get("hooks") if isinstance(group, dict) else None
+            for handler in handlers if isinstance(handlers, list) else []:
+                if not isinstance(handler, dict) or handler.get("type") != "command":
+                    continue
+                args = handler.get("args")
+                parts = [str(handler.get("command", ""))] + ([str(a) for a in args] if isinstance(args, list) else [])
+                text = " ".join(parts)
+                head, marker, tail = text.partition(" hook ")
+                if marker and "--agent" in tail and "--state-home" in tail and "handback" in head.lower():
+                    return head.strip()
+    return None
 
 
 def checklist(state, resolved, agents):
@@ -249,7 +305,9 @@ def checklist(state, resolved, agents):
         except (OSError, ValueError):
             detail = "cannot read skill"
         add(agent + " skill", "OK" if detail == "points at this installation" else "WARN", detail,
-            "handback install-skills")
+            "Use one handback installation: run doctor from the one named, make this one the owner with "
+            "handback install-skills, or pip install -e <checkout> so both are the same code."
+            if other_installation(detail) else "handback install-skills")
     configured = resolved.get("sources", {}).get("lead") != "builtin"
     add("Topology", "FAIL" if error else "OK" if configured else "WARN",
         error or (values["lead"].split(":")[0] + " -> " + ",".join(values["workers"]) +
@@ -260,19 +318,46 @@ def checklist(state, resolved, agents):
             present = hooks_present(lead, state.home)
         except (OSError, ValueError):
             present = False
-        add(lead + " recovery hooks", "OK" if present else "WARN", "registration for this installation/state home; execution/trust not verified",
-            f"handback install-hooks --agents {lead} --state-home {quote(state.home)}")
+        other = None
+        if not present:
+            try:
+                other = hooks_entry(lead, state.home)
+            except (OSError, ValueError):
+                other = None
+        if present:
+            detail = "registration for this installation/state home; execution/trust not verified"
+            action = None
+        elif other:
+            from .invocation import command_text
+            detail = ("registered by another handback installation (" + other + "); this run is " + command_text() +
+                      ". Hooks follow the installation that owns the skills")
+            action = ("Use one handback installation: run doctor from the one named, or make this one the owner with "
+                      f"handback install-hooks --agents {lead} --state-home {quote(state.home)}")
+        else:
+            detail = "not registered for this installation/state home"
+            action = f"handback install-hooks --agents {lead} --state-home {quote(state.home)}"
+        add(lead + " recovery hooks", "OK" if present else "WARN", detail, action)
+    local = selftest_record(state.home)
     for agent in agents:
         name = agent["agent"]
         if name == "antigravity" and not enabled:
             continue
         version = agent.get("version") or "unknown"
-        match = re.search(r"\d+\.\d+\.\d+(?:[-+][\w.-]+)?", version)
+        match = re.search(VERSION_PATTERN, version)
+        number = match[0] if match else None
         verified = VERIFIED_VERSIONS[name]
-        tested = bool(verified and match and match[0] == verified)
-        add(name + " version", "OK" if tested else "WARN", version +
-            (" (historical preflight match)" if tested else " (untested version; recorded=" + str(verified or "unknown") + ")"),
-            "handback selftest" if name == "codex" else "Verify a small authorized live round trip for this app version.")
+        tested = bool(verified and number and number == verified)
+        record = local.get(name) if isinstance(local.get(name), dict) else {}
+        locally = bool(number and record.get("ok") and record.get("version") == number)
+        if tested:
+            detail = version + " (historical preflight match)"
+        elif locally:
+            detail = version + " (local selftest ok " + str(record.get("utc", ""))[:10] + "; release-verified=" + str(verified or "unknown") + ")"
+        else:
+            detail = version + " (untested version; recorded=" + str(verified or "unknown") + ")"
+        add(name + " version", "OK" if tested or locally else "WARN", detail,
+            "handback selftest (a passing run records this version locally and clears this warning)"
+            if name == "codex" else "Verify a small authorized live round trip for this app version.")
     for request in state.requests():
         if request.get("status") not in collector.OPEN_STATES:
             continue

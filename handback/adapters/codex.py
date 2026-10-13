@@ -542,4 +542,13 @@ def cmd_selftest(_args=None, executable=None):
         print(f"rollout {name}: {'seen' if found else 'NOT SEEN in recent sessions'}")
         ok &= found
     print("selftest: " + ("ok" if ok else "FAILED"))
+    if ok:
+        # doctor reads this record, so a passing selftest clears its "untested version" warning.
+        from ..diagnostics import record_selftest
+        from ..state import state_home
+        try:
+            path = record_selftest(state_home(), "codex", _version(codex), True)
+            print(f"recorded: {path}")
+        except OSError as exc:
+            print(f"record not written ({exc}); doctor will keep warning about this version", file=sys.stderr)
     return 0 if ok else 1

@@ -32,7 +32,8 @@ class DiagnosticTests(unittest.TestCase):
                                              ("claude", "2.1.292 (Claude Code)"),
                                              ("antigravity", None))]
         for target, value in (("queue_supported", True), ("skill_status", "points at this installation"),
-                              ("hooks_present", True), ("state_warnings", []), ("legacy_warnings", [])):
+                              ("hooks_present", True), ("hooks_entry", None), ("state_warnings", []),
+                              ("legacy_warnings", [])):
             mock = patch.object(d, target, return_value=value)
             mock.start()
             self.addCleanup(mock.stop)
@@ -169,7 +170,45 @@ class DiagnosticTests(unittest.TestCase):
         code, out, _ = self.invoke("doctor")
         self.assertEqual(code, 0)
         self.assertIn("WARN codex version: codex-cli 0.999.0 (untested version", out)
+        self.assertIn("records this version locally", out)
         self.assertIn("WARN claude version: unknown", out)
+
+    def test_local_selftest_record_clears_the_version_warning(self):
+        self.agents[0]["version"] = "codex-cli 0.162.0-alpha.17.2"
+        code, out, _ = self.invoke("doctor")
+        self.assertIn("WARN codex version: codex-cli 0.162.0-alpha.17.2 (untested version", out)
+        path = d.record_selftest(self.home, "codex", "codex-cli 0.162.0-alpha.17.2", True)
+        self.assertEqual(path, self.home / d.SELFTEST_RECORD)
+        self.assertEqual(d.selftest_record(self.home)["codex"]["version"], "0.162.0-alpha.17.2")
+        code, out, _ = self.invoke("doctor")
+        self.assertEqual(code, 0)
+        self.assertIn("OK codex version: codex-cli 0.162.0-alpha.17.2 (local selftest ok", out)
+        self.assertIn("release-verified=0.153.4", out)
+        # A record for another version, or a failed run, does not vouch for this one.
+        d.record_selftest(self.home, "codex", "codex-cli 0.170.0", True)
+        _, out, _ = self.invoke("doctor")
+        self.assertIn("WARN codex version: codex-cli 0.162.0-alpha.17.2 (untested version", out)
+        d.record_selftest(self.home, "codex", "codex-cli 0.162.0-alpha.17.2", False)
+        _, out, _ = self.invoke("doctor")
+        self.assertIn("WARN codex version: codex-cli 0.162.0-alpha.17.2 (untested version", out)
+        (self.home / d.SELFTEST_RECORD).write_text("not json", encoding="utf-8")
+        self.assertEqual(d.selftest_record(self.home), {})
+
+    def test_skill_and_hooks_name_the_other_installation(self):
+        other = "& 'C:\\\\elsewhere\\\\python.exe' '-X' 'utf8' 'C:\\\\elsewhere\\\\handback.py'"
+        with patch.object(d, "skill_status", return_value="points at another handback installation (" + other + "); this run is X"), \
+                patch.object(d, "hooks_present", return_value=False), \
+                patch.object(d, "hooks_entry", return_value=other):
+            code, out, _ = self.invoke("doctor")
+        self.assertEqual(code, 0)
+        self.assertIn("WARN claude skill: points at another handback installation (" + other, out)
+        self.assertIn("Use one handback installation", out)
+        self.assertNotIn("Next: handback install-skills", out)
+        self.assertIn("WARN claude recovery hooks: registered by another handback installation (" + other, out)
+        self.assertIn("Hooks follow the installation that owns the skills", out)
+        with patch.object(d, "hooks_present", return_value=False):
+            _, out, _ = self.invoke("doctor")
+        self.assertIn("WARN claude recovery hooks: not registered for this installation/state home | Next: handback install-hooks", out)
 
     def test_report_drops_home_project_ids_and_freeform_app_output(self):
         self.request("b" * 32)
@@ -323,6 +362,32 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(code, 5)
         self.assertTrue(out.startswith("FAIL "))
         self.assertEqual(out.count(" | Next: "), 1)
+
+
+class HooksEntryTests(unittest.TestCase):
+    """Unpatched reader: which installation registered the recovery hooks."""
+
+    def test_hooks_entry_reads_only_handback_hook_handlers(self):
+        from handback import hook_install as h
+        temp = tempfile.TemporaryDirectory(dir=Path(__file__).parent)
+        self.addCleanup(temp.cleanup)
+        config_dir = Path(temp.name) / "claude-config"
+        config_dir.mkdir(parents=True)
+        settings = config_dir / "settings.json"
+        foreign = {"type": "command", "command": "python", "args": ["other.py", "hook", "--agent", "claude"]}
+        theirs = {"type": "command", "command": "C:\\elsewhere\\python.exe",
+                  "args": ["-X", "utf8", "C:\\elsewhere\\handback.py", "hook", "--agent", "claude",
+                           "--event", "SessionStart", "--state-home", "C:\\elsewhere\\.handback"]}
+        settings.write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [foreign]}, {"hooks": [theirs]}],
+                                                   "UserPromptSubmit": []}}), encoding="utf-8")
+        with patch.dict(os.environ, CLAUDE_CONFIG_DIR=str(config_dir)):
+            self.assertEqual(h._config_path("claude", None), settings.resolve())
+            self.assertEqual(d.hooks_entry("claude", temp.name),
+                             "C:\\elsewhere\\python.exe -X utf8 C:\\elsewhere\\handback.py")
+            settings.write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [foreign]}]}}), encoding="utf-8")
+            self.assertIsNone(d.hooks_entry("claude", temp.name))
+            settings.unlink()
+            self.assertIsNone(d.hooks_entry("claude", temp.name))
 
 
 if __name__ == "__main__":

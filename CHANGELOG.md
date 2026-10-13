@@ -5,6 +5,22 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Fixed
+
+- `doctor` kept warning "untested version" for a Codex build after `selftest`
+  had passed against it, and its next step was that same `selftest`
+  ([#1](https://github.com/Femur-0607/handback/issues/1)). A passing `selftest`
+  now records the Codex version in `<state home>/selftest.json`; `doctor` reports
+  such a version as `OK … (local selftest ok <date>; release-verified=<version>)`.
+  The release-verified table is unchanged.
+- `doctor` reported "installation reference differs or is unverified" for the
+  skills and a bare WARN for the recovery hooks when a different handback
+  installation (a second checkout, a non-editable pip copy, a frozen build) had
+  installed them, and its next step would have moved them to the running copy
+  ([#2](https://github.com/Femur-0607/handback/issues/2)). Both checks now name
+  the entry point that owns the file and this run's entry point, and suggest
+  choosing one installation (or `pip install -e <checkout>`) instead.
+
 ## [0.3.5] - 2026-10-12
 
 ### Added
