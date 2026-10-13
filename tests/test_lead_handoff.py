@@ -25,7 +25,7 @@ class LeadHandoffTests(unittest.TestCase):
                          GIT_CEILING_DIRECTORIES=str(directory))
         env.start()
         self.addCleanup(env.stop)
-        for name in ("HANDBACK_LEAD", "HANDBACK_WORKERS"):
+        for name in ("HANDBACK_LEAD", "HANDBACK_WORKERS", "CLAUDE_CODE_SESSION_ID"):
             os.environ.pop(name, None)
         self.adapter = FakeAdapter()
         self.followed = []
@@ -105,3 +105,75 @@ class LeadHandoffTests(unittest.TestCase):
         self.assertEqual(self.followed, [new, old])
         self.assertEqual(len(self.mail("old", old)), 1)
         self.assertEqual(len(self.adapter.deliveries), 2)
+
+
+class CallerIdentityTests(LeadHandoffTests):
+    """Issue #3: a second Claude session in the same root must not receive another session's result."""
+
+    def call(self, *args, session=None):
+        out, err = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": session} if session else {}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main([*args] if args[0] == "new" else [*args, "--root", str(self.root)])
+        return code, out.getvalue(), err.getvalue()
+
+    def send_as(self, session, worker, *extra):
+        return self.call("send", "--to", "codex:" + worker, "--text", "bounded task",
+                         "--no-wait", "--no-collect", *extra, session=session)
+
+    def test_non_lead_session_is_refused_before_anything_is_sent(self):
+        self.switch("b")
+        code, _, err = self.send_as("a", "first")
+        self.assertNotEqual(code, 0)
+        self.assertIn("claude:a", err)
+        self.assertIn("--return-to claude:a", err)
+        self.assertIn("--lead claude:a", err)
+        self.assertEqual(self.state.requests(), [])
+        self.assertEqual(self.adapter.deliveries, [])
+
+    def test_lead_session_and_explicit_return_to_are_accepted(self):
+        self.switch("b")
+        code, out, err = self.send_as("b", "first")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.state.load_request(json.loads(out)["request_id"])["return_to"], "claude:b")
+        code, out, err = self.send_as("a", "second", "--return-to", "claude:a")
+        self.assertEqual(code, 0, err)
+        request = json.loads(out)["request_id"]
+        self.assertEqual(self.state.load_request(request)["return_to"], "claude:a")
+        self.run_cli("wait", "--request", request, "--timeout", "1")
+        self.assertEqual(len(self.mail("a", request)), 1)
+        self.assertEqual(self.mail("b", request), [])
+        # The topology Lead is unchanged.
+        self.assertEqual(cli.lead_handle(cli.config.resolve(self.root)["values"]), "claude:b")
+
+    def test_return_to_requires_a_concrete_handle(self):
+        self.switch("b")
+        for value in ("claude:lead", "claude:", "a"):
+            code, _, err = self.send_as(None, "first", "--return-to", value)
+            self.assertNotEqual(code, 0, value)
+        self.assertEqual(self.state.requests(), [])
+
+    def test_new_refuses_before_creating_a_worker_thread(self):
+        self.switch("b")
+        created = []
+        self.adapter.new_thread = lambda *args, **kwargs: created.append(args) or "thread"
+        code, _, err = self.call("new", "--cwd", str(self.root), "--name", "unit", "--worker", "codex",
+                                 "--text", "bounded task", "--no-wait", session="a")
+        self.assertNotEqual(code, 0)
+        self.assertIn("not the configured Lead", err)
+        self.assertEqual(created, [])
+
+    def test_placeholder_lead_is_not_compared(self):
+        self.run_cli("use", "--lead", "claude", "--workers", "codex")
+        code, _, err = self.send_as("a", "first")
+        self.assertEqual(code, 0, err)
+
+    def test_use_warns_when_the_previous_lead_is_still_active(self):
+        self.switch("a")
+        self.send("first")
+        code, _, err = self.call("use", "--lead", "claude:b", "--workers", "codex")
+        self.assertEqual(code, 0, err)
+        self.assertIn("previous Lead claude:a still has 1 open request(s)", err)
+        self.assertIn("--return-to", err)
+        code, _, err = self.call("use", "--lead", "claude:c", "--workers", "codex")
+        self.assertNotIn("previous Lead", err)

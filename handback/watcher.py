@@ -37,6 +37,10 @@ def is_fresh(record, recipient, now=None):
     return -STALE_SECONDS < age < STALE_SECONDS
 
 
+def is_live(project_path, recipient):
+    return is_fresh(_read(lease_path(project_path, recipient)), recipient)
+
+
 def _read(path):
     try:
         with path.open("rb") as stream:

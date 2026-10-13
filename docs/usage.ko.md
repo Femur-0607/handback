@@ -152,7 +152,7 @@ python handback.py new --role lead --worker codex --cwd "<absolute-checkout>" --
 
 현황판: 프로젝트 우클릭 → **역할 지정 ▶**(Lead/Workers). Lead는 Claude만 고를 수 있고 Codex·Antigravity Lead는 해당 앱에서 지정합니다. 요청이 진행 중이거나 환경변수 `HANDBACK_LEAD`·`HANDBACK_WORKERS`가 있으면 막힙니다. 설치 점검은 우클릭 → **설치 상태 점검**.
 
-`status`는 조합·설정 출처·열린 요청과 전달 상태를, `doctor`는 앱 탐지·제약·상태 경고를 읽기 전용으로 보여 줍니다. Claude의 `--workers`는 `codex`, `antigravity`, `codex,antigravity` 중에서 고릅니다. `use`는 저장소 밖 전환 상태만 바꾸므로 **조합 전환에 프로젝트 규칙 수정이 필요 없습니다.** 이미 열린 요청의 `return_to`는 발송 당시 Lead를 유지합니다.
+`status`는 조합·설정 출처·열린 요청과 전달 상태를, `doctor`는 앱 탐지·제약·상태 경고를 읽기 전용으로 보여 줍니다. Claude의 `--workers`는 `codex`, `antigravity`, `codex,antigravity` 중에서 고릅니다. `use`는 저장소 밖 전환 상태만 바꾸므로 **조합 전환에 프로젝트 규칙 수정이 필요 없습니다.** 이미 열린 요청의 `return_to`는 발송 당시 Lead를 유지합니다. 같은 프로젝트에서 Lead가 아닌 다른 Claude 세션이 `new`/`send`를 실행하면 결과가 Lead에게 가지 않도록 아무것도 보내지 않고 거부합니다. Lead를 바꾸지 않고 그 세션으로 결과를 받으려면 `--return-to claude:<세션-ID>`를 붙이고 그 주소로 watch·ACK합니다. `use`는 교체되는 Lead에 열린 요청이나 살아 있는 watcher가 있으면 경고합니다.
 
 `new --role lead`는 만든 핸들을 Lead로 등록합니다. Codex Lead의 기본 워커는 Antigravity이며 `--workers antigravity`로 명시할 수 있습니다. 새 Codex Lead에는 relay 상태 홈과 Antigravity 설정 폴더를 추가 쓰기 허용하고 기존 Lead의 권한은 바꾸지 않습니다. `codex:lead` 같은 Lead 별칭과 동일 Lead·워커 핸들은 거부합니다.
 

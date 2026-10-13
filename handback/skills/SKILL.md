@@ -12,6 +12,7 @@ Run `{{HANDBACK}} <command>`. Use absolute checkout and brief paths. Project rul
 1. Inspect `status --root <checkout>` and `doctor --root <checkout>`.
    Use `doctor --json` for the legacy JSON payload, `doctor --report` for a redacted bug report, and `explain --root <checkout> --request <id>` for a read-only lifecycle and next action. `status --stats [--days N]` summarizes local usage only.
 2. Select `use --root <checkout> --lead claude:<session-id> --workers codex,antigravity`, `--lead codex:<thread-id> --workers antigravity`. Claude Lead supports Codex, Antigravity, or both. Codex Lead supports Antigravity workers ONLY: sandbox queue DB access prevents Codex workers. Claude workers remain unsupported. Lead aliases and identical Lead/worker handles are rejected. Antigravity Lead is deferred and is not an operational combination. `fallback next` is unsupported; do not switch workers automatically.
+   If `status` shows another Claude session as Lead in this checkout, do not replace it: send with `--return-to claude:<your-session-id>` and watch/ACK that address. `new`/`send` refuse a Claude session that is not the Lead unless `--return-to` is given.
 3. Create one fresh worker thread per minor unit: `new --worker auto --cwd <absolute-checkout> --name "<minor-unit ID> <short goal>" --file <absolute-brief> --no-wait`. Explicit `--worker codex|antigravity` selects a worker. Run minor units sequentially in the same checkout; send corrections for a unit to its existing thread.
 
 ## Shared delegation and results

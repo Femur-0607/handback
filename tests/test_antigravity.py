@@ -51,7 +51,8 @@ class Base(unittest.TestCase):
         env = patch.dict(os.environ, {"GEMINI_HOME": str(self.gemini), "HANDBACK_HOME": str(self.relay)})
         env.start()
         self.addCleanup(env.stop)
-        for key in ("HANDBACK_LEAD", "HANDBACK_WORKERS", "ANTIGRAVITY_PROJECT_ID", "ANTIGRAVITY_AGENTAPI_EXE"):
+        for key in ("HANDBACK_LEAD", "HANDBACK_WORKERS", "ANTIGRAVITY_PROJECT_ID", "ANTIGRAVITY_AGENTAPI_EXE",
+                    "CLAUDE_CODE_SESSION_ID"):
             os.environ.pop(key, None)
         self.now = 1_000_000.0
 

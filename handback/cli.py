@@ -11,7 +11,7 @@ import sys
 import time
 import uuid
 
-from . import collector, config, envelope, inbox
+from . import collector, config, envelope, inbox, watcher
 from .adapters.codex import CodexAdapter, cmd_selftest, resolve_codex, wait_reply
 from .adapters.claude import ClaudeAdapter
 from .adapters.antigravity import AntigravityAdapter
@@ -61,6 +61,37 @@ def lead_handle(values):
     return lead if ":" in lead else lead + ":lead"
 
 
+def caller_handle():
+    """The Claude Code session running this command, when its tool shell exports one."""
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+    if not session or any(char.isspace() or char in ":/\\\0" for char in session):
+        return None
+    return "claude:" + session
+
+
+def resolve_return_to(resolved, root, explicit=None):
+    """Choose where the result goes; never silently hand another session's result to the Lead."""
+    values = resolved["values"]
+    if explicit:
+        identifier = explicit.partition(":")[2]
+        if (not identifier.strip() or identifier in ("lead", "self") or
+                any(char in explicit for char in ("\n", "\r", "\0"))):
+            raise ValueError("--return-to requires a concrete <agent>:<id> handle")
+        config.validate_topology(resolved, explicit, values["workers"], values["fallback"])
+        return explicit
+    lead, caller = lead_handle(values), caller_handle()
+    # Compare only against a concrete Claude Lead: a Codex or Antigravity Lead
+    # started from a Claude shell can inherit CLAUDE_CODE_SESSION_ID.
+    if (caller and lead.startswith("claude:") and lead.partition(":")[2] not in ("lead", "self")
+            and caller != lead):
+        raise ValueError(
+            f"This Claude session ({caller}) is not the configured Lead ({lead}); the result would go "
+            f"to {lead}. Nothing was sent. Keep the result here with --return-to {caller}, or make this "
+            f"session the Lead: handback use --root \"{Path(root).resolve()}\" --lead {caller} --workers "
+            + ",".join(values["workers"]))
+    return lead
+
+
 def resolve_for(args):
     return config.resolve(args.root)
 
@@ -98,7 +129,7 @@ def _save_thread_execution(state, request, settings):
                                "execution_request": request["id"]})
 
 
-def submit(state, resolved, target, body, label, execution=None):
+def submit(state, resolved, target, body, label, execution=None, return_to=None):
     target, agent, native_id = handle(target)
     # A provisional handle (Antigravity creates the conversation on first send)
     # resolves to its conversation once that first send has bound it.
@@ -118,7 +149,7 @@ def submit(state, resolved, target, body, label, execution=None):
     adapter = get_adapter(agent, resolved["values"], thread=selected_thread)
     request_id = uuid.uuid4().hex
     marker = "[relay " + request_id[:8] + "]"
-    return_to = lead_handle(resolved["values"])
+    return_to = return_to or lead_handle(resolved["values"])
     if target == return_to:
         raise ValueError("Lead and worker must not have the same handle")
     text = f"{marker} From {label} through handback.\n{body}"
@@ -264,6 +295,9 @@ def cmd_new(args):
                                  resolved["values"]["fallback"])
     else:
         require_worker(resolved, worker)
+    if initial:
+        # Refuse a misrouted result before creating an orphan worker thread.
+        resolve_return_to(resolved, args.cwd, args.return_to)
     if worker == "antigravity" and args.sandbox == "read-only":
         warn_read_only()
     role = "lead" if is_lead else "worker"
@@ -337,9 +371,10 @@ def cmd_send(args, created=None):
                ("read-only", "read only", "read_only", "readonly", "읽기 전용", "읽기전용",
                 "do not modify files", "no file changes", "파일을 수정하지")):
             warn_read_only()
+    return_to = resolve_return_to(resolved, args.root, getattr(args, "return_to", None))
     state = ProjectState(args.root)
     request, code = submit(state, resolved, args.to or args.thread, body, args.label,
-                           execution=execution_overrides(args))
+                           execution=execution_overrides(args), return_to=return_to)
     if getattr(args, "on_request", None):
         args.on_request(request)
     summary = ({**created, "handle": request["handle"], "id": request["thread"],
@@ -462,6 +497,9 @@ def cmd_try(args):
             "--sandbox", "read-only", "--text",
             "Do not modify files or delegate. Reply with RELAY_OK in this conversation.",
             "--timeout", str(args.timeout)])
+        if lead_handle(values).partition(":")[2] not in ("lead", "self"):
+            # try ACKs its own result, so any Claude session may run it for the Lead.
+            child.return_to = lead_handle(values)
         child.on_request = lambda request: report.update(
             request_id=request["id"], handle=request["handle"], status=request["status"])
         captured, diagnostics = io.StringIO(), io.StringIO()
@@ -509,6 +547,33 @@ def cmd_try(args):
     return code
 
 
+def previous_lead(root):
+    try:
+        return lead_handle(config.resolve(root, validate=False)["values"])
+    except (ValueError, OSError):
+        return None
+
+
+def warn_active_lead(root, previous, lead):
+    """Tell a replacing session that the previous Lead may still be working here."""
+    if not previous or previous == lead:
+        return
+    state = ProjectState(root)
+    try:
+        pending = sum(1 for request in state.requests()
+                      if request.get("return_to") == previous and request.get("status") in OPEN_STATES)
+    except (ValueError, OSError):
+        pending = 0
+    watching = watcher.is_live(state.path, previous)
+    if not pending and not watching:
+        return
+    activity = " and ".join(part for part in (
+        pending and f"{pending} open request(s)", watching and "a live inbox watcher") if part)
+    print(f"Warning: the previous Lead {previous} still has {activity}; another session may be active in "
+          f"this project. Those results keep going to {previous}. A second session that should not take "
+          "over can send with --return-to <its agent:id> instead of use.", file=sys.stderr)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="handback", description="handback: durable local agent relay")
     from . import __version__
@@ -544,6 +609,7 @@ def build_parser():
     new.add_argument("--timeout", type=float, default=0, help="seconds; 0 waits indefinitely")
     new.add_argument("--return-file")
     new.add_argument("--label", default=os.environ.get("HANDBACK_LABEL", "the Lead"))
+    new.add_argument("--return-to", help="agent:id that receives the result instead of the configured Lead")
     send = sub.add_parser("send")
     send.add_argument("--model", help="override this thread's saved model after accepted delivery")
     send.add_argument("--reasoning-effort", choices=config.REASONING_EFFORTS,
@@ -555,6 +621,7 @@ def build_parser():
     source.add_argument("--text")
     source.add_argument("--file")
     send.add_argument("--label", default=os.environ.get("HANDBACK_LABEL", "the Lead"))
+    send.add_argument("--return-to", help="agent:id that receives the result instead of the configured Lead")
     mode = send.add_mutually_exclusive_group()
     mode.add_argument("--wait", action="store_true")
     mode.add_argument("--no-wait", action="store_true")
@@ -790,9 +857,12 @@ def dispatch(args, parser):
     if args.command == "collect":
         return cmd_collect(args)
     if args.command == "use":
-        output(config.use_topology(args.root, args.lead,
-                                   [x.strip() for x in args.workers.split(",") if x.strip()],
-                                   args.fallback))
+        previous = previous_lead(args.root)
+        result = config.use_topology(args.root, args.lead,
+                                     [x.strip() for x in args.workers.split(",") if x.strip()],
+                                     args.fallback)
+        output(result)
+        warn_active_lead(args.root, previous, lead_handle(result["values"]))
         return 0
     if args.command == "configure":
         output(config.configure_execution(args.root, args.agent, args.role,

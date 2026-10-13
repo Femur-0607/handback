@@ -44,7 +44,7 @@ class Base(unittest.TestCase):
         env = patch.dict(os.environ, {"HANDBACK_HOME": str(self.home), "CODEX_HOME": str(self.codex_home)})
         env.start()
         self.addCleanup(env.stop)
-        for key in ("HANDBACK_LEAD", "HANDBACK_WORKERS"):
+        for key in ("HANDBACK_LEAD", "HANDBACK_WORKERS", "CLAUDE_CODE_SESSION_ID"):
             os.environ.pop(key, None)
         self.state = ProjectState(self.root)
 

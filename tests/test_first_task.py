@@ -23,6 +23,7 @@ class FirstTaskTests(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop('HANDBACK_LEAD', None)
         os.environ.pop('HANDBACK_WORKERS', None)
+        os.environ.pop('CLAUDE_CODE_SESSION_ID', None)
         self.state = ProjectState(self.root)
         self.adapter = FakeAdapter()
         self.adapter.result = {'outcome': 'completed', 'text': 'RELAY_OK'}

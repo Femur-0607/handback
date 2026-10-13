@@ -38,7 +38,7 @@ class RequestTests(unittest.TestCase):
         self.env = patch.dict(os.environ, {"HANDBACK_HOME": str(self.home)}, clear=False)
         self.env.start()
         self.addCleanup(self.env.stop)
-        for key in ("HANDBACK_LEAD", "HANDBACK_WORKERS"):
+        for key in ("HANDBACK_LEAD", "HANDBACK_WORKERS", "CLAUDE_CODE_SESSION_ID"):
             self.env2 = patch.dict(os.environ)
             self.env2.start()
             self.addCleanup(self.env2.stop)

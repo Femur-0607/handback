@@ -24,6 +24,14 @@ All notable changes to this project are documented here. This file follows the
   English skill text and relay output filled the conversation, even when the
   user wrote in another language. The skill now tells agents to reply in the
   user's language. Run `install-skills` to update installed copies.
+- A second Claude session in the same project root could send a request whose
+  result silently went to the configured Lead's inbox instead of its own
+  ([#3](https://github.com/Femur-0607/handback/issues/3)). `new`/`send` now
+  refuse, before creating or sending anything, when the calling Claude session
+  (`CLAUDE_CODE_SESSION_ID`) is not the configured Claude Lead, and name both
+  ways out: the new `--return-to <agent:id>` option, which sends the result to
+  that address without changing the topology, or `use --lead`. `use` also warns
+  when the Lead it replaces still has open requests or a live inbox watcher.
 
 ## [0.3.5] - 2026-10-12
 
