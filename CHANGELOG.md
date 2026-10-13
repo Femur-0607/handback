@@ -20,6 +20,10 @@ All notable changes to this project are documented here. This file follows the
   ([#2](https://github.com/Femur-0607/handback/issues/2)). Both checks now name
   the entry point that owns the file and this run's entry point, and suggest
   choosing one installation (or `pip install -e <checkout>`) instead.
+- Agents that loaded the handback skill often switched to English once the
+  English skill text and relay output filled the conversation, even when the
+  user wrote in another language. The skill now tells agents to reply in the
+  user's language. Run `install-skills` to update installed copies.
 
 ## [0.3.5] - 2026-10-12
 
