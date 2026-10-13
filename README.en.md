@@ -12,19 +12,13 @@ Previously developed as **agent-relay**; legacy state is detected with migration
 
 A local tool for handing work between coding-agent apps and bringing the results back to the conversation where you started.
 
-**Experimental · Windows verified · No Python needed on Windows · One computer, one OS user**
-
 [First task](https://github.com/Femur-0607/handback/blob/main/README.en.md#try-your-first-task) · [Use-your-own-project guide](https://github.com/Femur-0607/handback/blob/main/README.en.md#use-it-on-your-own-project) · [Detailed setup](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) · [Changelog](https://github.com/Femur-0607/handback/blob/main/CHANGELOG.md)
 
 ## What is handback?
 
-**Lead–worker orchestration across different agent apps:** one Lead conversation directs Codex or Antigravity workers, and handback handles delivery, result collection and recovery.
-
 handback connects coding agents running on your computer. You work with one main conversation, called the **Lead**, and let it send a defined task to another conversation, called a **worker**. The relay creates the worker conversation, sends the task, and saves its reply in a local inbox for the Lead to review.
 
 For example, you can discuss a change with Claude, have a Codex worker inspect the relevant code, and review its findings back in Claude. The apps perform the reasoning and coding; handback handles task delivery, result collection, and recovery.
-
-On Windows it runs as a downloaded program with no Python needed; developers can also use the Python package or this repository (standard library only). You need the supported agent apps installed and signed in. Everything is scoped to one computer and one OS user, and no other project repository is required.
 
 ## When to use it / when not to
 
