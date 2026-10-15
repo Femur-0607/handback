@@ -177,7 +177,7 @@ class DiscoveryTests(unittest.TestCase):
 
 
 class AppServerAndDeliveryTests(unittest.TestCase):
-    def server(self, config=None, thread=None, models=None):
+    def server(self, config=None, thread=None, models=None, held=False):
         server = mock.Mock()
         configuration = {"model": "model-a", "model_reasoning_effort": "ultra"} if config is None else config
         catalog = models if models is not None else [
@@ -205,6 +205,11 @@ class AppServerAndDeliveryTests(unittest.TestCase):
                 existing.update(model=params["model"], reasoningEffort=params["effort"])
                 return {}
             if method == "thread/resume":
+                if held:
+                    # Observed when the desktop app has the conversation loaded.
+                    error = AdapterError("thread/resume failed")
+                    error.rpc_error = {"code": -32600, "message": f"thread {params['threadId']} already has an active writer"}
+                    raise error
                 return {"thread": existing}
             raise AssertionError(method)
         server.call.side_effect = call
@@ -312,11 +317,100 @@ class AppServerAndDeliveryTests(unittest.TestCase):
         with mock.patch.object(codex, "resolve_codex", return_value="codex"), \
                 mock.patch.object(codex, "AppServer", return_value=server), \
                 mock.patch.object(codex.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "queued", "")) as run:
-            adapter = codex.CodexAdapter(model="model-a", reasoning_effort="ultra")
+            adapter = codex.CodexAdapter(overrides={"model": "model-a", "reasoning_effort": "ultra"})
             self.assertTrue(adapter.deliver("thread", {"body": "[relay next] correction"})["accepted"])
         server.call.assert_any_call("thread/resume", {"threadId": "thread", "excludeTurns": True})
         server.call.assert_any_call("thread/settings/update", {"threadId": "thread", "model": "model-a", "effort": "ultra"})
         self.assertEqual(run.call_args.args[0], ["codex", "queue", "--thread", "thread", "--message", "[relay next] correction"])
+
+    def deliver_with(self, server, **adapter_options):
+        with mock.patch.object(codex, "resolve_codex", return_value="codex"), \
+                mock.patch.object(codex, "AppServer", return_value=server), \
+                mock.patch.object(codex.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "queued", "")) as run:
+            adapter = codex.CodexAdapter(**adapter_options)
+            result = adapter.deliver("thread", {"body": "[relay next] brief"})
+        methods = [call.args[0] for call in server.call.call_args_list]
+        return adapter, result, methods, run
+
+    def test_saved_ultra_never_overrides_native_high(self):
+        # 2026-10-15: threads.json kept ultra after the app stored high; resuming
+        # to restore ultra collided with the app ("active writer"). thread/read
+        # reports notLoaded from a private app-server either way.
+        for held in (False, True):
+            with self.subTest(app_holds_thread=held):
+                server = self.server(thread={"model": "model-a", "reasoningEffort": "medium",
+                                             "status": {"type": "notLoaded"}}, held=held)
+                adapter, result, methods, run = self.deliver_with(server, model="model-a", reasoning_effort="ultra")
+                self.assertTrue(result["accepted"])
+                self.assertNotIn("thread/resume", methods)
+                self.assertNotIn("thread/settings/update", methods)
+                run.assert_called_once()
+                self.assertEqual(adapter.execution_settings, {"model": "model-a", "reasoning_effort": "medium"})
+                self.assertRegex(result["warnings"][0], "reasoning_effort=medium.*saved reasoning_effort=ultra")
+
+    def test_role_default_does_not_warn_when_it_matches_native(self):
+        server = self.server(thread={"model": "model-a", "reasoningEffort": "ultra"})
+        _adapter, result, methods, _run = self.deliver_with(server, model="model-a", reasoning_effort="ultra")
+        self.assertTrue(result["accepted"])
+        self.assertNotIn("warnings", result)
+        self.assertNotIn("thread/resume", methods)
+
+    def test_explicit_override_on_thread_open_in_app_fails_before_queue(self):
+        server = self.server(thread={"model": "model-a", "reasoningEffort": "medium"}, held=True)
+        _adapter, result, methods, run = self.deliver_with(server, overrides={"reasoning_effort": "ultra"})
+        self.assertFalse(result["accepted"])
+        self.assertNotIn("unknown", result)
+        self.assertRegex(result["stderr"], "Codex app has this conversation open.*reasoning_effort to ultra.*Nothing was sent")
+        self.assertNotIn("thread/settings/update", methods)
+        run.assert_not_called()
+
+    def test_explicit_override_equal_to_native_needs_no_resume_even_when_open(self):
+        server = self.server(thread={"model": "model-a", "reasoningEffort": "medium"}, held=True)
+        _adapter, result, methods, run = self.deliver_with(server, overrides={"reasoning_effort": "medium"})
+        self.assertTrue(result["accepted"])
+        self.assertNotIn("thread/resume", methods)
+        run.assert_called_once()
+
+    def test_missing_native_metadata_on_thread_open_in_app_queues_with_warning(self):
+        server = self.server(thread={"model": None, "reasoningEffort": None}, held=True)
+        _adapter, result, methods, run = self.deliver_with(server, model="model-a", reasoning_effort="ultra")
+        self.assertTrue(result["accepted"])
+        self.assertIn("thread/resume", methods)
+        self.assertNotIn("thread/settings/update", methods)
+        self.assertRegex(result["warnings"][0], "app's current selection applies")
+        run.assert_called_once()
+
+    def test_other_resume_failures_still_block_queue(self):
+        server = self.server(thread={"model": "model-b", "reasoningEffort": "medium"})
+        original = server.call.side_effect
+
+        def call(method, params):
+            if method == "thread/resume":
+                error = AdapterError("thread/resume failed: thread not found")
+                error.rpc_error = {"code": -32600, "message": "thread not found"}
+                raise error
+            return original(method, params)
+        server.call.side_effect = call
+        _adapter, result, _methods, run = self.deliver_with(server, overrides={"model": "model-a"})
+        self.assertFalse(result["accepted"])
+        self.assertIn("thread not found", result["stderr"])
+        run.assert_not_called()
+
+    def test_rpc_error_detail_identifies_active_writer(self):
+        server = codex.AppServer.__new__(codex.AppServer)
+        server.proc = mock.Mock(stdin=io.StringIO())
+        server._responses = queue.Queue()
+        server.timeout = 0.1
+        server.next_id = 0
+        server._responses.put({"id": 1, "error": {"code": -32600, "message": "thread t already has an active writer"}})
+        with self.assertRaises(AdapterError) as caught:
+            server.call("thread/resume", {"threadId": "t"})
+        self.assertTrue(codex.held_by_another_writer(caught.exception))
+        self.assertFalse(codex.held_by_another_writer(AdapterError("active writer in text only")))
+
+    def test_unknown_override_key_is_rejected(self):
+        with self.assertRaises(ValueError):
+            codex.CodexAdapter(overrides={"sandbox": "read-only"})
 
     def test_catalog_efforts_are_dynamic(self):
         catalog = [{"id": "future-model", "model": "future-model", "isDefault": True,
@@ -404,7 +498,8 @@ class AppServerAndDeliveryTests(unittest.TestCase):
         with mock.patch.object(codex, "resolve_codex", return_value="codex"), \
                 mock.patch.object(codex, "AppServer", return_value=server), \
                 mock.patch.object(codex.subprocess, "run") as run:
-            result = codex.CodexAdapter(model="model-a", reasoning_effort="ultra").deliver("thread", {"body": "[relay first] brief"})
+            adapter = codex.CodexAdapter(overrides={"model": "model-a", "reasoning_effort": "ultra"})
+            result = adapter.deliver("thread", {"body": "[relay first] brief"})
         self.assertFalse(result["accepted"])
         self.assertNotIn("unknown", result)
         run.assert_not_called()

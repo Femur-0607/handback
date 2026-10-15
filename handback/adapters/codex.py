@@ -109,7 +109,9 @@ class AppServer:
                 raise AdapterError(f"codex app-server closed during {method}")
             if reply.get("id") == self.next_id:
                 if "error" in reply:
-                    raise AdapterError(f"{method} failed: {reply['error']}")
+                    error = AdapterError(f"{method} failed: {reply['error']}")
+                    error.rpc_error = reply["error"]
+                    raise error
                 if "result" not in reply:
                     raise AdapterError(f"{method} returned no result")
                 return reply["result"]
@@ -144,6 +146,17 @@ class AppServer:
         if self.proc.stdout:
             self.proc.stdout.close()
         return graceful and exit_code == 0
+
+
+def held_by_another_writer(error):
+    """True when another app-server (normally the desktop app) has the thread loaded.
+
+    thread/read reports status per process, so it says notLoaded even then; this
+    resume error is the only signal. The JSON-RPC code is generic (-32600).
+    """
+    detail = getattr(error, "rpc_error", None)
+    message = detail.get("message", "") if isinstance(detail, dict) else ""
+    return "active writer" in message
 
 
 def open_in_app(thread_id):
@@ -337,13 +350,19 @@ def wait_reply(thread, marker, return_file, timeout):
 class CodexAdapter(BaseAdapter):
     name = "codex"
 
-    def __init__(self, executable=None, model=None, reasoning_effort=None):
+    def __init__(self, executable=None, model=None, reasoning_effort=None, overrides=None):
+        """model/reasoning_effort are defaults (role config or handback's saved
+        record); overrides holds only what the caller asked for on this send."""
         self.executable = executable
-        for label, value in (("model", model), ("reasoning_effort", reasoning_effort)):
+        overrides = dict(overrides or {})
+        for label, value in (("model", model), ("reasoning_effort", reasoning_effort), *overrides.items()):
+            if label not in ("model", "reasoning_effort"):
+                raise ValueError(f"unknown execution override: {label}")
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"{label} must be a nonempty string or None")
         self.model = model
         self.reasoning_effort = reasoning_effort
+        self.overrides = {key: value for key, value in overrides.items() if value is not None}
         self.execution_settings = {key: value for key, value in
                                    (("model", model), ("reasoning_effort", reasoning_effort))
                                    if value is not None}
@@ -352,14 +371,17 @@ class CodexAdapter(BaseAdapter):
     def _resolve_settings(self, server, cwd, existing=None):
         """Resolve installed Codex settings, including cwd-specific config layers.
 
-        Native thread settings take precedence over today's defaults when sending
-        to an existing conversation. Catalog values are dynamic; in particular,
-        neither the supported efforts nor the model's default is hard-coded.
+        For an existing conversation its native settings are canonical: the
+        desktop app can change them (and drops efforts it does not offer), so
+        handback's saved record goes stale. Only a per-send override replaces
+        them; defaults fill in when native metadata is missing. Catalog values
+        are dynamic; neither supported efforts nor the model default is hard-coded.
         """
         existing = existing or {}
         config = server.call("config/read", {"cwd": os.path.abspath(cwd), "includeLayers": False})["config"]
-        model = self.model or existing.get("model") or config.get("model")
-        effort = self.reasoning_effort or existing.get("reasoningEffort") or config.get("model_reasoning_effort")
+        model = (self.overrides.get("model") or existing.get("model") or self.model or config.get("model"))
+        effort = (self.overrides.get("reasoning_effort") or existing.get("reasoningEffort") or
+                  self.reasoning_effort or config.get("model_reasoning_effort"))
         models = []
         cursor = None
         seen_cursors = set()
@@ -440,18 +462,47 @@ class CodexAdapter(BaseAdapter):
         try:
             executable = resolve_codex(self.executable)
             settings = self._thread_settings.get(thread)
+            warnings = []
             if settings is None:
                 server = AppServer(executable, os.getcwd())
                 try:
                     server.initialize()
                     existing = server.call("thread/read", {"threadId": thread, "includeTurns": False})["thread"]
                     settings = self._resolve_settings(server, existing.get("cwd") or os.getcwd(), existing)
-                    if existing.get("model") != settings["model"] or existing.get("reasoningEffort") != settings["reasoning_effort"]:
-                        # A metadata-only resume restores this conversation's
-                        # saved permissions; no sandbox/approval override is sent.
-                        server.call("thread/resume", {"threadId": thread, "excludeTurns": True})
-                        server.call("thread/settings/update", {"threadId": thread,
-                                    "model": settings["model"], "effort": settings["reasoning_effort"]})
+                    native = {"model": existing.get("model"), "reasoning_effort": existing.get("reasoningEffort")}
+                    stale = {key: value for key, value in self.execution_settings.items()
+                             if key not in self.overrides and native[key] and value != native[key]}
+                    if stale:
+                        warnings.append("Using the conversation's own settings (" +
+                                        ", ".join(f"{key}={native[key]}" for key in stale) +
+                                        ") instead of handback's saved " +
+                                        ", ".join(f"{key}={value}" for key, value in stale.items()) +
+                                        "; pass --model/--reasoning-effort to change them")
+                    if native != settings:
+                        try:
+                            # A metadata-only resume restores this conversation's
+                            # saved permissions; no sandbox/approval override is sent.
+                            server.call("thread/resume", {"threadId": thread, "excludeTurns": True})
+                        except AdapterError as exc:
+                            if not held_by_another_writer(exc):
+                                raise
+                            requested = {key: value for key, value in self.overrides.items()
+                                         if value != native[key]}
+                            if requested:
+                                # Nothing is queued: the explicit choice cannot be applied.
+                                raise AdapterError(
+                                    "The Codex app has this conversation open, so handback cannot change its " +
+                                    ", ".join(f"{key} to {value}" for key, value in requested.items()) +
+                                    ". Nothing was sent. Change it in the Codex app and send without "
+                                    "--model/--reasoning-effort, or close the conversation in the app and "
+                                    "send again.") from exc
+                            # Native metadata was missing; the app runs the turn with its own settings.
+                            warnings.append("The Codex app has this conversation open; its stored "
+                                            "model/effort could not be filled in, so the app's current "
+                                            "selection applies to this turn")
+                        else:
+                            server.call("thread/settings/update", {"threadId": thread,
+                                        "model": settings["model"], "effort": settings["reasoning_effort"]})
                 finally:
                     clean_shutdown = server.close()
                 if clean_shutdown is False:
@@ -463,8 +514,11 @@ class CodexAdapter(BaseAdapter):
             result = subprocess.run([executable, "queue", "--thread", thread, "--message", body],
                                     capture_output=True, text=True, encoding="utf-8",
                                     errors="replace", timeout=30, **_process_options())
-            return {"accepted": result.returncode == 0, "stdout": result.stdout, "stderr": result.stderr,
-                    "returncode": result.returncode}
+            delivery = {"accepted": result.returncode == 0, "stdout": result.stdout, "stderr": result.stderr,
+                        "returncode": result.returncode}
+            if warnings:
+                delivery["warnings"] = warnings
+            return delivery
         except subprocess.TimeoutExpired:
             # Queue acceptance is ambiguous. The caller must keep ownership and must not retry.
             return {"accepted": False, "unknown": True, "stdout": "", "stderr": "codex queue timed out; delivery is unknown; do not re-send",

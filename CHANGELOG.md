@@ -21,6 +21,13 @@ All notable changes to this project are documented here. This file follows the
 
 ### Fixed
 
+- `send` to a Codex conversation that is open in the Codex app no longer fails
+  with "active writer" because handback's saved reasoning effort differed from
+  the conversation's own. The conversation's settings now win unless the send
+  passes `--model`/`--reasoning-effort`; a warning names both values. An
+  explicit change on a conversation the app holds is refused with nothing sent
+  and a message saying what to do. See
+  [the verification record](docs/verification/2026-10-15-codex-native-settings-precedence.md).
 - The widget docked in the taskbar no longer flickers when a taskbar button is
   clicked: a foreground-change hook puts it back above the taskbar at once
   instead of on the next 750 ms check. It also hides within about 0.1 s when a

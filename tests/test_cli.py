@@ -297,6 +297,26 @@ class RequestTests(unittest.TestCase):
             code, _, error = self.invoke("send", "--to", "codex:fake-thread", "--text", "later", "--no-wait")
         self.assertEqual(code, 0, error)
         self.assertEqual(factory.call_args.kwargs["thread"]["execution"], saved)
+        # The saved record is a default; only this send's flags may change native settings.
+        self.assertEqual(factory.call_args.kwargs["overrides"], {})
+
+    def test_send_flags_alone_are_adapter_overrides(self):
+        self.state.register_thread({"handle": "codex:worker", "agent": "codex", "id": "worker", "role": "worker",
+                                    "execution": {"model": "saved", "reasoning_effort": "ultra"}})
+        with patch.object(cli, "get_adapter", return_value=self.adapter) as factory:
+            code, _, error = self.invoke("send", "--to", "codex:worker", "--reasoning-effort", "low",
+                                         "--text", "explicit", "--no-wait")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(factory.call_args.kwargs["overrides"], {"reasoning_effort": "low"})
+        self.assertEqual(factory.call_args.kwargs["thread"]["execution"], {"model": "saved", "reasoning_effort": "low"})
+
+    def test_send_prints_adapter_delivery_warnings(self):
+        self.state.register_thread({"handle": "codex:worker", "agent": "codex", "id": "worker", "role": "worker"})
+        self.adapter.delivery = {"accepted": True, "returncode": 0, "warnings": ["using native high"]}
+        with patch.object(cli, "get_adapter", return_value=self.adapter):
+            code, _, error = self.invoke("send", "--to", "codex:worker", "--text", "task", "--no-wait")
+        self.assertEqual(code, 0, error)
+        self.assertIn("Warning: using native high", error)
 
     def test_new_captures_transport_resolved_native_defaults(self):
         self.adapter.execution_settings = {"model": "native-model", "reasoning_effort": "ultra"}
@@ -400,7 +420,8 @@ class AdapterSelectionTests(unittest.TestCase):
                                        "worker": {"reasoning_effort": "ultra"}}}}
         with patch.object(cli, "CodexAdapter") as adapter:
             cli.get_adapter("codex", values, role="lead", thread={"execution": {"reasoning_effort": "low"}})
-        adapter.assert_called_once_with(executable="codex.exe", model="lead", reasoning_effort="low")
+        adapter.assert_called_once_with(executable="codex.exe", model="lead", reasoning_effort="low",
+                                        overrides=None)
 
     def test_unavailable_control_is_not_silently_ignored(self):
         for agent, setting in (("claude", {"model": "opus"}),

@@ -31,12 +31,12 @@ def output(value):
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
-def get_adapter(agent, values=None, role="worker", thread=None):
+def get_adapter(agent, values=None, role="worker", thread=None, overrides=None):
     settings = (values or {}).get("agents", {}).get(agent, {})
     execution = config.execution_settings(values or {}, agent, role, thread)
     executable = os.environ.get("HANDBACK_" + agent.upper()) or settings.get("executable")
     if agent == "codex":
-        return CodexAdapter(executable=executable, **execution)
+        return CodexAdapter(executable=executable, overrides=overrides, **execution)
     if agent == "claude":
         return ClaudeAdapter(executable=executable)
     if agent == "antigravity":
@@ -146,7 +146,8 @@ def submit(state, resolved, target, body, label, execution=None, return_to=None)
             not native_id.startswith("pending-")):
         raise ValueError("Antigravity model can only be selected when creating a conversation")
     selected = config.execution_settings(resolved["values"], agent, "worker", selected_thread)
-    adapter = get_adapter(agent, resolved["values"], thread=selected_thread)
+    # Only this send's flags may replace an existing conversation's native settings.
+    adapter = get_adapter(agent, resolved["values"], thread=selected_thread, overrides=execution)
     request_id = uuid.uuid4().hex
     marker = "[relay " + request_id[:8] + "]"
     return_to = return_to or lead_handle(resolved["values"])
@@ -377,6 +378,8 @@ def cmd_send(args, created=None):
                            execution=execution_overrides(args), return_to=return_to)
     if getattr(args, "on_request", None):
         args.on_request(request)
+    for warning in (request.get("delivery") or {}).get("warnings", []):
+        print("Warning: " + warning, file=sys.stderr)
     summary = ({**created, "handle": request["handle"], "id": request["thread"],
                 "request_id": request["id"], "marker": request["marker"], "to": request["handle"]}
                if created is not None else None)
