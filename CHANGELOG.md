@@ -21,6 +21,13 @@ All notable changes to this project are documented here. This file follows the
 
 ### Fixed
 
+- Antigravity workers deliver again with Antigravity 2.23+, which runs each
+  sidecar in a copy of the target project named after the sidecar. The sidecar
+  now accepts that copy when it covers the same checkout, the copy no longer
+  counts as a second registration of the folder, and handback removes it
+  (with a backup) after delivery; `cleanup-sidecars` also removes copies left
+  behind by earlier runs. A sidecar that stops before calling agentapi now
+  reports `send_failed` instead of `delivery_unknown`. (#4)
 - `send` to a Codex conversation that is open in the Codex app no longer fails
   with "active writer" because handback's saved reasoning effort differed from
   the conversation's own. The conversation's settings now win unless the send

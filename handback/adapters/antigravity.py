@@ -32,6 +32,7 @@ from .codex import BinaryRolloutTailer
 from ..invocation import entry_args, self_argv
 
 SIDECAR_PREFIX = "handback-"
+MANAGED_PROJECT = re.compile(r"(?:handback|agent-relay)-[0-9a-f]{12}")
 HOOK_GROUP = "handback"
 HOOK_EVENTS = ("Stop", "PreInvocation")
 DEFAULT_HOOK_TIMEOUT = 30
@@ -108,19 +109,41 @@ def update_user_json(path, change, backup_dir):
     return str(backup) if backup else None
 
 
-def resolve_project(root, home=None):
-    """Return the Antigravity project ID whose git folder is this checkout."""
-    root = os.path.normcase(os.path.realpath(root))
-    matches = []
-    for path in sorted((home or gemini_home()).joinpath("config", "projects").glob("*.json")):
+def _norm(path):
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _project_roots(project):
+    """Normalized git folders of one Antigravity project file."""
+    roots = []
+    for resource in ((project or {}).get("projectResources") or {}).get("resources") or []:
+        uri = ((resource or {}).get("gitFolder") or {}).get("folderUri") or ""
+        if uri:
+            roots.append(_norm(unquote(urlparse(uri).path).lstrip("/")))
+    return roots
+
+
+def _sidecar_managed(project):
+    # Antigravity 2.23+ runs each sidecar in a project it creates and names after the sidecar.
+    return bool(MANAGED_PROJECT.fullmatch(str((project or {}).get("name") or "")))
+
+
+def _projects(home):
+    """(path, project) for every readable Antigravity project file."""
+    for path in sorted(Path(home).joinpath("config", "projects").glob("*.json")):
         try:
             project = _read_json(path, {})
         except (OSError, ValueError):
             continue
-        for resource in (project.get("projectResources") or {}).get("resources") or []:
-            uri = ((resource or {}).get("gitFolder") or {}).get("folderUri") or ""
-            if uri and os.path.normcase(os.path.realpath(unquote(urlparse(uri).path).lstrip("/"))) == root:
-                matches.append(path.stem)
+        if isinstance(project, dict):
+            yield path, project
+
+
+def resolve_project(root, home=None):
+    """Return the Antigravity project ID whose git folder is this checkout."""
+    root = _norm(root)
+    matches = [path.stem for path, project in _projects(home or gemini_home())
+               if not _sidecar_managed(project) and root in _project_roots(project)]
     if len(matches) != 1:
         raise AdapterUnavailable(f"Expected one Antigravity project registered for {root}, found {len(matches)}; "
                                  "register the checkout as a project in the Antigravity app")
@@ -441,6 +464,24 @@ def uninstall_hooks(relay_home, dry_run=False, home=None):
     return {"path": str(path), "removed": HOOK_GROUP, "backup": backup, "changed": backup is not None}
 
 
+def _runs_in_managed_project(job, project_id):
+    """True when the app put this job's sidecar in the project it made for it over the same checkout."""
+    if not job.get("sidecar") or not job.get("root") or Path(project_id).name != project_id:
+        return False
+    home = Path(job.get("gemini") or gemini_home())
+    project = _read_json(home / "config" / "projects" / (project_id + ".json"), {})
+    return (isinstance(project, dict) and project.get("name") == job["sidecar"] and _sidecar_managed(project)
+            and set(_project_roots(project)) == {_norm(job["root"])})
+
+
+def remove_managed_projects(sidecar, root, backups, home=None, keep=None):
+    """Delete the project(s) Antigravity made for one relay sidecar; back each up first."""
+    matches = [path for path, project in _projects(home or gemini_home())
+               if path.stem != keep and project.get("name") == sidecar and _sidecar_managed(project)
+               and set(_project_roots(project)) == {_norm(root)}]
+    return _remove_project_files(matches, backups)
+
+
 def run_sidecar_job(job_path):
     """Body of the relay sidecar: one agentapi call, recorded, never repeated."""
     job_path = Path(job_path)
@@ -451,15 +492,18 @@ def run_sidecar_job(job_path):
             stream.write(utcnow())
     except FileExistsError:
         return 0
-    result = {"started": utcnow()}
+    result = {"started": utcnow(), "invoked": False}
     try:
-        if os.environ.get("ANTIGRAVITY_PROJECT_ID") and os.environ["ANTIGRAVITY_PROJECT_ID"] != job["project_id"]:
+        actual = os.environ.get("ANTIGRAVITY_PROJECT_ID")
+        if actual and actual != job["project_id"] and not _runs_in_managed_project(job, actual):
             raise AdapterError("sidecar runs in a different Antigravity project")
         executable = os.environ.get("ANTIGRAVITY_AGENTAPI_EXE") or shutil.which("agentapi")
         if not executable:
             raise AdapterUnavailable("agentapi is not available inside the sidecar")
         # Prefer the executable over agentapi.BAT: cmd would mangle quotes and newlines.
         command = [executable] + ([] if Path(executable).stem.lower() == "agentapi" else ["agentapi"]) + job["args"]
+        # From here on agentapi may have received the message; before it, nothing was sent.
+        result["invoked"] = True
         completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                    timeout=120, **_options())
         result.update(exit=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
@@ -520,10 +564,17 @@ def cleanup_sidecars(relay_home, dry_run=False, home=None):
             continue
         candidates.append(name)
         manifests[name] = raw
-    result = {"candidates": candidates, "count": len(candidates), "dry_run": dry_run}
-    if dry_run or not candidates:
+    # Projects Antigravity made for relay sidecars that no longer exist (or are removed now).
+    remaining = set(value.get("sidecars", {})) - set(candidates)
+    projects = [path for path, project in _projects(home)
+                if _sidecar_managed(project) and project.get("name") not in remaining]
+    result = {"candidates": candidates, "count": len(candidates), "dry_run": dry_run,
+              "projects": [path.stem for path in projects]}
+    if dry_run or not (candidates or projects):
         return result
     backups = relay_home / "antigravity" / "backups"
+    if not candidates:
+        return {**result, "removed": [], "removed_projects": _remove_project_files(projects, backups)}
     stamp = datetime.now().strftime('%Y%m%dT%H%M%S%f')
     folder_backup = backups / ("sidecars." + stamp)
     for name in candidates:
@@ -545,7 +596,18 @@ def cleanup_sidecars(relay_home, dry_run=False, home=None):
         folder.relative_to((home / "config" / "sidecars").resolve())
         shutil.rmtree(folder)
     result["removed"] = candidates
+    result["removed_projects"] = _remove_project_files(projects, backups)
     return result
+
+
+def _remove_project_files(paths, backups):
+    removed = []
+    for path in paths:
+        Path(backups).mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, Path(backups) / (path.name + "." + datetime.now().strftime("%Y%m%dT%H%M%S%f")))
+        path.unlink(missing_ok=True)
+        removed.append(path.stem)
+    return removed
 
 
 class AntigravityAdapter(BaseAdapter):
@@ -613,15 +675,17 @@ class AntigravityAdapter(BaseAdapter):
     def deliver(self, thread, envelope, state=None, request=None, title=None):
         if state is None or request is None:
             raise AdapterError("Antigravity delivery needs the request state")
-        project_id = resolve_project(request.get("root") or state.root, self.gemini)
+        root = request.get("root") or state.root
+        project_id = resolve_project(root, self.gemini)
         folder = state.path / "antigravity" / request["id"]
         if thread.startswith("pending-"):
             args = ["new-conversation", f"--title={title or 'handback'}", f"--model={self.model}", envelope["body"]]
         else:
             args = ["send-message", thread, envelope["body"]]
-        job = {"request_id": request["id"], "project_id": project_id, "args": args, "created": utcnow()}
-        _write_json(folder / "job.json", job)
         sidecar = SIDECAR_PREFIX + request["id"][:12]
+        job = {"request_id": request["id"], "project_id": project_id, "args": args, "created": utcnow(),
+               "sidecar": sidecar, "root": str(root), "gemini": str(self.gemini)}
+        _write_json(folder / "job.json", job)
         sidecar_dir = self.gemini / "config" / "sidecars" / sidecar
         _write_json(sidecar_dir / "sidecar.json", {
             "command": self_argv(ENTRY_SCRIPT)[0], "args": [*entry_args(ENTRY_SCRIPT), "antigravity-sidecar", "--job", str(folder / "job.json")],
@@ -648,6 +712,10 @@ class AntigravityAdapter(BaseAdapter):
                         "stderr": "Antigravity did not run the relay sidecar in time (is the app running?); "
                                   "delivery is unknown; do not re-send"}
             settled = True
+            if result.get("exit") is None and result.get("invoked") is False and result.get("error"):
+                # The sidecar stopped before calling agentapi: nothing was sent.
+                return {"accepted": False, "stderr": result["error"],
+                        "classification": self.classify_error(result["error"])}
             if result.get("exit") is None:
                 return {"accepted": False, "unknown": True,
                         "stderr": result.get("error") or "sidecar outcome is unknown"}
@@ -677,6 +745,7 @@ class AntigravityAdapter(BaseAdapter):
             update_user_json(config, settle, backups)
             if settled:
                 shutil.rmtree(sidecar_dir, ignore_errors=True)
+                remove_managed_projects(sidecar, root, backups, self.gemini, keep=project_id)
 
     def deliver_to_lead(self, thread, text, state=None):
         if state is None:

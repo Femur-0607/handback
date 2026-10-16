@@ -56,10 +56,10 @@ class Base(unittest.TestCase):
             os.environ.pop(key, None)
         self.now = 1_000_000.0
 
-    def register_project(self, pid="proj-1", root=None):
+    def register_project(self, pid="proj-1", root=None, name="p"):
         uri = "file:///" + str(root or self.root).replace("\\", "/").replace(":", "%3A", 1)
         (self.gemini / "config" / "projects" / (pid + ".json")).write_text(json.dumps(
-            {"name": "p", "projectResources": {"resources": [{"gitFolder": {"folderUri": uri}}]}}), encoding="utf-8")
+            {"name": name, "projectResources": {"resources": [{"gitFolder": {"folderUri": uri}}]}}), encoding="utf-8")
 
     def transcript(self, *records, conversation=CONVERSATION):
         path = agy.transcript_path(conversation, self.gemini)
@@ -115,6 +115,12 @@ class ProjectAndHookConfigTests(Base):
         self.register_project("proj-2")
         with self.assertRaises(AdapterUnavailable):
             agy.resolve_project(self.root, self.gemini)
+
+    def test_sidecar_managed_project_is_not_a_registration(self):
+        # Antigravity 2.23 copies the target project for each sidecar (issue #4).
+        self.register_project()
+        self.register_project("managed", name=agy.SIDECAR_PREFIX + "83089e491ed3")
+        self.assertEqual(agy.resolve_project(self.root, self.gemini), "proj-1")
 
     def test_other_stop_hooks_counts_everything_but_relay(self):
         hooks_file = self.gemini / "config" / "hooks.json"
@@ -309,7 +315,9 @@ class CompletionContractTests(Base):
 class SidecarTests(Base):
     def job(self, args, project="proj-1"):
         folder = self.relay / "job"
-        agy._write_json(folder / "job.json", {"request_id": "r", "project_id": project, "args": args})
+        agy._write_json(folder / "job.json", {"request_id": "r", "project_id": project, "args": args,
+                                              "sidecar": agy.SIDECAR_PREFIX + "0123456789ab",
+                                              "root": str(self.root), "gemini": str(self.gemini)})
         return folder
 
     def test_runs_once_with_executable_not_bat(self):
@@ -335,8 +343,28 @@ class SidecarTests(Base):
                 patch.object(agy.subprocess, "run") as run:
             agy.run_sidecar_job(folder / "job.json")
         run.assert_not_called()
-        self.assertIn("different Antigravity project",
-                      json.loads((folder / "result.json").read_text(encoding="utf-8"))["error"])
+        result = json.loads((folder / "result.json").read_text(encoding="utf-8"))
+        self.assertIn("different Antigravity project", result["error"])
+        self.assertIs(result["invoked"], False)
+
+    def run_in(self, project_id):
+        folder = self.job(["send-message", "c", "x"])
+        (folder / "attempted").unlink(missing_ok=True)
+        with patch.dict(os.environ, {"ANTIGRAVITY_AGENTAPI_EXE": "a", "ANTIGRAVITY_PROJECT_ID": project_id}), \
+                patch.object(agy.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "{}", "")) as run:
+            agy.run_sidecar_job(folder / "job.json")
+        return run.called
+
+    def test_project_made_for_this_sidecar_is_accepted(self):
+        self.register_project("managed", name=agy.SIDECAR_PREFIX + "0123456789ab")
+        self.assertTrue(self.run_in("managed"))
+
+    def test_project_made_for_another_sidecar_or_folder_is_refused(self):
+        self.register_project("other-sidecar", name=agy.SIDECAR_PREFIX + "ffffffffffff")
+        self.assertFalse(self.run_in("other-sidecar"))
+        self.register_project("other-folder", root=Path(self.temp.name) / "elsewhere",
+                              name=agy.SIDECAR_PREFIX + "0123456789ab")
+        self.assertFalse(self.run_in("other-folder"))
 
 
 class DeliveryTests(Base):
@@ -350,8 +378,10 @@ class DeliveryTests(Base):
         self.state = ProjectState(self.root)
         self.request = {"id": "ab" * 16, "root": str(self.root), "marker": "[relay abababab]"}
 
-    def fake_app(self, stdout, before_result=None):
-        """Stand-in for Antigravity: run an enabled relay sidecar's job once."""
+    def fake_app(self, stdout, before_result=None, managed=False, agentapi=True):
+        """Stand-in for Antigravity: run an enabled relay sidecar's job once.
+
+        managed=True mimics 2.23+, which runs the sidecar in a copy of the project named after it."""
         def app():
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
@@ -362,8 +392,13 @@ class DeliveryTests(Base):
                         job = spec["args"][spec["args"].index("--job") + 1]
                         if before_result:
                             before_result()
-                        with patch.dict(os.environ, {"ANTIGRAVITY_AGENTAPI_EXE": "agentapi.exe",
-                                                     "ANTIGRAVITY_PROJECT_ID": entry["projectId"]}), \
+                        project = entry["projectId"]
+                        if managed:
+                            project = "managed-" + name
+                            self.register_project(project, name=name)
+                        exe = {"ANTIGRAVITY_AGENTAPI_EXE": "agentapi.exe"} if agentapi else {}
+                        with patch.dict(os.environ, {"ANTIGRAVITY_PROJECT_ID": project, **exe}), \
+                                patch.object(agy.shutil, "which", return_value=None), \
                                 patch.object(agy.subprocess, "run",
                                              return_value=subprocess.CompletedProcess([], 0, stdout, "")):
                             agy.run_sidecar_job(job)
@@ -432,6 +467,25 @@ class DeliveryTests(Base):
                                        state=self.state, request=self.request)["accepted"])
         self.assertEqual(self.collector(self.request["marker"]).poll()["text"], "RELAY_OK")
         self.assertEqual(len(agy._observations(self.relay, CONVERSATION)), 1)
+
+    def test_sidecar_in_managed_project_delivers_and_removes_that_project(self):
+        self.fake_app(json.dumps({"response": {"newConversation": {"conversationId": CONVERSATION}}}), managed=True)
+        adapter = agy.AntigravityAdapter(delivery_timeout=10, gemini=self.gemini)
+        delivery = adapter.deliver("pending-x", {"body": "[relay abababab] hi"}, state=self.state,
+                                   request=self.request)
+        self.assertEqual(delivery, {"accepted": True, "returncode": 0, "thread": CONVERSATION})
+        projects = sorted(p.stem for p in (self.gemini / "config" / "projects").glob("*.json"))
+        self.assertEqual(projects, ["proj-1"])
+        backups = self.state.home / "antigravity" / "backups"
+        self.assertTrue(any(p.name.startswith("managed-") for p in backups.iterdir()))
+
+    def test_failure_before_agentapi_is_send_failed_not_unknown(self):
+        self.fake_app("{}", agentapi=False)
+        adapter = agy.AntigravityAdapter(delivery_timeout=10, gemini=self.gemini)
+        delivery = adapter.deliver(CONVERSATION, {"body": "x"}, state=self.state, request=self.request)
+        self.assertFalse(delivery["accepted"])
+        self.assertNotIn("unknown", delivery)
+        self.assertIn("agentapi is not available", delivery["stderr"])
 
     def test_unrun_sidecar_is_unknown_and_disabled(self):
         adapter = agy.AntigravityAdapter(delivery_timeout=0.3, gemini=self.gemini)
@@ -558,6 +612,21 @@ class CleanupTests(Base):
                 agy.cleanup_sidecars(self.relay, home=self.gemini)
         self.assertTrue(agy._read_json(path)['concurrent'])
         self.assertTrue((self.gemini / 'config' / 'sidecars' / name).exists())
+
+    def test_orphaned_managed_projects_are_removed_with_backup(self):
+        live = self.add_sidecar('3' * 32, 'accepted', True)
+        self.register_project("orphan", name=agy.SIDECAR_PREFIX + "83089e491ed3")
+        self.register_project("live", name=live)
+        self.register_project("user", name="handback-notes")
+        dry = agy.cleanup_sidecars(self.relay, True, self.gemini)
+        self.assertEqual((dry["count"], dry["projects"]), (0, ["orphan"]))
+        self.assertTrue((self.gemini / "config" / "projects" / "orphan.json").exists())
+        result = agy.cleanup_sidecars(self.relay, home=self.gemini)
+        self.assertEqual(result["removed_projects"], ["orphan"])
+        left = sorted(p.stem for p in (self.gemini / "config" / "projects").glob("*.json"))
+        self.assertEqual(left, ["live", "user"])
+        backups = self.relay / "antigravity" / "backups"
+        self.assertTrue(any(p.name.startswith("orphan.json.") for p in backups.iterdir()))
 
     def test_unrecognized_relay_named_entry_is_kept(self):
         # Only sidecars whose manifest runs this relay's antigravity-sidecar job qualify.
