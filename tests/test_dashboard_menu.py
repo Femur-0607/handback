@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from handback import dashboard, skill_install
+from handback import compat, dashboard, skill_install
 from tests.test_dashboard_gui import DashboardMenuTests
 
 
@@ -101,7 +101,7 @@ class MenuActionTests(DashboardMenuTests):
         root = self.project()
         menu = self.context_menu()
         expected = ["보기 설정 ▶", "업데이트 자동 확인", f"최신 버전 확인 (현재 {dashboard.__version__})",
-                    "설치 상태 점검", "설정 (스킬·훅 설치·복구)", "새로고침", "닫기"]
+                    "설치 상태 점검", "앱 호환성 점검", "설정 (스킬·훅 설치·복구)", "새로고침", "닫기"]
         if dashboard.sys.platform == "win32":
             expected.insert(1, "Windows 시작 시 실행")
         self.assertEqual(self.labels(menu), expected)
@@ -309,5 +309,56 @@ for _name in dir(DashboardMenuTests):
         setattr(MenuActionTests, _name, None)
 
 
+class CompatMenuTests(MenuActionTests):
+    """App update notification, failure menu item and its copyable summary."""
+    failure = {"agent": "antigravity", "version": "2.23.1", "previous": "2.15.1", "ok": False,
+               "utc": "2026-10-16T01:00:00+00:00", "notify": True,
+               "checks": [{"check": "sidecar registry schema", "ok": False, "detail": "unexpected: x"}]}
+
+    def test_detected_update_shows_a_tray_notification(self):
+        self.strip.tray = type("FakeTray", (), {})()
+        shown = []
+        self.strip.tray.balloon = lambda title, text, warning=False: shown.append((text, warning))
+        self.strip.tray.stop = lambda: None
+        with self.sync_async(), patch.object(compat, "scan", return_value=[self.failure]), \
+                patch.object(compat, "failures", return_value=[self.failure]):
+            self.strip._check_compat(manual=False)
+        self.assertEqual(len(shown), 1)
+        self.assertTrue(shown[0][0].startswith("Antigravity 2.23.1 감지 — 호환성 점검 실패"))
+        self.assertTrue(shown[0][1])
+        self.assertEqual(self.strip._compat_failures, [self.failure])
+        self.strip.tray = None
+
+    def test_failure_menu_item_opens_a_copyable_summary(self):
+        self.strip._compat_failures = [self.failure]
+        menu = self.context_menu()
+        first = menu.items[0]
+        self.assertEqual(first["label"], "⚠ Antigravity 2.23.1 호환성 점검 실패 — 진단 요약")
+        self.strip._close_menu()
+        with patch.object(dashboard.webbrowser, "open") as opened:
+            window = self.strip._compat_report(self.failure)
+            buttons = {child.cget("text"): child for frame in window.winfo_children()
+                       for child in frame.winfo_children() if child.winfo_class() == "Button"}
+            buttons["요약 복사"].invoke()
+            self.assertIn("FAIL sidecar registry schema", window.clipboard_get())
+            buttons["GitHub 이슈 열기"].invoke()
+        # The issue page is only opened; the user files it.
+        self.assertTrue(opened.call_args[0][0].startswith(compat.ISSUE_URL + "?title="))
+        window.destroy()
+
+    def test_manual_check_reports_each_app(self):
+        passed = {**self.failure, "ok": True, "notify": False}
+        with self.sync_async(), patch.object(compat, "scan", return_value=[passed]) as scan, \
+                patch.object(self.strip, "_dialog") as dialog:
+            self.strip._check_compat()
+        self.assertTrue(scan.call_args.kwargs["force"])
+        self.assertIn("Antigravity 2.23.1 감지 — 호환성 점검 통과", dialog.call_args[0][1])
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+for _name in dir(MenuActionTests):
+    if _name.startswith("test_") and _name not in CompatMenuTests.__dict__:
+        setattr(CompatMenuTests, _name, None)

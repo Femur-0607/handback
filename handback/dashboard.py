@@ -21,7 +21,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 
-from . import __version__, config, envelope, inbox, updater
+from . import __version__, compat, config, envelope, inbox, updater
 from .collector import OPEN_STATES
 from .tray import Tray
 from .winevents import ForegroundWatcher
@@ -51,6 +51,9 @@ DEFAULT_PREFS = {"max_rows": 3, "order": [], "hidden": [], "mode": "taskbar",
                  "compact_x": None, "compact_y": None, "panel_x": None, "panel_y": None,
                  "docked": False, "update_check": True}
 UPDATE_FIRST_MS = 60_000
+# App updates (Codex/Claude/Antigravity): first look soon after start, then every 10 minutes.
+COMPAT_FIRST_MS = 20_000
+COMPAT_INTERVAL_MS = 600_000
 
 
 def _read(path, errors=None):
@@ -1593,6 +1596,7 @@ class Strip:
     _tray_timer = None
     _tray_text = "대기"
     _update = None  # newer release found by the update check
+    _compat_failures = ()  # last failed app compatibility checks (compat.failures)
     _user_hidden = False
     _show_event = None
     _show_timer = None
@@ -1815,6 +1819,9 @@ class Strip:
             self._toggle_visible()
         elif kind == "right":
             self._tray_menu(point)
+        elif kind == "balloon":
+            if self._compat_failures:
+                self._compat_report(self._compat_failures[0])
         elif kind == "quit":
             self.quit()
 
@@ -2458,6 +2465,11 @@ class Strip:
                       {"label": f"최신 버전 확인 (현재 {__version__})",
                        "enabled": not self._is_busy(("update",)), "command": self._check_update}])
         checking = self._is_busy(("doctor",))
+        if self._compat_failures and not project:
+            items[:0] = [{"label": f"⚠ {compat.NAMES[r['agent']]} {r['version']} 호환성 점검 실패 — 진단 요약",
+                          "tooltip": "실패 항목과 관련 로그를 복사해 GitHub 이슈로 올릴 수 있습니다",
+                          "command": lambda r=r: self._compat_report(r)}
+                         for r in self._compat_failures] + [None]
         if self._update and not project:
             updating = self._is_busy(("update",))
             items[:0] = [{"label": "업데이트 받는 중…" if updating else f"업그레이드 ({self._update['version']})",
@@ -2467,6 +2479,9 @@ class Strip:
         items.extend([
             {"label": "설치 상태 점검 (점검 중…)" if checking else "설치 상태 점검",
              "enabled": not checking, "command": self._check_install},
+            {"label": "앱 호환성 점검 (점검 중…)" if self._is_busy(("compat",)) else "앱 호환성 점검",
+             "tooltip": "Codex·Claude·Antigravity 연동 형식을 읽기만 해서 확인합니다 (메시지는 보내지 않음)",
+             "enabled": not self._is_busy(("compat",)), "command": self._check_compat},
             {"label": "설정 (스킬·훅 설치·복구)", "command": self._open_setup},
             None,
             {"label": "새로고침", "command": lambda: self.refresh(reschedule=False)},
@@ -2814,6 +2829,76 @@ class Strip:
             self.quit()  # the installer replaces these files, then relaunches the dashboard
         folder = Path(self.home) / "updates"
         self._run_async(("update",), lambda: updater.download(release, folder), done)
+
+    def _compat_timer(self):
+        self._check_compat(manual=False)
+        self.root.after(COMPAT_INTERVAL_MS, self._compat_timer)
+
+    def _check_compat(self, manual=True):
+        """Detect app updates and run the read-only compatibility check (worker thread)."""
+        if self._is_busy(("compat",)):
+            return
+
+        def done(results, error):
+            try:
+                self._compat_failures = compat.failures(self.home)
+            except (OSError, ValueError):
+                pass
+            if error:
+                if manual:
+                    self._dialog("앱 호환성 점검", "점검하지 못했습니다 — " + " ".join(ui_error(error).split())[:80])
+                return
+            if manual:
+                lines = [compat.headline(r) for r in results] or ["확인된 앱이 없습니다"]
+                if any(not r["ok"] for r in results):
+                    lines.append("\n메뉴의 '⚠ … 진단 요약'에서 실패 항목을 복사할 수 있습니다.")
+                self._dialog("앱 호환성 점검", "\n".join(lines))
+                return
+            for result in results:
+                if result["notify"] and self.tray is not None:
+                    self.tray.balloon("handback", compat.headline(result) +
+                                      ("" if result["ok"] else "\n클릭하면 진단 요약을 엽니다"),
+                                      warning=not result["ok"])
+        self._run_async(("compat",), lambda: compat.scan(self.home, force=manual), done)
+
+    def _compat_report(self, result):
+        """Copyable diagnostic summary of a failed check; the user decides whether to file it."""
+        self.tooltip.hide()
+        self._close_menu()
+        tk = self.tk
+        window = tk.Toplevel(self.root)
+        window.title(compat.issue_title(result))
+        window.attributes("-topmost", True)
+        window.geometry("720x480")
+        window.configure(bg=self.BG)
+        report = compat.summary(result)
+        footer = tk.Frame(window, bg=self.BG, padx=8, pady=6)
+        footer.pack(side="bottom", fill="x")
+        status = tk.StringVar(window, "GitHub 이슈는 자동으로 올리지 않습니다. 내용을 확인한 뒤 붙여 넣으세요.")
+
+        def copy():
+            window.clipboard_clear()
+            window.clipboard_append(report)
+            status.set("진단 요약을 클립보드에 복사했습니다.")
+
+        def issue():
+            from urllib.parse import quote as url_quote
+            copy()
+            webbrowser.open(compat.ISSUE_URL + "?title=" + url_quote(compat.issue_title(result)))
+            status.set("복사했습니다. 열린 이슈 페이지의 본문에 붙여 넣으세요.")
+
+        self._button(footer, "닫기", window.destroy).pack(side="right", padx=(8, 0))
+        self._button(footer, "GitHub 이슈 열기", issue).pack(side="right", padx=(8, 0))
+        self._button(footer, "요약 복사", copy).pack(side="right")
+        tk.Label(footer, textvariable=status, bg=self.BG, fg=self.DIM, font=self.font).pack(side="left")
+        text = tk.Text(window, wrap="word", bg=self.BG, fg=self.FG, insertbackground=self.FG,
+                       font=("Consolas", 10), padx=12, pady=10, bd=0)
+        text.pack(fill="both", expand=True)
+        text.insert("1.0", report)
+        text.configure(state="disabled")
+        window.bind("<Escape>", lambda event: window.destroy())
+        _dark_titlebar(window)
+        return window
 
     def _open_setup(self):
         from . import setup_gui
@@ -3184,6 +3269,11 @@ class Strip:
         if getattr(sys, "frozen", False):  # source/PyPI users keep the current behaviour
             self.root.after(400, self._auto_setup)
         self.root.after(UPDATE_FIRST_MS, self._update_timer)
+        try:
+            self._compat_failures = compat.failures(self.home)
+        except (OSError, ValueError):
+            pass
+        self.root.after(COMPAT_FIRST_MS, self._compat_timer)
         self.root.mainloop()
 
 

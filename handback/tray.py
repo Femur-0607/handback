@@ -2,7 +2,7 @@
 
 The icon is owned by a hidden window that runs its own message loop on a daemon
 thread. That thread never touches Tk: it only puts ``(kind, (x, y))`` tuples
-("left", "right", "quit") into ``Tray.events``, which the dashboard polls from
+("left", "right", "balloon", "quit") into ``Tray.events``, which the dashboard polls from
 the Tk thread. Everywhere except Windows the class is a harmless no-op.
 
 The window is a hidden top-level popup rather than a message-only window on
@@ -19,19 +19,22 @@ CALLBACK_MESSAGE = 0x8001  # WM_APP + 1
 WM_DESTROY, WM_CLOSE, WM_NULL = 0x0002, 0x0010, 0x0000
 WM_LBUTTONUP, WM_RBUTTONUP, WM_CONTEXTMENU = 0x0202, 0x0205, 0x007B
 NIN_SELECT, NIN_KEYSELECT = 0x0400, 0x0401
+NIN_BALLOONUSERCLICK = 0x0405
 NIM_ADD, NIM_MODIFY, NIM_DELETE, NIM_SETVERSION = 0, 1, 2, 4
-NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_SHOWTIP = 0x1, 0x2, 0x4, 0x80  # SHOWTIP: required for tips under VERSION_4
+NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_INFO, NIF_SHOWTIP = 0x1, 0x2, 0x4, 0x10, 0x80  # SHOWTIP: required for tips under VERSION_4
+NIIF_INFO, NIIF_WARNING = 0x1, 0x2
 NOTIFYICON_VERSION_4 = 4
 TIP_LIMIT = 127
+INFO_LIMIT, INFO_TITLE_LIMIT = 255, 63
 DEBOUNCE_SECONDS = 0.25
 WINDOW_CLASS = "HandbackTrayWindow"
 ICON_ID = 1
 
 
-def clip_tip(text):
-    """szTip holds 127 characters plus the terminator."""
+def clip_tip(text, limit=TIP_LIMIT):
+    """szTip holds 127 characters plus the terminator (szInfo 255, szInfoTitle 63)."""
     text = str(text)
-    return text if len(text) <= TIP_LIMIT else text[:TIP_LIMIT - 1] + "…"
+    return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
 class Tray:
@@ -50,6 +53,7 @@ class Tray:
         self._taskbar_created = None
         self._failed = False
         self._api = None
+        self._balloon = None  # (title, text, flags) for the next NIM_MODIFY only
 
     # ---- public API (Tk thread) -------------------------------------------------
     def start(self, timeout=3.0):
@@ -72,6 +76,19 @@ class Tray:
             if not self.active:
                 return False
         return self._notify(NIM_MODIFY)
+
+    def balloon(self, title, text, warning=False):
+        """Show a Windows notification from the icon; clicking it queues ("balloon", None)."""
+        if not self.active:
+            return False
+        with self._lock:
+            self._balloon = (clip_tip(title, INFO_TITLE_LIMIT), clip_tip(text, INFO_LIMIT),
+                             NIIF_WARNING if warning else NIIF_INFO)
+        try:
+            return self._notify(NIM_MODIFY)
+        finally:
+            with self._lock:
+                self._balloon = None
 
     def stop(self):
         """Remove the icon and end the message loop; safe to call repeatedly."""
@@ -112,6 +129,8 @@ class Tray:
             elif event in (WM_RBUTTONUP, WM_CONTEXTMENU):
                 if self._debounced("right"):
                     self._post("right", self._cursor())
+            elif event == NIN_BALLOONUSERCLICK:
+                self._post("balloon")
             return True
         if self._taskbar_created and message == self._taskbar_created:
             self._notify(NIM_ADD)  # Explorer restarted: icons must be re-added.
@@ -212,6 +231,10 @@ class Tray:
             nid.hIcon = self._hicon
             nid.szTip = self.tooltip
             nid.uVersion = NOTIFYICON_VERSION_4
+            balloon = self._balloon
+            if balloon:
+                nid.uFlags |= NIF_INFO
+                nid.szInfoTitle, nid.szInfo, nid.dwInfoFlags = balloon
             return nid
 
         def notify(action):

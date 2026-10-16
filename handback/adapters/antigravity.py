@@ -29,6 +29,7 @@ from urllib.parse import unquote, urlparse
 
 from .base import AdapterError, AdapterUnavailable, BaseAdapter
 from .codex import BinaryRolloutTailer
+from ..discovery import antigravity_version
 from ..invocation import entry_args, self_argv
 
 SIDECAR_PREFIX = "handback-"
@@ -648,7 +649,8 @@ class AntigravityAdapter(BaseAdapter):
         own = [k for k in sidecars if k.startswith(SIDECAR_PREFIX)]
         others, longest = other_stop_hooks(root, self.gemini)
         hooks = _read_json(self.gemini / "config" / "hooks.json", {}) or {}
-        info = {"agent": self.name, "installed": executable is not None, "executable": executable, "version": None,
+        info = {"agent": self.name, "installed": executable is not None, "executable": executable,
+                "version": antigravity_version(),
                 "warnings": [], "capabilities": {"worker": executable is not None, "lead": False,
                                                  "lead_implemented": True, "lead_deferred": True,
                                                  "hooks_installed": HOOK_GROUP in hooks},

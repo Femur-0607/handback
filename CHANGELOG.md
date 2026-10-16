@@ -5,6 +5,21 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Added
+
+- The dashboard notices Codex, Claude and Antigravity updates. Every 10 minutes
+  it reads each installed app's version; a version that differs from the last
+  checked one runs a read-only compatibility check (`--help`/`--version`, the
+  Antigravity sidecar registry and manifests, project file format, hook
+  settings format; nothing is sent). A tray notification says
+  "Antigravity 2.23.1 감지 — 호환성 점검 통과/실패". A pass records the version
+  as verified; a failure adds a **⚠ … 진단 요약** menu item with a copyable
+  summary (app version, failed checks, relevant log lines with paths shortened)
+  and a button that opens a new GitHub issue page. Nothing is filed
+  automatically. **앱 호환성 점검** in the menu runs the check on demand.
+- `handback doctor` reports the Antigravity version (from the installed app,
+  or its logs) instead of "unknown", and notes a passed compatibility check.
+
 ### Changed
 
 - The update check is available in every run, including a source checkout,

@@ -338,6 +338,8 @@ def checklist(state, resolved, agents):
             action = f"handback install-hooks --agents {lead} --state-home {quote(state.home)}"
         add(lead + " recovery hooks", "OK" if present else "WARN", detail, action)
     local = selftest_record(state.home)
+    from .compat import load_record
+    compat_record = load_record(state.home)
     for agent in agents:
         name = agent["agent"]
         if name == "antigravity" and not enabled:
@@ -355,6 +357,10 @@ def checklist(state, resolved, agents):
             detail = version + " (local selftest ok " + str(record.get("utc", ""))[:10] + "; release-verified=" + str(verified or "unknown") + ")"
         else:
             detail = version + " (untested version; recorded=" + str(verified or "unknown") + ")"
+        compat_entry = compat_record.get(name) if isinstance(compat_record.get(name), dict) else {}
+        if number and compat_entry.get("verified") == number:
+            # Read-only format checks passed (dashboard); not a live round trip, so the level stays.
+            detail += "; compatibility check ok " + str(compat_entry.get("verified_utc", ""))[:10]
         add(name + " version", "OK" if tested or locally else "WARN", detail,
             "handback selftest (a passing run records this version locally and clears this warning)"
             if name == "codex" else "Verify a small authorized live round trip for this app version.")
