@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-10-16
+
 ### Added
 
 - The dashboard notices Codex, Claude and Antigravity updates. Every 10 minutes
@@ -340,6 +342,7 @@ All notable changes to this project are documented here. This file follows the
 - The release version check imports the checkout when run from a temporary
   directory.
 
+[0.3.6]: https://github.com/Femur-0607/handback/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/Femur-0607/handback/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/Femur-0607/handback/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/Femur-0607/handback/compare/v0.3.2...v0.3.3
