@@ -36,13 +36,25 @@ All notable changes to this project are documented here. This file follows the
 
 ### Fixed
 
+- The docked widget's background matches the taskbar right around it. A
+  translucent taskbar takes on the wallpaper's colours, so it can be a
+  different shade at each point along the bar, and the widget used to pick a
+  shade from somewhere else on the bar. It now reads only the strips next to
+  its own left and right edges.
+- The compact widget disappears in the same frame a window goes full-screen
+  (F11, a video, a borderless game). The foreground hook now also follows the
+  foreground window's resizes and drops the widget below that window
+  immediately. Before, it waited up to 100 ms for the next check, and in the
+  meantime it could still raise the widget above the full-screen window.
 - Antigravity workers deliver again with Antigravity 2.23+, which runs each
   sidecar in a copy of the target project named after the sidecar. The sidecar
-  now accepts that copy when it covers the same checkout, the copy no longer
-  counts as a second registration of the folder, and handback removes it
-  (with a backup) after delivery; `cleanup-sidecars` also removes copies left
-  behind by earlier runs. A sidecar that stops before calling agentapi now
-  reports `send_failed` instead of `delivery_unknown`. (#4)
+  now accepts that copy when it covers the same checkout, and the copy no
+  longer counts as a second registration of the folder. The copy is kept after
+  delivery because the new conversation belongs to it and the app hides a
+  conversation whose project is gone; `cleanup-sidecars` removes (with a
+  backup) only copies that hold no conversation. A sidecar that stops before
+  calling agentapi now reports `send_failed` instead of `delivery_unknown`.
+  (#4)
 - `send` to a Codex conversation that is open in the Codex app no longer fails
   with "active writer" because handback's saved reasoning effort differed from
   the conversation's own. The conversation's settings now win unless the send

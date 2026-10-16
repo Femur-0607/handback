@@ -475,12 +475,24 @@ def _runs_in_managed_project(job, project_id):
             and set(_project_roots(project)) == {_norm(job["root"])})
 
 
-def remove_managed_projects(sidecar, root, backups, home=None, keep=None):
-    """Delete the project(s) Antigravity made for one relay sidecar; back each up first."""
-    matches = [path for path, project in _projects(home or gemini_home())
-               if path.stem != keep and project.get("name") == sidecar and _sidecar_managed(project)
-               and set(_project_roots(project)) == {_norm(root)}]
-    return _remove_project_files(matches, backups)
+def _conversation_projects(home):
+    """Project IDs that Antigravity conversations belong to; None when that cannot be read.
+
+    A conversation is shown under its project, so deleting that project file hides it in the app.
+    """
+    database = Path(home) / "antigravity" / "conversation_summaries.db"
+    if not database.is_file():
+        return None
+    import sqlite3
+    try:
+        connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=5)
+        try:
+            rows = connection.execute("SELECT DISTINCT project_id FROM conversation_summaries").fetchall()
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        return None
+    return {str(row[0]) for row in rows if row[0]}
 
 
 def run_sidecar_job(job_path):
@@ -565,10 +577,13 @@ def cleanup_sidecars(relay_home, dry_run=False, home=None):
             continue
         candidates.append(name)
         manifests[name] = raw
-    # Projects Antigravity made for relay sidecars that no longer exist (or are removed now).
+    # Projects Antigravity made for relay sidecars that no longer exist (or are removed now) and that
+    # hold no conversation; when the conversation list is unreadable, every such project stays.
     remaining = set(value.get("sidecars", {})) - set(candidates)
+    in_use = _conversation_projects(home)
     projects = [path for path, project in _projects(home)
-                if _sidecar_managed(project) and project.get("name") not in remaining]
+                if _sidecar_managed(project) and project.get("name") not in remaining
+                and in_use is not None and path.stem not in in_use]
     result = {"candidates": candidates, "count": len(candidates), "dry_run": dry_run,
               "projects": [path.stem for path in projects]}
     if dry_run or not (candidates or projects):
@@ -746,8 +761,8 @@ class AntigravityAdapter(BaseAdapter):
                     entry["enabled"] = False  # keep for diagnosis when the outcome is unknown
             update_user_json(config, settle, backups)
             if settled:
+                # The project Antigravity 2.23+ made for this sidecar stays: the new conversation lives in it.
                 shutil.rmtree(sidecar_dir, ignore_errors=True)
-                remove_managed_projects(sidecar, root, backups, self.gemini, keep=project_id)
 
     def deliver_to_lead(self, thread, text, state=None):
         if state is None:

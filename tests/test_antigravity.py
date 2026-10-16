@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -60,6 +61,16 @@ class Base(unittest.TestCase):
         uri = "file:///" + str(root or self.root).replace("\\", "/").replace(":", "%3A", 1)
         (self.gemini / "config" / "projects" / (pid + ".json")).write_text(json.dumps(
             {"name": name, "projectResources": {"resources": [{"gitFolder": {"folderUri": uri}}]}}), encoding="utf-8")
+
+    def conversations(self, *project_ids):
+        """Antigravity's conversation list, one conversation in each given project."""
+        path = self.gemini / "antigravity" / "conversation_summaries.db"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with contextlib.closing(sqlite3.connect(path)) as connection, connection:
+            connection.execute("CREATE TABLE IF NOT EXISTS conversation_summaries "
+                               "(conversation_id TEXT PRIMARY KEY, project_id TEXT)")
+            connection.executemany("INSERT INTO conversation_summaries VALUES (?, ?)",
+                                   [(f"c-{pid}", pid) for pid in project_ids])
 
     def transcript(self, *records, conversation=CONVERSATION):
         path = agy.transcript_path(conversation, self.gemini)
@@ -468,16 +479,17 @@ class DeliveryTests(Base):
         self.assertEqual(self.collector(self.request["marker"]).poll()["text"], "RELAY_OK")
         self.assertEqual(len(agy._observations(self.relay, CONVERSATION)), 1)
 
-    def test_sidecar_in_managed_project_delivers_and_removes_that_project(self):
+    def test_sidecar_in_managed_project_delivers_and_keeps_that_project(self):
+        # The new conversation belongs to the managed project; deleting it hides the conversation in the app.
         self.fake_app(json.dumps({"response": {"newConversation": {"conversationId": CONVERSATION}}}), managed=True)
         adapter = agy.AntigravityAdapter(delivery_timeout=10, gemini=self.gemini)
         delivery = adapter.deliver("pending-x", {"body": "[relay abababab] hi"}, state=self.state,
                                    request=self.request)
         self.assertEqual(delivery, {"accepted": True, "returncode": 0, "thread": CONVERSATION})
         projects = sorted(p.stem for p in (self.gemini / "config" / "projects").glob("*.json"))
-        self.assertEqual(projects, ["proj-1"])
-        backups = self.state.home / "antigravity" / "backups"
-        self.assertTrue(any(p.name.startswith("managed-") for p in backups.iterdir()))
+        self.assertEqual(len(projects), 2)
+        self.assertIn("proj-1", projects)
+        self.assertTrue(any(name.startswith("managed-") for name in projects))
 
     def test_failure_before_agentapi_is_send_failed_not_unknown(self):
         self.fake_app("{}", agentapi=False)
@@ -616,17 +628,28 @@ class CleanupTests(Base):
     def test_orphaned_managed_projects_are_removed_with_backup(self):
         live = self.add_sidecar('3' * 32, 'accepted', True)
         self.register_project("orphan", name=agy.SIDECAR_PREFIX + "83089e491ed3")
+        self.register_project("talked", name=agy.SIDECAR_PREFIX + "0123456789ab")
         self.register_project("live", name=live)
         self.register_project("user", name="handback-notes")
+        self.conversations("talked", "proj-elsewhere")
         dry = agy.cleanup_sidecars(self.relay, True, self.gemini)
         self.assertEqual((dry["count"], dry["projects"]), (0, ["orphan"]))
         self.assertTrue((self.gemini / "config" / "projects" / "orphan.json").exists())
         result = agy.cleanup_sidecars(self.relay, home=self.gemini)
         self.assertEqual(result["removed_projects"], ["orphan"])
         left = sorted(p.stem for p in (self.gemini / "config" / "projects").glob("*.json"))
-        self.assertEqual(left, ["live", "user"])
+        self.assertEqual(left, ["live", "talked", "user"])
         backups = self.relay / "antigravity" / "backups"
         self.assertTrue(any(p.name.startswith("orphan.json.") for p in backups.iterdir()))
+
+    def test_managed_projects_stay_when_conversations_cannot_be_read(self):
+        self.register_project("orphan", name=agy.SIDECAR_PREFIX + "83089e491ed3")
+        self.assertEqual(agy.cleanup_sidecars(self.relay, True, self.gemini)["projects"], [])
+        database = self.gemini / "antigravity" / "conversation_summaries.db"
+        database.parent.mkdir(parents=True)
+        database.write_bytes(b"not a database")
+        self.assertEqual(agy.cleanup_sidecars(self.relay, home=self.gemini)["projects"], [])
+        self.assertTrue((self.gemini / "config" / "projects" / "orphan.json").exists())
 
     def test_unrecognized_relay_named_entry_is_kept(self):
         # Only sidecars whose manifest runs this relay's antigravity-sidecar job qualify.
