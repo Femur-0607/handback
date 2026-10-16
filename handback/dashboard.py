@@ -24,7 +24,8 @@ from types import SimpleNamespace
 from . import __version__, compat, config, envelope, inbox, updater
 from .collector import OPEN_STATES
 from .tray import Tray
-from .winevents import ForegroundWatcher
+from .winevents import (ForegroundWatcher, foreground_covers, fullscreen_covers_widget,  # noqa: F401
+                        native_user32)
 from .state import _read_json, atomic_json, home_lock, state_home
 
 
@@ -692,60 +693,12 @@ def taskbar_info(point=None):
         return None
 
 
-def fullscreen_covers_widget(rect, monitor_rect, foreground_monitor, widget_monitor,
-                             class_name="", own_window=False, notification_state=None):
-    """Notification state is global: it cannot establish same-monitor coverage."""
-    if (own_window or class_name in {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
-            or not foreground_monitor or foreground_monitor != widget_monitor
-            or not rect or not monitor_rect):
-        return False
-    left, top, right, bottom = monitor_rect
-    return (right > left and bottom > top and rect[0] <= left and rect[1] <= top
-            and rect[2] >= right and rect[3] >= bottom)
-
-
 def widget_fullscreen_covered(widget, point=None):
     """Compare foreground bounds with the full monitor, excluding our process."""
     if sys.platform != "win32":
         return False
-    import ctypes
-    from ctypes import wintypes
-
-    class MonitorInfo(ctypes.Structure):
-        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
-                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
-
     try:
-        user = ctypes.windll.user32
-        user.GetForegroundWindow.restype = wintypes.HWND
-        user.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
-        user.GetAncestor.restype = wintypes.HWND
-        user.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
-        user.MonitorFromWindow.restype = wintypes.HANDLE
-        user.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
-        user.MonitorFromPoint.restype = wintypes.HANDLE
-        user.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
-        user.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
-        user.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-        user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-        foreground = user.GetForegroundWindow()
-        hwnd = user.GetAncestor(widget.winfo_id(), 2)
-        monitor = user.MonitorFromWindow(foreground, 2)
-        own_monitor = (user.MonitorFromPoint(wintypes.POINT(*point), 2) if point is not None
-                       else user.MonitorFromWindow(hwnd, 2))
-        if not foreground or not hwnd or monitor != own_monitor:
-            return False
-        pid = wintypes.DWORD()
-        user.GetWindowThreadProcessId(foreground, ctypes.byref(pid))
-        name = ctypes.create_unicode_buffer(256)
-        user.GetClassNameW(foreground, name, len(name))
-        rect, info = wintypes.RECT(), MonitorInfo()
-        info.cbSize = ctypes.sizeof(info)
-        if not user.GetWindowRect(foreground, ctypes.byref(rect)) or not user.GetMonitorInfoW(monitor, ctypes.byref(info)):
-            return False
-        bounds = lambda r: (r.left, r.top, r.right, r.bottom)
-        return fullscreen_covers_widget(bounds(rect), bounds(info.rcMonitor), monitor,
-                                        own_monitor, name.value, pid.value == os.getpid())
+        return foreground_covers(native_user32(), _root_hwnd(widget), point)
     except (AttributeError, OSError):
         return False
 
@@ -1207,15 +1160,29 @@ def compact_palette(samples=()):
 
 
 def taskbar_sample_points(info, dpi, excluded=None):
-    """Sample inset top/bottom bands, away from icon centres and our own window."""
+    """Sample inset top/bottom bands, away from icon centres and our own window.
+
+    A translucent (acrylic) taskbar tints each stretch with the wallpaper behind
+    it, so one bar-wide shade can be far from what surrounds the widget. When
+    the widget sits on the bar, sample only the strips right beside it.
+    """
     if not info or info["auto_hide"] or info["edge"] not in (1, 3):
         return []
     left, top, right, bottom = info["rect"]
     inset = max(2, round(4 * dpi / 96))
     if right - left <= inset * 2 or bottom - top <= inset * 2:
         return []
+    bands = (top + inset, bottom - inset - 1)
+    if excluded is not None and excluded[0] < right and excluded[2] > left \
+            and excluded[1] < bottom and excluded[3] > top:
+        step = max(1, round(3 * dpi / 96))
+        beside = [excluded[0] - inset - step * i for i in range(3)]
+        beside += [excluded[2] + inset - 1 + step * i for i in range(3)]
+        points = [(x, y) for x in beside if left <= x < right for y in bands]
+        if points:
+            return points
     points = [(left + (right-left) * i // 10, y)
-              for i in range(1, 10) for y in (top + inset, bottom - inset - 1)]
+              for i in range(1, 10) for y in bands]
     return [(x, y) for x, y in points if excluded is None or not
             (excluded[0] <= x < excluded[2] and excluded[1] <= y < excluded[3])]
 

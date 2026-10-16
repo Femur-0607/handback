@@ -86,6 +86,16 @@ class CompactPureTests(unittest.TestCase):
         self.assertLessEqual(len(points), 18)
         self.assertTrue(all(-1920 < x < 0 and y in (1038, 1073) for x, y in points))
         self.assertFalse(any(-1300 <= x < -900 for x, y in points))
+        # A translucent bar varies along its length: read only the strips beside the widget.
+        self.assertTrue(all(-1320 <= x < -1300 or -900 <= x < -880 for x, y in points))
+        self.assertEqual({x < -1300 for x, y in points}, {True, False})
+        # Flush against the bar's end, only the inner side remains.
+        edge = dashboard.taskbar_sample_points(info, 96, (-1920, 1032, -1600, 1080))
+        self.assertTrue(edge and all(-1600 <= x < -1580 for x, y in edge))
+        # Off the bar (floating, or not yet mapped): sample the whole bar.
+        spread = dashboard.taskbar_sample_points(info, 144, (-1300, 500, -900, 540))
+        self.assertEqual(len(spread), 18)
+        self.assertEqual(len(dashboard.taskbar_sample_points(info, 144)), 18)
         for unavailable in (None, {**info, "auto_hide": True}, {**info, "edge": 0}):
             self.assertEqual(dashboard.taskbar_sample_points(unavailable, 96), [])
 

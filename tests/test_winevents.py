@@ -1,7 +1,7 @@
 """Foreground hook: z-order repair is pure over a fake user32; the thread starts and stops."""
 import threading
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from handback import winevents
 
@@ -51,6 +51,84 @@ class RaiseAboveTaskbarTests(unittest.TestCase):
         watcher.target = 7
         watcher._event()
         watcher._api.SetWindowPos.assert_called_once()
+
+    def test_full_screen_foreground_sinks_the_widget_instead_of_raising_it(self):
+        watcher = winevents.ForegroundWatcher()
+        watcher._api = FakeUser([99])
+        watcher.target = 7
+        with patch.object(winevents, "foreground_covers", return_value=True) as covers:
+            watcher._event()
+        covers.assert_called_once_with(watcher._api, 7)
+        watcher._api.SetWindowPos.assert_called_once_with(7, winevents.HWND_BOTTOM, 0, 0, 0, 0,
+                                                          winevents.RAISE_FLAGS)
+        watcher._api = FakeUser([99], visible=False)  # already withdrawn by Tk
+        with patch.object(winevents, "foreground_covers", return_value=True):
+            watcher._event()
+        watcher._api.SetWindowPos.assert_not_called()
+
+
+class FakeScreen:
+    """Just enough user32 for foreground_covers: one foreground window, two monitors."""
+
+    def __init__(self, rect, monitor=(0, 0, 1920, 1080), same_monitor=True, cls="Chrome",
+                 pid=1234, visible=True, iconic=False):
+        self.rect, self.monitor, self.same, self.cls = rect, monitor, same_monitor, cls
+        self.pid, self.visible, self.iconic = pid, visible, iconic
+        from ctypes import wintypes
+        import ctypes
+
+        class MonitorInfo(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+        self.MonitorInfo = MonitorInfo
+
+    def GetForegroundWindow(self):
+        return 50
+
+    def IsWindowVisible(self, hwnd):
+        return self.visible
+
+    def IsIconic(self, hwnd):
+        return self.iconic
+
+    def MonitorFromWindow(self, hwnd, flags):
+        return 1 if hwnd == 50 or self.same else 2
+
+    def MonitorFromPoint(self, point, flags):
+        return 1 if self.same else 2
+
+    def GetWindowThreadProcessId(self, hwnd, pid):
+        pid._obj.value = self.pid
+        return 1
+
+    def GetClassNameW(self, hwnd, buffer, size):
+        buffer.value = self.cls
+        return len(self.cls)
+
+    def GetWindowRect(self, hwnd, rect):
+        r = rect._obj
+        r.left, r.top, r.right, r.bottom = self.rect
+        return 1
+
+    def GetMonitorInfoW(self, monitor, info):
+        r = info._obj.rcMonitor
+        r.left, r.top, r.right, r.bottom = self.monitor
+        return 1
+
+
+class ForegroundCoversTests(unittest.TestCase):
+    def test_full_screen_on_the_widget_monitor_only(self):
+        covers = winevents.foreground_covers
+        self.assertTrue(covers(FakeScreen((0, 0, 1920, 1080)), 7))
+        self.assertTrue(covers(FakeScreen((0, 0, 1920, 1080)), 7, point=(10, 1050)))
+        self.assertFalse(covers(FakeScreen((0, 0, 1920, 1032)), 7))  # maximized above the taskbar
+        self.assertFalse(covers(FakeScreen((0, 0, 1920, 1080), same_monitor=False), 7))
+        self.assertFalse(covers(FakeScreen((0, 0, 1920, 1080), cls="WorkerW"), 7))
+        self.assertFalse(covers(FakeScreen((0, 0, 1920, 1080), pid=winevents.os.getpid()), 7))
+        self.assertFalse(covers(FakeScreen((0, 0, 1920, 1080), visible=False), 7))
+        self.assertFalse(covers(FakeScreen((0, 0, 1920, 1080), iconic=True), 7))
+        self.assertFalse(covers(FakeScreen((0, 0, 1920, 1080)), None))
+        self.assertFalse(covers(Mock(GetForegroundWindow=Mock(side_effect=OSError)), 7))
 
 
 @unittest.skipUnless(winevents.sys.platform == "win32", "Windows hooks")
