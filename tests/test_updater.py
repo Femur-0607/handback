@@ -121,6 +121,29 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("Check: RelaunchRequested", script)
         self.assertIn("{param:RELAUNCH|0}", script)
 
+    def test_installer_stops_only_long_running_relay_processes(self):
+        packaging = Path(__file__).resolve().parents[1] / "packaging"
+        script = (packaging / "installer.iss").read_text(encoding="utf-8-sig")
+        self.assertIn("function PrepareToInstall", script)
+        self.assertIn("ExtractTemporaryFile('stop-relay.ps1')", script)
+        source = (packaging / "stop-relay.ps1").read_text(encoding="utf-8")
+        import re
+        pattern = re.compile(re.search(r"\$pattern = '([^']+)'", source).group(1), re.I)
+        exe = r'"C:\Users\x\AppData\Local\Programs\handback\handback.exe"'
+        stopped = [exe + r" inbox watch --root C:\p --for claude:1 --idle-exit 1200",
+                   exe + " collect --request abc --root C:\\p --timeout 86400",
+                   r"C:\handback\handback.exe  INBOX  WATCH"]
+        kept = [exe + " route --root C:\\p --conversation c",
+                exe + " hook claude UserPromptSubmit",
+                exe + r' inbox list --root "C:\my collect files"',
+                exe + " inbox ack --id 1",
+                exe + " dashboard --autostart on",
+                exe + " collector-status"]
+        for line in stopped:
+            self.assertRegex(line, pattern)
+        for line in kept:
+            self.assertNotRegex(line, pattern)
+
 
 if __name__ == "__main__":
     unittest.main()

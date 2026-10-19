@@ -67,6 +67,8 @@ Name: "autostart"; Description: "Windows 시작 시 실행"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+; Run from {tmp} by PrepareToInstall only; never installed.
+Source: "{#SourcePath}\stop-relay.ps1"; Flags: dontcopy
 
 [Icons]
 Name: "{autoprograms}\handback"; Filename: "{app}\handback-dashboard.exe"; AppUserModelID: "Femur0607.handback.dashboard"
@@ -144,6 +146,27 @@ begin
     RegDeleteValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path')
   else if not RegWriteExpandStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
     Log('Could not remove ' + Dir + ' from the user PATH');
+end;
+
+// A Lead's `inbox watch` and detached `collect` processes keep {app}\handback.exe
+// locked, and Restart Manager cannot close them (no window). Stop just those before
+// it checks for files in use; see stop-relay.ps1 for why nothing is lost.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Exe: string;
+  ResultCode: Integer;
+begin
+  Result := '';
+  Exe := ExpandConstant('{app}\handback.exe');
+  if not FileExists(Exe) then
+    exit;
+  ExtractTemporaryFile('stop-relay.ps1');
+  if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+      '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ExpandConstant('{tmp}\stop-relay.ps1') +
+      '" -Exe "' + Exe + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log('stop-relay.ps1 exit code ' + IntToStr(ResultCode))
+  else
+    Log('Could not run stop-relay.ps1: ' + SysErrorMessage(ResultCode));
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

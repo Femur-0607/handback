@@ -5,6 +5,19 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Fixed
+
+- Upgrading no longer stops at "모든 응용 프로그램을 자동으로 닫지 못했습니다"
+  while a Claude Lead's Monitor is running `handback inbox watch` (or a
+  background `collect` is waiting for a worker). These windowless processes
+  kept `handback.exe` locked and the installer could not close them (the
+  silent in-app upgrade gave up with exit code 5); setup now stops just those
+  two before it replaces files, in the setup wizard and the in-app upgrade
+  alike. Nothing is lost: unread results stay in the
+  inbox, the recovery hook asks the Lead to start the watcher again while
+  requests are open, and a watcher or the router resumes collection.
+  `route` deliveries and short hook runs are left alone.
+
 ## [0.3.6] - 2026-10-19
 
 ### Added

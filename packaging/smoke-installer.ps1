@@ -60,6 +60,39 @@ try {
         throw "FAIL: SKILL.md does not reference $exe"
     }
     Write-Host 'PASS: skill installed and points at the installed exe'
+    Write-Host '== upgrade while a Lead watcher holds handback.exe'
+    # Restart Manager cannot close a Monitor's `inbox watch`; PrepareToInstall must stop
+    # it or the locked exe aborts the upgrade.
+    $watchRoot = Join-Path $Sandbox 'watch-root'
+    New-Item -ItemType Directory -Force -Path $watchRoot | Out-Null
+    # Start it with no console at all (DETACHED_PROCESS, as a Monitor's host shell or
+    # `send --no-wait` does). With any console, even a hidden one, Restart Manager can
+    # close it and the old installer would pass; detached, it aborted with exit 5.
+    $spawn = 'import subprocess, sys; f = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP; ' +
+        'print(subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, ' +
+        'stderr=subprocess.DEVNULL, creationflags=f).pid)'
+    $watchPid = [int](& python -c $spawn $exe inbox watch --root $watchRoot --for claude:smoke --no-collect --idle-exit 600)
+    $watch = Get-Process -Id $watchPid
+    Start-Sleep -Seconds 3
+    if ($watch.HasExited) { throw 'FAIL: smoke watcher exited early' }
+    $other = Join-Path $Sandbox 'elsewhere\handback.exe'
+    $kept = (& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'stop-relay.ps1') -Exe $other | Out-String).Trim()
+    if ($watch.HasExited -or $kept -notmatch '^stopped 0 ') { throw "FAIL: stop-relay touched a watcher of another install ($kept)" }
+    $log = Join-Path $Sandbox 'upgrade.log'
+    $p = Start-Process -FilePath $Setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS',
+        "/DIR=$app", '/TASKS=""', "/LOG=`"$log`"") -PassThru
+    $code = Wait-Exit $p 'upgrade installer' 600
+    if (-not $watch.WaitForExit(5000)) { Stop-Process -Id $watch.Id -Force; throw "FAIL: watcher still running after upgrade (setup exit $code)" }
+    if ($code -ne 0) { throw "FAIL: upgrade installer exit $code" }
+    $text = [IO.File]::ReadAllText($log)
+    # The log shows whether Restart Manager still met a process that holds our files.
+    foreach ($bad in 'RestartManager found an application', 'could not be shut down', 'DeleteFile failed', 'MoveFile failed') {
+        if ($text.Contains($bad)) { throw "FAIL: upgrade log reports '$bad':`n$text" }
+    }
+    if (-not $text.Contains('stop-relay.ps1 exit code 0')) { throw "FAIL: stop-relay.ps1 did not run:`n$text" }
+    $out = (& $exe --version | Out-String).Trim()
+    if ($out -notmatch [regex]::Escape($Version)) { throw "FAIL: version after upgrade '$out' != '$Version'" }
+    Write-Host 'PASS: upgrade stopped the watcher and replaced handback.exe'
     $unins = Join-Path $app 'unins000.exe'
     if (-not (Test-Path -LiteralPath $unins)) { throw 'FAIL: unins000.exe missing' }
     Write-Host '== silent uninstall'
