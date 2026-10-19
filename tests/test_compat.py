@@ -78,6 +78,13 @@ class ScanTests(unittest.TestCase):
         self.assertFalse(results[0]["notify"])
         self.assertEqual(compat.load_record(self.home)["antigravity"]["verified"], "2.15.1")
 
+    def test_no_home_means_the_default_state_folder(self):
+        # The installed dashboard starts with home=None; Path(None) used to crash it.
+        with patch.dict("os.environ", {"HANDBACK_HOME": str(self.home)}):
+            compat.scan(None, {"antigravity": "2.15.1"}, checks(FAIL))
+            self.assertEqual(len(compat.failures(None)), 1)
+        self.assertTrue((self.home / compat.RECORD).exists())
+
     def test_same_version_is_not_rechecked(self):
         compat.scan(self.home, {"antigravity": "2.15.1"}, checks(PASS))
         calls = []

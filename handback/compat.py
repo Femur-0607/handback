@@ -19,7 +19,7 @@ import shutil
 import subprocess
 
 from . import __version__
-from .state import _read_json, atomic_json
+from .state import _read_json, atomic_json, state_home
 
 RECORD = "app-compat.json"
 AGENTS = ("codex", "claude", "antigravity")
@@ -201,12 +201,12 @@ def run_checks(agent, checks=None):
 
 
 # ---- record and update detection ------------------------------------------------------
-def load_record(home):
-    data = _read_json(Path(home) / RECORD, {})
+def load_record(home=None):
+    data = _read_json(Path(home or state_home()) / RECORD, {})
     return data if isinstance(data, dict) else {}
 
 
-def scan(home, versions=None, checks=None, force=False, now=None):
+def scan(home=None, versions=None, checks=None, force=False, now=None):
     """Check every app whose version differs from the last checked one.
 
     Returns one result per app that was checked. ``notify`` is False only for a
@@ -242,11 +242,11 @@ def scan(home, versions=None, checks=None, force=False, now=None):
         record[agent] = entry
         results.append(result)
     if results or changed:
-        atomic_json(Path(home) / RECORD, record)
+        atomic_json(Path(home or state_home()) / RECORD, record)
     return results
 
 
-def failures(home):
+def failures(home=None):
     """Last failed result per app, for the app's current checked version."""
     return [entry["last"] for agent in AGENTS
             for entry in [load_record(home).get(agent)]
