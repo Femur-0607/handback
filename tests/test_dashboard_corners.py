@@ -174,7 +174,7 @@ class CornerLifecycleTests(unittest.TestCase):
 
     def test_destroy_cancels_pending_native_update(self):
         for name in ("_outside_timer", "_refresh_timer", "_zorder_timer",
-                     "_drag_timer", "_drag_capture_timer"):
+                     "_drag_timer", "_drag_capture_timer", "_drag_poll_timer", "_settle_timer"):
             setattr(self.strip, name, None)
         self.strip._sync_window_corners()
         self.strip._destroyed(self.event)

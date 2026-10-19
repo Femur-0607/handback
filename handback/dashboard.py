@@ -21,7 +21,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 
-from . import __version__, compat, config, envelope, inbox, updater
+from . import __version__, compat, config, dock_motion, envelope, inbox, updater
 from .collector import OPEN_STATES
 from .tray import Tray
 from .winevents import (ForegroundWatcher, foreground_covers, fullscreen_covers_widget,  # noqa: F401
@@ -1039,6 +1039,27 @@ def panel_dock_geometry(info, area, width, height, x):
     return (max(left, min(x, right - width)), max(top, min(y, bottom - height)), width, height)
 
 
+def compact_magnet_geometry(info, area, geometry, cursor, dpi=96):
+    """Where a free drag is shown: the raw geometry, drawn toward the dock near a taskbar.
+
+    Only the shown position changes; docking is still decided from the raw
+    geometry on release. The approach leans part of the way; a drop that would
+    dock is drawn most of the way in, and the release springs the rest.
+    """
+    x, y, width, height = geometry
+    gap = dock_motion.taskbar_gap(info, cursor)
+    strength = (dock_motion.magnet_strength(gap, dock_motion.scaled(dock_motion.MAGNET_RADIUS, dpi))
+                * dock_motion.MAGNET_LEAN)
+    would_dock, dock = compact_drop_geometry(info, area, x, y, width, height, cursor=cursor, dpi=dpi)
+    if would_dock:
+        strength, target = max(strength, dock_motion.DOCK_PREVIEW), dock[:2]
+    elif strength > 0:
+        target = compact_geometry(info, area, width, height, x, dpi=dpi)[:2]
+    else:
+        return geometry
+    return (*dock_motion.magnet_pull((x, y), target, strength), width, height)
+
+
 def panel_drop_geometry(info, area, x, y, width, height, *, cursor):
     """Magnetize the expanded panel when it is released with the pointer in the taskbar."""
     geometry = clamp_compact(x, y, width, height, area)
@@ -1695,8 +1716,13 @@ class Strip:
         self._corner_syncing = False
         self._corner_timer = None
         self._drag_from_dock = False
+        self._drag_held = False
+        self._settle_timer = None
+        self._settle_frames = []
+        self._settle_move = None
         self._drag_timer = None
         self._drag_capture_timer = None
+        self._drag_poll_timer = None
         self._drag_context = None
         self._drag_cursor = None
         self._drag_native_capture = None
@@ -1807,7 +1833,8 @@ class Strip:
             self._stop_tray()
             self._stop_foreground()
             for name in ("_outside_timer", "_refresh_timer", "_zorder_timer",
-                         "_drag_timer", "_drag_capture_timer", "_corner_timer", "_show_timer",
+                         "_drag_timer", "_drag_capture_timer", "_drag_poll_timer", "_settle_timer",
+                         "_corner_timer", "_show_timer",
                          "_anim_timer"):
                 timer = getattr(self, name)
                 if timer is not None:
@@ -2224,14 +2251,19 @@ class Strip:
                                      width, self._compact_free_height, area)
         self._compact_position = geometry[:2]
         self._compact_geometry = geometry
+        shown = geometry
+        if self._dragging and not self._drag_held and self._drag_cursor is not None:
+            # A refresh mid-drag keeps the magnetic lean instead of flicking to raw.
+            shown = compact_magnet_geometry(info, area, geometry, self._drag_cursor, dpi)
         actual = (self.root.winfo_x(), self.root.winfo_y(), self.root.winfo_width(), self.root.winfo_height())
-        if actual != geometry:
-            x, y, width, height = geometry
+        if actual != shown:
+            self._cancel_settle()
+            x, y, width, height = shown
             self.root.geometry(f"{width}x{height}+{x}+{y}")
         if self._dragging:
             self._drag_width = geometry[2]
             self._drag_height = self._compact_free_height
-            self._drag_applied_geometry = geometry
+            self._drag_applied_geometry = shown
         self._sync_window_corners()
 
     def _ack_on_click(self):
@@ -3347,6 +3379,7 @@ class Strip:
             self._panel_viewport.layout(width, height)
             self.panel.geometry(f"{width}x{height}+{x}+{y}")
             return
+        self._cancel_settle()
         if self.mode == "panel" and self._fixed_viewport is not None:
             if self.anchor is None:
                 prefs = load_prefs(self.home)
@@ -3385,11 +3418,14 @@ class Strip:
     def _press(self, event):
         if self._start is not None:
             self._finish_drag()
+        self._stop_settle()
         self._status_press = None
         cursor = self.root.winfo_pointerxy()
         self._start = (*cursor, self.root.winfo_x(), self.root.winfo_y())
         self._dragged = False
         self._drag_from_dock = self.docked
+        # A docked widget resists until it is pulled past the breakaway distance.
+        self._drag_held = self.docked and self.mode == "taskbar"
         self._drag_cursor = cursor
         self._drag_monitors = _monitor_rects(self.root)
         self._drag_virtual = (min(r[0] for r in self._drag_monitors),
@@ -3434,6 +3470,7 @@ class Strip:
             if self.mode == "taskbar":
                 keep_above_taskbar(self.root, self._taskbar_hwnd)
             self._drag_capture_timer = self.root.after(50, self._watch_drag_capture)
+            self._drag_poll_timer = self.root.after(dock_motion.SETTLE_FRAME_MS, self._poll_drag)
         # One idle callback consumes the latest cursor, however many events arrived.
         if self._drag_timer is None:
             self._drag_timer = self.root.after_idle(self._flush_drag)
@@ -3449,6 +3486,16 @@ class Strip:
         self._set_drag_context(cursor)
         info, area, dpi = self._drag_context
         x, y = drag_position(self._start, cursor)
+        if self._drag_held:
+            shown, broke = dock_motion.breakaway(
+                (cursor[0] - self._start[0], cursor[1] - self._start[1]),
+                dock_motion.scaled(dock_motion.BREAKAWAY_DISTANCE, dpi))
+            if not broke:
+                width, height = self._drag_applied_geometry[2:]
+                self._move_drag_window((self._start[2] + shown[0], self._start[3] + shown[1],
+                                        width, height))
+                return
+            self._drag_held = False
         if self.mode == "taskbar":
             docked, geometry = compact_drag_geometry(info, area, self._drag_virtual,
                 x, y, self._drag_width, self._drag_height, dpi,
@@ -3465,7 +3512,8 @@ class Strip:
                 self._render_compact(self._rows, self._drag_prefs)
             else:
                 self._compact_geometry = geometry
-                self._move_drag_window(geometry)
+                # _compact_geometry stays raw for the drop decision; only the shown window leans.
+                self._move_drag_window(compact_magnet_geometry(info, area, geometry, cursor, dpi))
             return
         self.docked = False
         self._move_drag_window(clamp_compact(x, y, self._drag_width, self._drag_height, area))
@@ -3479,6 +3527,19 @@ class Strip:
                 or not self._drag_native_move(x, y)):
             self.root.geometry(f"{width}x{height}+{x}+{y}")
         self._drag_applied_geometry = geometry
+
+    def _poll_drag(self):
+        """Follow the pointer even when it is outside the window and Tk sends no motion.
+
+        The magnet and breakaway move the window relative to the pointer, so the
+        pointer can leave the window mid-drag; the drag must not stall there.
+        """
+        self._drag_poll_timer = None
+        if not self._dragging:
+            return
+        if self._drag_timer is None and self.root.winfo_pointerxy() != self._drag_cursor:
+            self._flush_drag()
+        self._drag_poll_timer = self.root.after(dock_motion.SETTLE_FRAME_MS, self._poll_drag)
 
     def _watch_drag_capture(self):
         self._drag_capture_timer = None
@@ -3496,16 +3557,21 @@ class Strip:
     def _finish_drag(self, click=False, read_pointer=False, event=None):
         if self._start is None:
             return
-        for name in ("_drag_timer", "_drag_capture_timer"):
+        for name in ("_drag_timer", "_drag_capture_timer", "_drag_poll_timer"):
             timer = getattr(self, name)
             if timer is not None:
                 self.root.after_cancel(timer)
                 setattr(self, name, None)
         drop_geometry = None
+        shown = None
         if self._dragged:
             # Flush before saving, including a release ahead of the pending idle move.
             self._flush_drag(read_pointer=read_pointer)
-            if click and self.mode == "taskbar":
+            shown = self._drag_applied_geometry[:2]
+            if self._drag_held:
+                # Released before breaking away: it never left the dock.
+                self._move_drag_window(self._compact_geometry)
+            elif click and self.mode == "taskbar":
                 info, area, dpi = self._drag_context
                 docked, geometry = compact_drop_geometry(
                     info, area, *self._compact_geometry, cursor=self._drag_cursor, dpi=dpi)
@@ -3517,6 +3583,7 @@ class Strip:
         self._start = None
         self._dragging = False
         drag_context, self._drag_context = self._drag_context, None
+        self._drag_held = False
         if self.root.grab_current() == self.root:
             self.root.grab_release()
         self._drag_native_capture = None
@@ -3527,9 +3594,13 @@ class Strip:
                     "compact_y": drop_geometry[1], "docked": True})
             self.root.update_idletasks()
             if self.mode == "taskbar":
+                # The shown window may still lean toward the dock; restore the real place.
+                self._move_drag_window(self._compact_geometry)
+                self.root.update_idletasks()
                 prefs = load_prefs(self.home)
                 save_prefs({**prefs, "compact_x": self.root.winfo_x(),
                             "compact_y": self.root.winfo_y(), "docked": self.docked}, self.home)
+                self._settle(shown)
             else:
                 x, y = self.root.winfo_x(), self.root.winfo_y()
                 width, height = self.root.winfo_width(), self.root.winfo_height()
@@ -3544,6 +3615,7 @@ class Strip:
                             "docked": self.docked}, self.home)
                 self._place()
                 self._sync_zorder_timer()
+                self._settle(shown)
         elif click and self.mode == "taskbar":
             if status_press is not None and status_press[1] == "unread":
                 self._open_unread(event, status_press[0])
@@ -3551,6 +3623,45 @@ class Strip:
                 self._conversations(event, self._compact_targets(*status_press))
             else:
                 self._toggle_panel()
+
+    def _settle(self, start):
+        """Spring from where the drag left the window into its final place."""
+        self._stop_settle()
+        self.root.update_idletasks()
+        frames = dock_motion.settle_frames(start, (self.root.winfo_x(), self.root.winfo_y()))
+        if len(frames) < 2:
+            return
+        mover = _native_drag_mover(self.root)
+
+        def move(point):
+            if mover is None or not mover(*point):
+                self.root.geometry(f"+{point[0]}+{point[1]}")
+
+        self._settle_move, self._settle_frames = move, frames
+        move(start)
+        self._settle_timer = self.root.after(dock_motion.SETTLE_FRAME_MS, self._settle_step)
+
+    def _settle_step(self):
+        self._settle_timer = None
+        if not self._settle_frames:
+            return
+        self._settle_move(self._settle_frames.pop(0))
+        if self._settle_frames:
+            self._settle_timer = self.root.after(dock_motion.SETTLE_FRAME_MS, self._settle_step)
+
+    def _stop_settle(self):
+        """Finish an unfinished settle at once, so saved and shown positions agree."""
+        frames = self._settle_frames
+        self._cancel_settle()
+        if frames:
+            self._settle_move(frames[-1])
+
+    def _cancel_settle(self):
+        """Drop a settle without moving; whoever calls this places the window itself."""
+        if self._settle_timer is not None:
+            self.root.after_cancel(self._settle_timer)
+            self._settle_timer = None
+        self._settle_frames = []
 
     def _release(self, event):
         if self._start is not None:

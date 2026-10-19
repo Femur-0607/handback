@@ -317,6 +317,25 @@ class CompactPureTests(unittest.TestCase):
                 self.assertEqual(drop(unavailable, monitor, 700, 950, 300, 200, cursor=(710, 1040)),
                                  (False, (700, 880, 300, 200)))
 
+    def test_magnet_only_shifts_the_shown_spot_and_scales_with_dpi(self):
+        magnet = dashboard.compact_magnet_geometry
+        monitor = (0, 0, 1920, 1080)
+        info = {"rect": (0, 1032, 1920, 1080), "edge": 3, "auto_hide": False}
+        # Outside the radius: raw 1:1 tracking.
+        self.assertEqual(magnet(info, monitor, (700, 900, 250, 32), (710, 910)), (700, 900, 250, 32))
+        # Halfway into the radius: eased lean toward the dock top, larger at higher DPI.
+        self.assertEqual(magnet(info, monitor, (700, 994, 250, 32), (710, 1004)), (700, 1006, 250, 32))
+        self.assertEqual(magnet(info, monitor, (700, 994, 250, 32), (710, 1004), 192),
+                         (700, 1014, 250, 32))
+        # Pointer inside but too little overlap to dock: leans, never seats.
+        self.assertEqual(magnet(info, monitor, (700, 1000, 250, 32), (710, 1040)), (700, 1020, 250, 32))
+        # A drop that would dock is drawn most of the way to the dock spot.
+        self.assertEqual(magnet(info, monitor, (700, 1016, 250, 32), (710, 1032)), (700, 1030, 250, 32))
+        for unavailable in (None, {**info, "auto_hide": True}, {**info, "edge": 0}):
+            with self.subTest(taskbar=unavailable):
+                self.assertEqual(magnet(unavailable, monitor, (700, 1000, 250, 32), (710, 1040)),
+                                 (700, 1000, 250, 32))
+
     def test_drop_supports_top_negative_monitor_and_tray_clamping(self):
         drop = dashboard.compact_drop_geometry
         monitor = (0, 0, 1920, 1080)
@@ -658,7 +677,7 @@ class CompactGuiTests(DashboardMenuTests):
             opener.assert_called_once_with("codex://threads/22222222-2222-2222-2222-222222222222")
             self.assertIsNone(self.strip.panel)
 
-    def test_docked_widget_follows_first_motion_and_stays_free_when_released_above_taskbar(self):
+    def test_docked_widget_resists_then_breaks_free_and_stays_free_when_released_above_taskbar(self):
         dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "docked": True}, self.home)
         self.strip.render(self.sample_rows())
         self.root.deiconify()
@@ -666,15 +685,76 @@ class CompactGuiTests(DashboardMenuTests):
         x0, y0 = self.root.winfo_x()+10, self.root.winfo_y()+10
         origin_y = self.root.winfo_y()
         self.pointer_event(self.strip._press, SimpleNamespace(x_root=x0, y_root=y0))
-        above = self.strip._compact_free_height + 8
-        for pull in (self.strip._drag_threshold, self.strip._drag_threshold+1, 0, above):
+        breakaway = dashboard.dock_motion.scaled(dashboard.dock_motion.BREAKAWAY_DISTANCE,
+                                                 dashboard._window_dpi(self.root))
+        # Below the breakaway distance it stays docked and lags behind the pointer.
+        for pull in (self.strip._drag_threshold, self.strip._drag_threshold+1, breakaway-1):
             self.pointer_event(self.strip._drag, SimpleNamespace(x_root=x0, y_root=y0-pull))
             self.root.update_idletasks()
-            self.assertFalse(self.strip.docked)
-            self.assertEqual(self.root.winfo_y(), origin_y-pull)
+            self.assertTrue(self.strip.docked)
+            self.assertLess(origin_y-pull, self.root.winfo_y())
+            self.assertLess(self.root.winfo_y(), origin_y)
+        # Past it the widget pops free and tracks the pointer 1:1 away from the magnet.
+        far = breakaway + 200
+        self.pointer_event(self.strip._drag, SimpleNamespace(x_root=x0, y_root=y0-far))
+        self.root.update_idletasks()
+        self.assertFalse(self.strip.docked)
+        self.assertEqual(self.root.winfo_y(), origin_y-far)
+        # Near the taskbar it leans toward the dock but is saved and settles where dropped.
+        above = self.strip._compact_free_height + 8
+        self.pointer_event(self.strip._drag, SimpleNamespace(x_root=x0, y_root=y0-above))
+        self.root.update_idletasks()
+        self.assertGreater(self.root.winfo_y(), origin_y-above)
         self.pointer_event(self.strip._release, SimpleNamespace(x_root=x0, y_root=y0-above))
-        self.assertFalse(dashboard.load_prefs(self.home)["docked"])
+        prefs = dashboard.load_prefs(self.home)
+        self.assertEqual((prefs["compact_y"], prefs["docked"]), (origin_y-above, False))
+        self.strip._stop_settle()
+        self.root.update_idletasks()
         self.assertEqual(self.root.winfo_y(), origin_y-above)
+
+    def test_docked_widget_released_before_breaking_away_stays_docked(self):
+        dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "docked": True}, self.home)
+        self.strip.render(self.sample_rows())
+        self.root.deiconify()
+        self.root.update_idletasks()
+        origin = (self.root.winfo_x(), self.root.winfo_y(), self.root.winfo_height())
+        x0, y0 = origin[0]+10, origin[1]+10
+        self.pointer_event(self.strip._press, SimpleNamespace(x_root=x0, y_root=y0))
+        moved = SimpleNamespace(x_root=x0+6, y_root=y0-12)
+        self.pointer_event(self.strip._drag, moved)
+        self.root.update_idletasks()
+        self.assertNotEqual((self.root.winfo_x(), self.root.winfo_y()), origin[:2])
+        self.pointer_event(self.strip._release, moved)
+        prefs = dashboard.load_prefs(self.home)
+        self.assertEqual((prefs["compact_x"], prefs["compact_y"], prefs["docked"]),
+                         (*origin[:2], True))
+        self.assertTrue(self.strip._settle_frames)
+        self.strip._stop_settle()
+        self.root.update_idletasks()
+        self.assertTrue(self.strip.docked)
+        self.assertEqual((self.root.winfo_x(), self.root.winfo_y(), self.root.winfo_height()), origin)
+        self.assertIsNone(self.strip.panel)
+
+    def test_settle_runs_on_timer_frames_and_rests_on_the_saved_spot(self):
+        self.free_drag_fixture()
+        self.strip._finish_drag()
+        self.strip._settle((150, 250))
+        self.root.update_idletasks()
+        self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), (150, 250))
+        self.assertEqual(self.strip._settle_frames[-1], (200, 300))
+        while self.strip._settle_frames:
+            self.strip._settle_step()
+        self.root.update_idletasks()
+        self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), (200, 300))
+        # A render that places the window itself cancels a settle without jumping back.
+        self.strip._settle((150, 250))
+        dashboard.save_prefs({**dashboard.load_prefs(self.home), "compact_x": 400, "compact_y": 300},
+                             self.home)
+        self.strip.render(self.sample_rows())
+        self.assertFalse(self.strip._settle_frames)
+        self.strip._stop_settle()
+        self.root.update_idletasks()
+        self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), (400, 300))
 
     def test_default_widget_moves_freely_then_docks_on_taskbar_release_and_restores(self):
         dashboard.save_prefs(dashboard.DEFAULT_PREFS, self.home)
@@ -694,19 +774,29 @@ class CompactGuiTests(DashboardMenuTests):
         moved = SimpleNamespace(x_root=x0, y_root=target_y + 10)
         self.pointer_event(self.strip._drag, moved)
         self.root.update_idletasks()
+        dock_top = bottom + max(1, round(dashboard._window_dpi(self.root) / 96))
         self.assertFalse(self.strip.docked)
         self.assertEqual(self.root.winfo_height(), height)
-        self.assertEqual(self.root.winfo_y(), target_y)
+        # A drop here would dock, so the widget is drawn most of the way in; the raw spot is kept.
+        preview = target_y + round((dock_top - target_y) * dashboard.dock_motion.DOCK_PREVIEW)
+        self.assertEqual(self.root.winfo_y(), preview)
+        self.assertEqual(self.strip._compact_geometry[1], target_y)
         self.assertGreater(self.root.winfo_y(), origin_y)
         self.assertGreater(self.root.winfo_y() + height, bottom)
         with patch.object(dashboard, "snapshot", return_value=rows):
             self.strip.refresh(reschedule=False)
         self.root.update_idletasks()
-        self.assertEqual(self.root.winfo_y(), target_y)
+        self.assertEqual(self.root.winfo_y(), preview)
+        self.assertEqual(self.strip._compact_geometry[1], target_y)
         self.pointer_event(self.strip._release, moved)
+        self.root.update_idletasks()
+        if preview != dock_top:
+            # The release springs the rest of the way from where the drag left it.
+            self.assertEqual(self.root.winfo_y(), preview)
+            self.assertEqual(self.strip._settle_frames[-1][1], dock_top)
+        self.strip._stop_settle()
         prefs = dashboard.load_prefs(self.home)
         taskbar = dashboard.taskbar_info()
-        dock_top = bottom + max(1, round(dashboard._window_dpi(self.root) / 96))
         dock_height = taskbar["rect"][3] - dock_top
         self.assertEqual((prefs["compact_y"], prefs["docked"]), (dock_top, True))
         self.assertEqual(self.root.winfo_height(), dock_height)
@@ -737,13 +827,21 @@ class CompactGuiTests(DashboardMenuTests):
                 self.cursor[:] = [x+10, y+10]
                 self.strip._drag(self.event)
                 self.root.update_idletasks()
-                self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), (x, y))
+                # Near the taskbar the shown window leans; the dragged position itself is raw.
+                shown = (x, y) if y < 900 else self.expected_magnet((x, y, width, height))
+                self.assertEqual(self.strip._compact_geometry[:2], (x, y))
+                self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), shown)
                 self.assertEqual((self.root.winfo_width(), self.root.winfo_height()), (width, height))
                 self.assertFalse(self.strip.docked)
                 self.strip.render(rows)
                 self.root.update_idletasks()
-                self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), (x, y))
+                self.assertEqual(self.strip._compact_geometry[:2], (x, y))
+                self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), shown)
         self.strip._release(self.event)
+
+    def expected_magnet(self, geometry):
+        info, area, dpi = self.strip._drag_context
+        return dashboard.compact_magnet_geometry(info, area, geometry, tuple(self.cursor), dpi)[:2]
 
     def free_drag_fixture(self):
         dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "docked": False,
@@ -764,12 +862,17 @@ class CompactGuiTests(DashboardMenuTests):
         moved = SimpleNamespace(x_root=710, y_root=bottom+1)
         self.pointer_event(self.strip._drag, moved)
         self.root.update_idletasks()
-        self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), (700, target_y))
+        self.assertEqual(self.strip._compact_geometry[:2], (700, target_y))
+        # The pointer is in the taskbar, so the widget leans, but not all the way in.
+        self.assertGreater(self.root.winfo_y(), target_y)
         self.assertFalse(self.strip.docked)
         self.pointer_event(self.strip._release, moved)
         prefs = dashboard.load_prefs(self.home)
         self.assertEqual((prefs["compact_x"], prefs["compact_y"], prefs["docked"]),
                          (700, target_y, False))
+        self.strip._stop_settle()
+        self.root.update_idletasks()
+        self.assertEqual((self.root.winfo_x(), self.root.winfo_y()), (700, target_y))
         self.assertEqual(self.root.winfo_height(), height)
         self.assertIsNone(self.strip.panel)
 

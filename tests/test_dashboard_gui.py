@@ -587,6 +587,9 @@ class DashboardMenuTests(unittest.TestCase):
                 self.strip._drag(self.event)
                 self.strip._flush_drag(read_pointer=True)
                 self.strip._release(self.event)
+            # The release springs into place; finish it to check the resting spot.
+            self.assertTrue(self.strip._settle_frames)
+            self.strip._stop_settle()
             self.root.update_idletasks()
             prefs = dashboard.load_prefs(self.home)
             self.assertTrue(self.strip.docked)

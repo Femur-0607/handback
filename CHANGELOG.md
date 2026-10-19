@@ -27,6 +27,12 @@ All notable changes to this project are documented here. This file follows the
   settings, hidden projects, order reset, autostart and update checks live in
   the options window; 새로고침 is gone (the dashboard refreshes itself).
 - 역할 지정 and 모델·추론 설정 are one "에이전트 ▶" submenu.
+- Dragging the taskbar widget has a tactile magnet. Near the taskbar it is
+  drawn toward its dock spot; a docked widget stretches a little before it
+  pops free; on release it springs into place (about 200 ms, small
+  overshoot). Docking is still decided only by releasing with the pointer in
+  the taskbar, and away from the taskbar the widget tracks the pointer 1:1.
+  A drag also keeps following the pointer when it slips outside the window.
 
 ## [0.3.9] - 2026-10-19
 
