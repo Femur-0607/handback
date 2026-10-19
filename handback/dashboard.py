@@ -50,7 +50,13 @@ DASHBOARD_SHOW_EVENT = "Local\\handback-dashboard-show"
 DETAIL_LIMIT = 5
 DEFAULT_PREFS = {"max_rows": 3, "order": [], "hidden": [], "mode": "taskbar",
                  "compact_x": None, "compact_y": None, "panel_x": None, "panel_y": None,
-                 "docked": False, "update_check": True}
+                 "docked": False, "update_check": True,
+                 # Options window: ✉ click behaviour, idle hiding, attention effects.
+                 "ack_on_click": True, "auto_hide": False, "highlight_unread": True,
+                 "animate_unread": True, "animate_running": True}
+# Attention effects: one shared animation tick, a short pulse for new results.
+ANIMATION_MS = 60
+PULSE_SECONDS = 6.0
 UPDATE_FIRST_MS = 60_000
 # App updates (Codex/Claude/Antigravity): first look soon after start, then every 10 minutes.
 COMPAT_FIRST_MS = 20_000
@@ -170,6 +176,15 @@ def conversation_targets(data, kind):
             targets[handle] = {"handle": handle, "name": item.get("name") or item.get("from") or handle,
                                "created_utc": created}
     return list(targets.values())
+
+
+def unread_tip(data, ack):
+    """Tooltip for a clickable ✉ count: where the click goes and whether it clears."""
+    targets = conversation_targets(data, "unread")
+    linked = [target for target in targets if conversation_link(target["handle"])]
+    where = (agent_name(linked[0]["handle"]) + " 대화 열기" if len(linked) == 1 and len(targets) == 1
+             else "워커 대화 선택" if linked else "결과 보기")
+    return where + (" · 클릭하면 확인 처리" if ack else "")
 
 
 def open_conversation_url(url):
@@ -394,9 +409,25 @@ def load_prefs(home=None):
             prefs[key] = stored[key]
     if type(stored.get("docked")) is bool:
         prefs["docked"] = stored["docked"]
-    if type(stored.get("update_check")) is bool:
-        prefs["update_check"] = stored["update_check"]
+    for key in ("update_check", "ack_on_click", "auto_hide", "highlight_unread",
+                "animate_unread", "animate_running"):
+        if type(stored.get(key)) is bool:
+            prefs[key] = stored[key]
     return prefs
+
+
+def blend(start, end, amount):
+    """Mix two #rrggbb colours; amount 0 keeps start, 1 gives end."""
+    a = [int(start[i:i+2], 16) for i in (1, 3, 5)]
+    b = [int(end[i:i+2], 16) for i in (1, 3, 5)]
+    amount = min(1.0, max(0.0, amount))
+    return "#%02x%02x%02x" % tuple(round(x + (y - x) * amount) for x, y in zip(a, b))
+
+
+def is_idle(rows, prefs):
+    """No visible project is running, waiting to be read, or failing to read."""
+    return not any(row["running"] or row["unread"] or row.get("unreadable")
+                   for row in rows if row["root"] not in prefs["hidden"])
 
 
 def save_prefs(prefs, home=None):
@@ -1568,6 +1599,16 @@ class Strip:
     _show_event = None
     _show_timer = None
     _foreground = None  # foreground-change hook thread (winevents)
+    # Idle auto-hide: hidden while nothing is happening, unless shown from the tray.
+    _idle_hidden = False
+    _idle_shown = False
+    # Attention effects: labels the animation tick recolours, keyed (kind, project).
+    _anim_timer = None
+    _anim_labels = {}
+    _pulse_until = {}
+    _unread_seen = None
+    _effects = {}
+    _options_window = None
 
     def __init__(self, home=None, opener=None):
         import tkinter as tk
@@ -1621,6 +1662,8 @@ class Strip:
         self._palette_key = None
         self._palette_at = 0
         self._compact_palette = compact_palette()
+        self._anim_labels = {}
+        self._pulse_until = {}
         self.mode = load_prefs(home)["mode"]
         self.root = tk.Tk()
         self.root.withdraw()
@@ -1717,7 +1760,8 @@ class Strip:
             self._stop_tray()
             self._stop_foreground()
             for name in ("_outside_timer", "_refresh_timer", "_zorder_timer",
-                         "_drag_timer", "_drag_capture_timer", "_corner_timer", "_show_timer"):
+                         "_drag_timer", "_drag_capture_timer", "_corner_timer", "_show_timer",
+                         "_anim_timer"):
                 timer = getattr(self, name)
                 if timer is not None:
                     self.root.after_cancel(timer)
@@ -1793,7 +1837,7 @@ class Strip:
             self.quit()
 
     def _toggle_visible(self):
-        self.show() if self._user_hidden else self.hide()
+        self.show() if self._user_hidden or self._idle_hidden else self.hide()
 
     def hide(self):
         """Withdraw the dashboard to the tray (it keeps running)."""
@@ -1805,10 +1849,13 @@ class Strip:
 
     def show(self):
         self._user_hidden = False
+        if self._idle_hidden:  # an explicit show outlasts idle hiding until new activity
+            self._idle_hidden, self._idle_shown = False, True
         if self._fullscreen_hidden:
             return  # the full-screen watcher shows it again when the cover ends
         show_widget_without_activation(self.root, True)
         self.root.lift()
+        self._sync_animation()
 
     def close(self):
         """Close means hide while the tray can bring it back, otherwise exit."""
@@ -1843,7 +1890,8 @@ class Strip:
         else:
             self._stop_foreground()
         if not watched and self._fullscreen_hidden:
-            show_widget_without_activation(self.root, True)
+            if not self._user_hidden and not self._idle_hidden:
+                show_widget_without_activation(self.root, True)
             self._fullscreen_hidden = False
 
     def _watch_zorder(self):
@@ -1854,9 +1902,11 @@ class Strip:
                 self._collapse_panel()
                 self._close_menu()
                 self.tooltip.hide()
-            if not self._user_hidden:  # a widget hidden to the tray stays hidden
+            if not self._user_hidden and not self._idle_hidden:  # tray/idle hiding wins
                 show_widget_without_activation(self.root, not hidden)
             self._fullscreen_hidden = hidden
+            if not hidden:
+                self._sync_animation()
         if not hidden:
             keep_above_taskbar(self.root, self._taskbar_hwnd)
         # Schedule first: a colour change re-renders, and rendering must find the
@@ -1934,6 +1984,9 @@ class Strip:
     def render(self, rows):
         self._rows = rows
         prefs = load_prefs(self.home)
+        self._effects = {key: prefs[key] for key in
+                         ("highlight_unread", "animate_unread", "animate_running")}
+        self._note_new_results(rows)
         self._tray_text = tray_state_text(rows, prefs["hidden"]) + (
             f" · 업데이트 {self._update['version']} 있음" if self._update else "")
         if self.mode != prefs["mode"]:
@@ -1969,6 +2022,72 @@ class Strip:
                 finally:
                     self.frame = original
         self._sync_window_corners()
+        self._sync_idle(prefs["auto_hide"] and is_idle(rows, prefs))
+        self._sync_animation()
+
+    def _note_new_results(self, rows):
+        """Start a pulse for projects whose unread count grew since the last render."""
+        counts = {row["root"]: len(row["unread"]) for row in rows}
+        if self._unread_seen is not None:  # the first render is not an arrival
+            now = time.monotonic()
+            for root, count in counts.items():
+                if count > self._unread_seen.get(root, 0):
+                    self._pulse_until[root] = now + PULSE_SECONDS
+        for root in [root for root in self._pulse_until if not counts.get(root)]:
+            del self._pulse_until[root]
+        self._unread_seen = counts
+
+    def _sync_idle(self, idle):
+        """Withdraw while idle; new activity re-arms hiding after a tray show."""
+        if not idle:
+            self._idle_shown = False
+        hidden = idle and not self._idle_shown and self.panel is None and not self._dragging
+        if hidden == self._idle_hidden:
+            return
+        self._idle_hidden = hidden
+        if hidden:
+            self._close_menu()
+        if not self._user_hidden and not self._fullscreen_hidden:
+            show_widget_without_activation(self.root, not hidden)
+
+    def _register_effect(self, kind, project, label, color, rest, attr="fg"):
+        """Remember a label the animation tick may recolour between color and rest."""
+        self._anim_labels[(kind, project, id(label))] = (label, attr, color, rest)
+
+    def _sync_animation(self):
+        if self._anim_timer is None and self._animating():
+            self._anim_timer = self.root.after(ANIMATION_MS, self._animate)
+
+    def _animating(self, now=None):
+        now = time.monotonic() if now is None else now
+        effects = self._effects
+        return any(kind == "unread" and effects.get("animate_unread") and self._pulse_until.get(project, 0) > now
+                   or kind == "running" and effects.get("animate_running")
+                   for kind, project, _ in self._anim_labels)
+
+    def _animate(self):
+        self._anim_timer = None
+        now = time.monotonic()
+        visible = not (self._user_hidden or self._fullscreen_hidden or self._idle_hidden)
+        for key, (label, attr, color, rest) in list(self._anim_labels.items()):
+            kind, project, _ = key
+            try:
+                if not label.winfo_exists():
+                    del self._anim_labels[key]
+                    continue
+                if kind == "unread" and self._effects.get("animate_unread") and                         self._pulse_until.get(project, 0) > now:
+                    amount = (1 - math.cos(now * 2 * math.pi * 1.4)) / 2  # ~1.4 blinks/s
+                elif kind == "running" and self._effects.get("animate_running"):
+                    amount = 0.55 * (1 - math.cos(now * 2 * math.pi * 0.5)) / 2  # slow breathing
+                else:
+                    amount = 0
+                value = blend(color, rest, amount) if visible else color
+                if label.cget(attr) != value:
+                    label.configure(**{attr: value})
+            except (self.tk.TclError, ValueError):
+                self._anim_labels.pop(key, None)
+        if visible and self._animating(now):
+            self._anim_timer = self.root.after(ANIMATION_MS, self._animate)
 
     def _render_compact(self, rows, prefs):
         self.names = {row["root"]: row["name"] for row in rows}
@@ -2032,6 +2151,7 @@ class Strip:
         name_width = measure("프로젝트 이름 프로젝트")
         lines = compact_lines(rows, prefs, name_width, measure)
         view_key = (self.docked, dpi, self.compact_metrics.cget("size"), tuple(palette.items()),
+                    self._effects.get("highlight_unread"),
                     tuple((line["row"]["root"], line["lead"], line["name"], line["running"], line["unread"],
                            line["more"],
                            line["overflow_unread"],
@@ -2067,6 +2187,40 @@ class Strip:
             self._drag_applied_geometry = geometry
         self._sync_window_corners()
 
+    def _ack_on_click(self):
+        return load_prefs(self.home)["ack_on_click"]
+
+    def _purge_effects(self):
+        for key, entry in list(self._anim_labels.items()):
+            try:
+                alive = entry[0].winfo_exists()
+            except self.tk.TclError:
+                alive = False
+            if not alive:
+                del self._anim_labels[key]
+
+    def _open_unread(self, event, project):
+        """✉ click: clear the shown results (option), then open where they came from."""
+        row = next((row for row in self._rows if row["root"] == project), None)
+        if row is None or not row["unread"]:
+            return "break"
+        acknowledged = False
+        if self._ack_on_click():
+            ids = [item["id"] for item in row["unread"] if item.get("id")]
+            try:
+                acknowledge_ids(project, ids, self.home)
+            except (OSError, ValueError, TimeoutError) as error:
+                self._dialog("확인 처리 실패", ui_error(error))
+                return "break"
+            acknowledged = True
+            self._pulse_until.pop(project, None)
+            self.refresh(reschedule=False)
+        targets = conversation_targets(row, "unread")
+        if any(conversation_link(target["handle"]) for target in targets):
+            return self._conversations(event, targets)
+        self._open(row, 0, acknowledged=acknowledged)
+        return "break"
+
     def _compact_targets(self, project, kind):
         row = next((row for row in self._rows if row["root"] == project), None)
         return conversation_targets(row, kind) if row is not None else []
@@ -2074,11 +2228,15 @@ class Strip:
     def _render_compact_items(self, lines, palette, padding, gap, border):
         with self.tooltip.preserve_on_rebuild(self.frame):
             bg = palette["bg"]
-            style_key = (self.docked, bg, padding, border)
+            # The floating border is the root showing through: tint it while results wait.
+            attention = bool(border and self._effects.get("highlight_unread")
+                             and any(line["row"]["unread"] or line["overflow_unread"] for line in lines))
+            style_key = (self.docked, bg, padding, border, attention)
             if style_key != self._compact_style_key:
                 if self.root.attributes("-alpha") != 1.0:
                     self.root.attributes("-alpha", 1.0)
-                root_bg = self.BORDER if border else bg
+                root_bg = (blend(self.BORDER, palette["yellow"], 0.7) if attention
+                           else self.BORDER if border else bg)
                 if self.root.cget("bg") != root_bg:
                     self.root.configure(bg=root_bg)
                 self.frame.configure(bg=bg, padx=padding, pady=0 if self.docked else 2,
@@ -2088,6 +2246,7 @@ class Strip:
                 self._compact_style_key = style_key
             for child in self.frame.winfo_children():
                 child.destroy()
+            self._purge_effects()
             if not lines:
                 self.tk.Label(self.frame, text="handback · 대기", bg=bg, fg=palette["dim"],
                               font=self.compact_metrics, bd=0, padx=0).pack(anchor="w", expand=True)
@@ -2095,14 +2254,23 @@ class Strip:
                 row = self.tk.Frame(self.frame, bg=bg)
                 row.pack(fill="x", expand=True)
                 error = read_error_text(line["row"])
+                project = line["row"]["root"]
+                badge = bool(line["unread"] and self._effects.get("highlight_unread"))
                 for key, color in (("name", palette["fg"]),
                                    ("running", palette["yellow"] if error else
                                     palette["green"] if line["row"]["running"] else palette["dim"]),
-                                   ("unread", palette["yellow"]),
+                                   ("unread", bg if badge else palette["yellow"]),
                                    ("more", palette["yellow"] if line["overflow_unread"] else palette["dim"])):
-                    label = self.tk.Label(row, text=line[key], bg=bg, fg=color,
-                                          font=self.compact_metrics, bd=0, padx=0, pady=0)
+                    label = self.tk.Label(row, text=line[key], bg=palette["yellow"] if key == "unread" and badge
+                                          else bg, fg=color, font=self.compact_metrics, bd=0,
+                                          padx=max(1, gap) if key == "unread" and badge else 0, pady=0)
                     label.pack(side="left", padx=(0, gap if key != "more" else 0))
+                    if key == "unread" and line["unread"]:
+                        # Badge: the background blinks; plain text: the glyph fades to dim.
+                        self._register_effect("unread", project, label, palette["yellow"],
+                                              bg if badge else palette["dim"], "bg" if badge else "fg")
+                    if key == "running" and line["row"]["running"] and not error:
+                        self._register_effect("running", project, label, palette["green"], bg)
                     label.bind("<Button-3>", lambda event, project=line["row"]["root"]: self._menu(event, project))
                     if key == "name":
                         name = label
@@ -2113,7 +2281,13 @@ class Strip:
                     if key == "running" and error:
                         self.tooltip.bind(label, error, key=("compact-error", line["row"]["root"]))
                         continue
-                    if key in ("running", "unread"):
+                    if key == "unread" and line["unread"]:
+                        label.configure(cursor="hand2")
+                        label.bind("<Button-1>", lambda event, project=project:
+                                   self._press_status(event, project, "unread"))
+                        self.tooltip.bind(label, unread_tip(line["row"], self._ack_on_click()),
+                                          key=("compact-unread", project))
+                    elif key == "running":
                         targets = conversation_targets(line["row"], key)
                         if targets:
                             label.configure(cursor="hand2")
@@ -2220,6 +2394,7 @@ class Strip:
         with self.tooltip.preserve_on_rebuild(self.frame):
             for child in self.frame.winfo_children():
                 child.destroy()
+            self._purge_effects()
             self.names = {row["root"]: row["name"] for row in rows}
             self.unread_counts = {row["root"]: len(row["unread"]) for row in rows}
             limited, hidden = arrange(rows, prefs)
@@ -2283,10 +2458,19 @@ class Strip:
                     if kind == "running" and error:
                         self.tooltip.bind(cells[column].winfo_children()[0], error, key=("error", key))
                         continue
+                    cell = cells[column].winfo_children()[0]
+                    if kind == "unread" and data["unread"]:
+                        cell.configure(cursor="hand2")
+                        cell.bind("<Button-1>", lambda event, key=key: self._open_unread(event, key))
+                        self.tooltip.bind(cell, unread_tip(data, self._ack_on_click()),
+                                          key=("status", key, kind, len(data["unread"])))
+                        self._register_effect("unread", key, cell, self.YELLOW, self.DIM)
+                        continue
+                    if kind == "running" and running:
+                        self._register_effect("running", key, cell, self.GREEN, self.BG)
                     targets = conversation_targets(data, kind)
                     if not targets:
                         continue
-                    cell = cells[column].winfo_children()[0]
                     cell.configure(cursor="hand2")
                     cell.bind("<Button-1>", lambda event, targets=targets: self._conversations(event, targets))
                     tip = (agent_name(targets[0]["handle"]) + " 대화 열기" if len(targets) == 1
@@ -2420,7 +2604,9 @@ class Strip:
             settings.append({"label": "숨긴 프로젝트 없음", "enabled": False})
         settings.extend([None, {"label": "순서 초기화 (최근 활동순)",
                                 "command": lambda: self._save({**prefs, "order": []})}])
-        items.extend([{"label": "보기 설정 ▶", "children": settings}, None])
+        items.extend([{"label": "보기 설정 ▶", "children": settings},
+                      {"label": "옵션…", "tooltip": "표시 방식·숨김·강조색·움직임을 한 창에서 바꿉니다",
+                       "command": self._options}, None])
         if sys.platform == "win32":
             on = startup_shortcut().exists()
             items.append({"label": ("✓ " if on else "    ") + "Windows 시작 시 실행",
@@ -2564,6 +2750,105 @@ class Strip:
         window.deiconify()
         entries["model"].focus_set()
 
+    # Options window rows: (pref key or None for a heading, label, help text).
+    OPTION_SECTIONS = (
+        ("표시", [("mode", "표시 방식", (("taskbar", "작게 보기"), ("panel", "펼쳐 보기"))),
+                  ("max_rows", "펼친 패널 줄 수", ((2, "2줄"), (3, "3줄"), (0, "전부")))]),
+        ("미확인 결과", [("ack_on_click", "✉ 클릭 시 확인 처리",
+                          "대화를 열면서 ✉ 표시를 지웁니다. 끄면 우클릭 메뉴나 결과 창에서 정리합니다."),
+                         ("highlight_unread", "강조색으로 표시",
+                          "✉ 개수를 노란 배지로, 떠 있는 위젯은 테두리까지 물들입니다.")]),
+        ("움직임", [("animate_unread", "새 결과가 오면 깜빡이기",
+                    f"새 결과가 도착하면 ✉가 {PULSE_SECONDS:.0f}초 동안 깜빡입니다."),
+                   ("animate_running", "진행 중 표시를 천천히 숨쉬게",
+                    "작업이 진행되는 동안 ● 표시가 은은하게 밝아졌다 어두워집니다.")]),
+        ("작업 표시줄", [("auto_hide", "할 일이 없으면 숨기기",
+                        "진행 중·미확인 결과가 없으면 위젯을 감추고, 새 작업이 생기면 다시 보입니다. "
+                        "트레이 아이콘을 누르면 언제든 꺼낼 수 있습니다."),
+                       ("update_check", "업데이트 자동 확인", "")]),
+    )
+
+    def _options(self):
+        """One dark window for every display/behaviour preference; edits apply at once."""
+        self._close_menu()
+        previous = self._options_window
+        if previous is not None and previous.winfo_exists():
+            previous.deiconify()
+            previous.lift()
+            previous.focus_force()
+            return
+        tk = self.tk
+        window = tk.Toplevel(self.root)
+        self._options_window = window
+        window.withdraw()
+        window.title("handback 옵션")
+        window.configure(bg=self.BG)
+        window.resizable(False, False)
+        window.attributes("-topmost", True)
+        frame = tk.Frame(window, bg=self.BG, padx=20, pady=14)
+        frame.pack(fill="both", expand=True)
+        prefs = load_prefs(self.home)
+        variables = {}
+        common = dict(bg=self.BG, fg=self.FG, activebackground=self.BG, activeforeground=self.FG,
+                      selectcolor="#2b2b2b", font=self.font, bd=0, highlightthickness=0,
+                      cursor="hand2", anchor="w")
+
+        def apply(key):
+            value = variables[key].get()
+            if key == "max_rows":
+                value = int(value)
+                self.show_all = False
+            self._save({**load_prefs(self.home), key: value})
+
+        line = 0
+        for heading, options in self.OPTION_SECTIONS:
+            tk.Label(frame, text=heading, bg=self.BG, fg=self.YELLOW, font=("Segoe UI Semibold", 10),
+                     anchor="w").grid(row=line, column=0, columnspan=4, sticky="w", pady=(10 if line else 0, 4))
+            line += 1
+            for key, label, extra in options:
+                if isinstance(extra, tuple):  # radio choices
+                    variables[key] = (tk.IntVar if key == "max_rows" else tk.StringVar)(
+                        window, value=prefs[key])
+                    tk.Label(frame, text=label, bg=self.BG, fg=self.FG, font=self.font,
+                             anchor="w").grid(row=line, column=0, sticky="w", padx=(8, 16), pady=2)
+                    for column, (value, text) in enumerate(extra, 1):
+                        tk.Radiobutton(frame, text=text, value=value, variable=variables[key],
+                                       command=lambda key=key: apply(key), **common).grid(
+                            row=line, column=column, sticky="w", padx=(0, 12), pady=2)
+                    line += 1
+                    continue
+                variables[key] = tk.BooleanVar(window, value=prefs[key])
+                box = tk.Checkbutton(frame, text=label, variable=variables[key],
+                                     command=lambda key=key: apply(key), **common)
+                box.grid(row=line, column=0, columnspan=4, sticky="w", padx=(4, 0), pady=(2, 0))
+                line += 1
+                if extra:
+                    tk.Label(frame, text=extra, bg=self.BG, fg=self.DIM, font=self.font, wraplength=380,
+                             justify="left", anchor="w").grid(row=line, column=0, columnspan=4, sticky="w",
+                                                              padx=(30, 0), pady=(0, 4))
+                    line += 1
+        if sys.platform == "win32":
+            autostart = tk.BooleanVar(window, value=startup_shortcut().exists())
+            tk.Checkbutton(frame, text="Windows 시작 시 실행", variable=autostart,
+                           command=lambda: self._toggle_autostart(autostart.get()), **common).grid(
+                row=line, column=0, columnspan=4, sticky="w", padx=(4, 0), pady=(2, 0))
+            line += 1
+        footer = tk.Frame(frame, bg=self.BG)
+        footer.grid(row=line, column=0, columnspan=4, sticky="ew", pady=(14, 0))
+        tk.Label(footer, text="바꾸는 즉시 적용됩니다", bg=self.BG, fg=self.DIM,
+                 font=self.font).pack(side="left")
+        self._button(footer, "닫기", window.destroy).pack(side="right")
+        window.bind("<Escape>", lambda event: window.destroy())
+        window.variables = variables  # tests and live refresh read the bound values
+        window.update_idletasks()
+        x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
+        x, y, width, height = popup_position(x, y, window.winfo_reqwidth(), window.winfo_reqheight(),
+                                           _monitor_area(self.root, x, y))
+        window.geometry(f"{width}x{height}+{x}+{y}")
+        _dark_titlebar(window)
+        window.deiconify()
+        window.focus_force()
+
     def _dialog(self, title, message, parent=None, confirm=False):
         self.tooltip.hide()
         self._close_menu()
@@ -2615,12 +2900,12 @@ class Strip:
                 previous_focus.focus_set()
         return result
 
-    def _open(self, data, focus):
-        """Viewer for unacknowledged results; ACK only via its confirmed button."""
+    def _open(self, data, focus, acknowledged=False):
+        """Viewer for results; ACK via its confirmed button unless a ✉ click already did."""
         self.tooltip.hide()
         tk = self.tk
         window = tk.Toplevel(self.root)
-        window.title(f"{data['name']} · 미확인 결과 {len(data['unread'])}개")
+        window.title(f"{data['name']} · {'결과' if acknowledged else '미확인 결과'} {len(data['unread'])}개")
         window.attributes("-topmost", True)
         window.geometry("760x520")
         window.configure(bg=self.BG)
@@ -2628,9 +2913,13 @@ class Strip:
         footer.pack(side="bottom", fill="x")
         # ACK exactly what this window rendered; mail arriving later stays pending.
         shown = [item["id"] for item in data["unread"]]
-        self._button(footer, text="모두 확인 처리", command=lambda: self._acknowledge(
-            data["root"], parent=window, ids=shown) and window.destroy()).pack(side="right")
-        tk.Label(footer, text="확인 처리해도 내용은 수신함에 남습니다", bg=self.BG, fg=self.DIM,
+        if acknowledged:
+            self._button(footer, text="닫기", command=window.destroy).pack(side="right")
+        else:
+            self._button(footer, text="모두 확인 처리", command=lambda: self._acknowledge(
+                data["root"], parent=window, ids=shown) and window.destroy()).pack(side="right")
+        tk.Label(footer, text="확인 처리했습니다 · 내용은 수신함에 남습니다" if acknowledged
+                 else "확인 처리해도 내용은 수신함에 남습니다", bg=self.BG, fg=self.DIM,
                  font=self.font).pack(side="left")
         text = tk.Text(window, wrap="word", bg=self.BG, fg=self.FG, insertbackground=self.FG,
                        font=("Segoe UI", 10), padx=12, pady=10, bd=0)
@@ -3188,7 +3477,9 @@ class Strip:
                 self._place()
                 self._sync_zorder_timer()
         elif click and self.mode == "taskbar":
-            if status_press is not None:
+            if status_press is not None and status_press[1] == "unread":
+                self._open_unread(event, status_press[0])
+            elif status_press is not None:
                 self._conversations(event, self._compact_targets(*status_press))
             else:
                 self._toggle_panel()
@@ -3231,7 +3522,7 @@ class Strip:
         self.refresh()
         self._start_tray()
         self.root.deiconify()
-        if self._fullscreen_hidden:
+        if self._fullscreen_hidden or self._idle_hidden:
             show_widget_without_activation(self.root, False)
         if getattr(sys, "frozen", False):  # source/PyPI users keep the current behaviour
             self.root.after(400, self._auto_setup)

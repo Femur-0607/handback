@@ -315,6 +315,7 @@ class DashboardMenuTests(unittest.TestCase):
             rows = self.sample_rows()
             rows[0]["running"][0]["handle"] = targets[0]["handle"]
             rows[0]["unread"][0]["sender"] = targets[1]["handle"]
+            rows[0]["unread"][0]["id"] = "result-1"
             self.strip.expanded.add("0")
             self.root.deiconify()
             self.strip.render(rows)
@@ -322,8 +323,14 @@ class DashboardMenuTests(unittest.TestCase):
             for column, target in ((2, targets[0]), (3, targets[1])):
                 cell = row.winfo_children()[column].winfo_children()[0]
                 self.assertEqual(cell.cget("cursor"), "hand2")
-                cell.event_generate("<Button-1>")
+                # ✉ also clears exactly the results it showed; ● only opens the conversation.
+                with patch.object(dashboard, "acknowledge_ids", return_value=1) as ack,                         patch.object(dashboard, "snapshot", return_value=rows):
+                    cell.event_generate("<Button-1>")
                 self.assertEqual(opener.call_args.args[0], dashboard.conversation_link(target["handle"]))
+                if column == 3:
+                    ack.assert_called_once_with("0", ["result-1"], self.home)
+                else:
+                    ack.assert_not_called()
             with patch.object(self.strip, "_open") as viewer:
                 detail = self.strip.frame.winfo_children()[1].winfo_children()[1].winfo_children()[1]
                 detail.event_generate("<Button-1>")
@@ -477,7 +484,7 @@ class DashboardMenuTests(unittest.TestCase):
     def test_item_context_disabled_checked_and_hidden(self):
         menu = self.context_menu()
         self.assertEqual([item["label"] for item in menu.items if item],
-                         ["보기 설정 ▶", *(["    Windows 시작 시 실행"] if dashboard.sys.platform == "win32" else []),
+                         ["보기 설정 ▶", "옵션…", *(["    Windows 시작 시 실행"] if dashboard.sys.platform == "win32" else []),
                           "✓ 업데이트 자동 확인", f"최신 버전 확인 (현재 {dashboard.__version__})",
                           "설치 상태 점검", "앱 호환성 점검", "설정 (스킬·훅 설치·복구)", "새로고침", "닫기"])
         settings = self.submenu(menu)
@@ -492,7 +499,7 @@ class DashboardMenuTests(unittest.TestCase):
         menu.invoke(index)
         self.assertIs(self.strip._context_menu, menu)
         self.assertEqual(len([item for item in menu.items if item]),
-                         15 + (dashboard.sys.platform == "win32"))
+                         16 + (dashboard.sys.platform == "win32"))
 
     def test_keyboard_skips_disabled_and_submenu_returns_to_parent(self):
         menu = self.context_menu("project")

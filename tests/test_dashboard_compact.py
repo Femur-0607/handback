@@ -579,7 +579,8 @@ class CompactGuiTests(DashboardMenuTests):
             self.assertEqual(sample.call_count, 2)
             self.assertNotEqual(self.root.cget("bg"), dark)
             self.assertEqual(self.root.cget("bg"), self.strip._compact_palette["bg"])
-            self.assertEqual(len(self.root.tk.call("after", "info")), 2)  # z-order + refresh
+            # z-order + refresh + the running row's breathing animation
+            self.assertEqual(len(self.root.tk.call("after", "info")), 3)
             tick(103)  # burst over: back to the one-second interval
             self.assertEqual(sample.call_count, 3)
             with patch.object(dashboard, "widget_fullscreen_covered", return_value=True):
@@ -1228,7 +1229,7 @@ class CompactGuiTests(DashboardMenuTests):
             self.strip.refresh()
         self.strip._toggle_panel()
         self.assertEqual(len(self.root.tk.call("after", "info")),
-                         3 if dashboard.sys.platform == "win32" else 2)
+                         4 if dashboard.sys.platform == "win32" else 3)  # incl. animation
         self.root.destroy()
         self.assertEqual(len(self.root.tk.call("after", "info")), 0)
 

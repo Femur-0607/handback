@@ -5,10 +5,23 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
-## [0.3.6] - 2026-10-16
+## [0.3.6] - 2026-10-19
 
 ### Added
 
+- Clicking the widget's ✉ count now clears those results (ACK) while it opens
+  the worker conversation, so the count disappears without a right-click.
+  Results from an app without a conversation link open in the result viewer,
+  already marked as read. **✉ 클릭 시 확인 처리** in the options turns this off.
+- **옵션…** in the right-click menu opens one window for display mode, panel
+  rows, ✉ click behaviour, highlight, motion, idle hiding, update check and
+  Windows startup. Every change applies at once.
+- Attention effects: waiting results show as a yellow ✉ badge and tint the
+  floating widget's border; a newly arrived result blinks for 6 seconds; the
+  running ● breathes slowly while work is in progress. Each can be turned off.
+- **할 일이 없으면 숨기기** (off by default) withdraws the widget while nothing
+  is running, waiting or failing, and brings it back when work starts. A tray
+  click shows it until the next activity.
 - The dashboard notices Codex, Claude and Antigravity updates. Every 10 minutes
   it reads each installed app's version; a version that differs from the last
   checked one runs a read-only compatibility check (`--help`/`--version`, the

@@ -100,10 +100,10 @@ class MenuActionTests(DashboardMenuTests):
     def test_root_menu_order_and_project_items(self):
         root = self.project()
         menu = self.context_menu()
-        expected = ["보기 설정 ▶", "업데이트 자동 확인", f"최신 버전 확인 (현재 {dashboard.__version__})",
+        expected = ["보기 설정 ▶", "옵션…", "업데이트 자동 확인", f"최신 버전 확인 (현재 {dashboard.__version__})",
                     "설치 상태 점검", "앱 호환성 점검", "설정 (스킬·훅 설치·복구)", "새로고침", "닫기"]
         if dashboard.sys.platform == "win32":
-            expected.insert(1, "Windows 시작 시 실행")
+            expected.insert(2, "Windows 시작 시 실행")
         self.assertEqual(self.labels(menu), expected)
         self.strip._close_menu()
         names = self.labels(self.context_menu(root))
