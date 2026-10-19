@@ -5,8 +5,15 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-10-19
+
 ### Fixed
 
+- The installed dashboard no longer fails to start with "Unhandled exception
+  in script 'entry_dashboard'" (`TypeError: argument should be a str or an
+  os.PathLike object ... not 'NoneType'`). The app-compatibility record
+  passed the dashboard's default home (`None`) straight to `Path()`; it now
+  uses the state folder like the rest of handback.
 - `packaging/smoke-installer.ps1` no longer breaks a real handback install
   when run on a developer PC. Setup writes its uninstall entry and the user
   PATH in the real HKCU whatever the sandbox, so a local run repointed the
@@ -389,6 +396,7 @@ All notable changes to this project are documented here. This file follows the
 - The release version check imports the checkout when run from a temporary
   directory.
 
+[0.3.8]: https://github.com/Femur-0607/handback/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/Femur-0607/handback/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/Femur-0607/handback/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/Femur-0607/handback/compare/v0.3.4...v0.3.5
