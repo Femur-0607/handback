@@ -39,10 +39,7 @@ class MenuActionTests(DashboardMenuTests):
                 self.assertEqual(self.labels(menu)[0], "업그레이드 (9.0.0)")
                 self.assertIn("릴리스 페이지" if not supported else "설치", menu.items[0]["tooltip"])
                 labels = [item["label"] for item in menu.items if item]
-                self.assertIn("✓ 업데이트 자동 확인", labels)
                 self.assertIn(f"최신 버전 확인 (현재 {dashboard.__version__})", labels)
-                settings = [item["label"] for item in self.submenu(menu).items if item]
-                self.assertNotIn("✓ 업데이트 자동 확인", settings)
                 self.strip._close_menu()
                 self.assertNotIn("업그레이드 (9.0.0)", self.labels(self.context_menu(self.project())))
                 self.strip._close_menu()
@@ -100,25 +97,38 @@ class MenuActionTests(DashboardMenuTests):
     def test_root_menu_order_and_project_items(self):
         root = self.project()
         menu = self.context_menu()
-        expected = ["보기 설정 ▶", "옵션…", "업데이트 자동 확인", f"최신 버전 확인 (현재 {dashboard.__version__})",
-                    "설치 상태 점검", "앱 호환성 점검", "설정 (스킬·훅 설치·복구)", "새로고침", "닫기"]
-        if dashboard.sys.platform == "win32":
-            expected.insert(2, "Windows 시작 시 실행")
+        expected = ["옵션…", f"최신 버전 확인 (현재 {dashboard.__version__})", "점검·복구 ▶", "닫기"]
         self.assertEqual(self.labels(menu), expected)
         self.strip._close_menu()
         names = self.labels(self.context_menu(root))
-        self.assertIn("역할 지정 ▶", names)
+        self.assertIn("에이전트 ▶", names)
+        self.assertNotIn("모델·추론 설정 ▶", names)
+        self.assertNotIn("요청 닫기 ▶", names)  # only while a request is open
         self.assertIn("연결 테스트", names)
         sub = self.submenu(self.context_menu(root), "Hook ▶") if False else None
         self.assertIsNone(sub)
+
+    def test_hovering_a_disabled_row_closes_the_open_submenu(self):
+        menu = self.context_menu(self.project(running=True))
+        agents = self.entry(menu, "에이전트 ▶")
+        menu.select(agents, hover=True)
+        self.assertIsNotNone(menu.child)
+        disabled = self.entry(menu, "연결 테스트")
+        self.assertFalse(menu.items[disabled]["enabled"])
+        menu.select(disabled, hover=True)
+        self.assertIsNone(menu.child)
+        self.assertIsNone(menu.active)
 
     @unittest.skipUnless(dashboard.sys.platform == "win32", "Windows only")
     def test_autostart_toggle_calls_set_autostart(self):
         with self.sync_async(), patch.object(dashboard, "startup_shortcut") as link, \
                 patch.object(dashboard, "set_autostart") as setter:
             link.return_value = Path(self.home) / "missing.lnk"
-            menu = self.context_menu()
-            menu.invoke(self.entry(menu, "Windows 시작 시 실행"))
+            self.strip._options()
+            window = self.strip._options_window
+            next(w for w in self.widgets(window) if isinstance(w, self.tk.Checkbutton)
+                 and w.cget("text") == "Windows 시작 시 실행").invoke()
+            window.destroy()
             setter.assert_called_once_with(True)
 
     def test_autostart_error_shows_dialog(self):

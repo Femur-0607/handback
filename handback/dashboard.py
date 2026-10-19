@@ -346,7 +346,8 @@ def release(root, home=None):
                 raise ValueError(f"요청 상태가 올바르지 않아 해제할 수 없습니다: {path.name}")
             running += request["status"] in OPEN_STATES
         if running:
-            raise ValueError(f"진행 중인 요청 {running}개가 있어 해제할 수 없습니다")
+            raise ValueError(f"진행 중인 요청 {running}개가 있어 해제할 수 없습니다. "
+                             "멈춘 요청은 프로젝트 메뉴의 '요청 닫기'로 먼저 정리하세요")
         stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         target = home / "released" / f"{folder.name}-{stamp}"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -355,6 +356,32 @@ def release(root, home=None):
     save_prefs({**prefs, "order": [r for r in prefs["order"] if r != root],
                 "hidden": [r for r in prefs["hidden"] if r != root]}, home)
     return target
+
+
+def close_request(root, request_id, home=None):
+    """Close one open request by hand (failed + closed); a later result is not collected.
+
+    For requests stuck open, e.g. a delivery whose outcome was never learned.
+    Returns False when it was no longer open.
+    """
+    from .state import ProjectState
+    state = ProjectState(root, home=home)
+    with state.lock():
+        request = state.load_request(request_id)
+        if request is None:
+            raise ValueError("요청 기록을 찾을 수 없습니다")
+        if request.get("status") not in OPEN_STATES:
+            return False
+        request["closed"] = {"utc": datetime.now(timezone.utc).isoformat(), "from": request["status"],
+                             "by": "dashboard"}
+        request["status"] = "failed"
+        request["error"] = "Closed by hand from the dashboard; a later result is not collected"
+        state.save_request(request)
+    return True
+
+
+REQUEST_STATES = {"prepared": "준비 중", "dispatching": "전달 중", "accepted": "작업 중",
+                  "delivery_unknown": "전달 확인 안 됨"}
 
 
 def _folder_for(root, home):
@@ -624,6 +651,13 @@ def _preview(body, width=48):
     return line if len(line) <= width else line[:width - 1] + "…"
 
 
+def _utc_timestamp(text):
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
 def ago(timestamp, now=None):
     now = datetime.now(timezone.utc).timestamp() if now is None else now
     if (isinstance(timestamp, bool) or not isinstance(timestamp, (int, float))
@@ -781,9 +815,16 @@ def keep_above_taskbar(widget, taskbar=None):
     user.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
                                  ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
     user.SetWindowPos.restype = wintypes.BOOL
+    user.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user.GetWindowLongW.restype = ctypes.c_long
     hwnd = user.GetAncestor(widget.winfo_id(), 2)  # GA_ROOT: Tk's native wrapper.
     taskbar = taskbar or user.FindWindowW("Shell_TrayWnd", None)
     if not hwnd or not taskbar:
+        return
+    if not user.GetWindowLongW(hwnd, -20) & 0x8:  # GWL_EXSTYLE lacks WS_EX_TOPMOST
+        # The topmost taskbar is above any normal window, and hundreds of windows can sit
+        # between them, past the bounded walk below; restore our topmost band directly.
+        user.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
         return
     above = user.GetWindow(hwnd, 3)  # GW_HWNDPREV
     # Bound traversal in case Explorer changes the order while it is being read.
@@ -1415,6 +1456,12 @@ class DarkMenu:
     def select(self, index, hover=False):
         item = self.items[index]
         if item is None or not item.get("enabled", True):
+            if hover and self.active is not None:  # pointing elsewhere leaves the old row and its submenu
+                if self.child:
+                    self.child.destroy()
+                    self.child = None
+                self.labels[self.active].configure(bg=self.BG)
+                self.active = None
             return
         if hover:
             self.window.focus_force()
@@ -2578,46 +2625,22 @@ class Strip:
                 {"label": "handback 등록 해제…", "enabled": not data.get("unresolved", False),
                  "tooltip": "프로젝트 경로를 읽을 수 없어 해제할 수 없습니다" if data.get("unresolved") else "",
                  "command": lambda: self._release_project(project)}, None])
-            items.append({"label": "역할 지정 ▶", "children": self._role_items(project, data)})
+            agents = self._role_items(project, data)
             if execution:
-                items.append({"label": "모델·추론 설정 ▶", "children": execution})
+                agents.extend([None, {"label": "모델·추론", "enabled": False}] + execution)
+            items.append({"label": "에이전트 ▶", "children": agents})
+            stuck = [{"label": f"{_preview(item.get('name') or item.get('id', ''), 28)} · {agent_name(item.get('agent') or '')} · "
+                               f"{REQUEST_STATES.get(item.get('status'), item.get('status'))} · "
+                               f"{ago(_utc_timestamp(item.get('created_utc')))}",
+                      "command": lambda item=item: self._close_request(project, item)}
+                     for item in data.get("running", [])]
+            if stuck:
+                items.append({"label": "요청 닫기 ▶", "children": stuck})
             testing = self._is_busy(("try", project))
             items.extend([{"label": "연결 테스트 (테스트 중…)" if testing else "연결 테스트",
                            "enabled": not testing and not data.get("running"),
                            "tooltip": "진행 중인 작업이 있어 지금은 할 수 없습니다" if data.get("running") else "",
                            "command": lambda: self._connection_test(project)}, None])
-        settings = [{"label": "펼친 패널 표시 줄 수", "enabled": False}]
-        for count, label in ((2, "2줄"), (3, "3줄"), (0, "전부")):
-            settings.append({"label": ("✓ " if prefs["max_rows"] == count else "    ") + label,
-                             "command": lambda count=count: self._set_max_rows(prefs, count)})
-        settings.extend([None, {"label": "표시 방식", "enabled": False}])
-        for mode, label in (("taskbar", "작게 보기"), ("panel", "펼쳐 보기")):
-            settings.append({"label": ("✓ " if prefs["mode"] == mode else "    ") + label,
-                             "tooltip": "작업표시줄로 끌어다 놓으면 붙고, 바깥으로 끌면 떨어집니다",
-                             "command": lambda mode=mode: self._save({**prefs, "mode": mode})})
-        settings.extend([None, {"label": "숨긴 프로젝트", "enabled": False}])
-        for root in prefs["hidden"]:
-            settings.append({"label": self.names.get(root, Path(root).name) + " 다시 표시",
-                             "command": lambda root=root: self._save(
-                                 {**prefs, "hidden": [x for x in prefs["hidden"] if x != root]})})
-        if not prefs["hidden"]:
-            settings.append({"label": "숨긴 프로젝트 없음", "enabled": False})
-        settings.extend([None, {"label": "순서 초기화 (최근 활동순)",
-                                "command": lambda: self._save({**prefs, "order": []})}])
-        items.extend([{"label": "보기 설정 ▶", "children": settings},
-                      {"label": "옵션…", "tooltip": "표시 방식·숨김·강조색·움직임을 한 창에서 바꿉니다",
-                       "command": self._options}, None])
-        if sys.platform == "win32":
-            on = startup_shortcut().exists()
-            items.append({"label": ("✓ " if on else "    ") + "Windows 시작 시 실행",
-                          "enabled": not self._is_busy(("autostart",)),
-                          "command": lambda: self._toggle_autostart(not on)})
-        auto = prefs["update_check"]
-        items.extend([{"label": ("✓ " if auto else "    ") + "업데이트 자동 확인",
-                       "command": lambda: self._save({**prefs, "update_check": not auto})},
-                      {"label": f"최신 버전 확인 (현재 {__version__})",
-                       "enabled": not self._is_busy(("update",)), "command": self._check_update}])
-        checking = self._is_busy(("doctor",))
         if self._compat_failures and not project:
             items[:0] = [{"label": f"⚠ {compat.NAMES[r['agent']]} {r['version']} 호환성 점검 실패 — 진단 요약",
                           "tooltip": "실패 항목과 관련 로그를 복사해 GitHub 이슈로 올릴 수 있습니다",
@@ -2629,20 +2652,26 @@ class Strip:
                           "tooltip": ("설치 파일을 받아 검증한 뒤 그 자리에서 설치합니다" if updater.supported()
                                       else "소스 실행 중이라 GitHub 릴리스 페이지를 엽니다"),
                           "enabled": not updating, "command": self._install_update}, None]
-        items.extend([
+        checking = self._is_busy(("doctor",))
+        compat_busy = self._is_busy(("compat",))
+        repair = [
             {"label": "설치 상태 점검 (점검 중…)" if checking else "설치 상태 점검",
              "enabled": not checking, "command": self._check_install},
-            {"label": "앱 호환성 점검 (점검 중…)" if self._is_busy(("compat",)) else "앱 호환성 점검",
+            {"label": "앱 호환성 점검 (점검 중…)" if compat_busy else "앱 호환성 점검",
              "tooltip": "Codex·Claude·Antigravity 연동 형식을 읽기만 해서 확인합니다 (메시지는 보내지 않음)",
-             "enabled": not self._is_busy(("compat",)), "command": self._check_compat},
-            {"label": "설정 (스킬·훅 설치·복구)", "command": self._open_setup},
-            None,
-            {"label": "새로고침", "command": lambda: self.refresh(reschedule=False)},
-                      ]
-                     + ([{"label": "보이기" if self._user_hidden else "숨기기",
-                          "command": self.show if self._user_hidden else self.hide},
-                         {"label": "종료", "command": self.quit}] if self.tray is not None
-                        else [{"label": "닫기", "command": self.close}]))
+             "enabled": not compat_busy, "command": self._check_compat},
+            {"label": "스킬·훅 설치·복구", "command": self._open_setup}]
+        items.extend([
+            {"label": "옵션…", "tooltip": "표시 방식·숨긴 프로젝트·시작 시 실행·업데이트 확인을 한 창에서 바꿉니다",
+             "command": self._options},
+            {"label": f"최신 버전 확인 (현재 {__version__})",
+             "enabled": not self._is_busy(("update",)), "command": self._check_update},
+            {"label": "점검·복구 ▶", "children": repair},
+            None]
+            + ([{"label": "보이기" if self._user_hidden else "숨기기",
+                 "command": self.show if self._user_hidden else self.hide},
+                {"label": "종료", "command": self.quit}] if self.tray is not None
+               else [{"label": "닫기", "command": self.close}]))
         menu = DarkMenu(self, items, _monitor_area(self.root, event.x_root, event.y_root))
         self._context_menu = menu
         menu.show(event.x_root, event.y_root)
@@ -2827,6 +2856,30 @@ class Strip:
                              justify="left", anchor="w").grid(row=line, column=0, columnspan=4, sticky="w",
                                                               padx=(30, 0), pady=(0, 4))
                     line += 1
+        tk.Label(frame, text="프로젝트", bg=self.BG, fg=self.YELLOW, font=("Segoe UI Semibold", 10),
+                 anchor="w").grid(row=line, column=0, columnspan=4, sticky="w", pady=(10, 4))
+        line += 1
+
+        def unhide(root, button):
+            self._save({**load_prefs(self.home), "hidden": [r for r in load_prefs(self.home)["hidden"] if r != root]})
+            button.configure(text="표시됨", state="disabled")
+
+        for root in prefs["hidden"]:
+            tk.Label(frame, text=self.names.get(root, Path(root).name), bg=self.BG, fg=self.DIM,
+                     font=self.font, anchor="w").grid(row=line, column=0, columnspan=2, sticky="w", padx=(8, 16))
+            button = self._button(frame, "다시 표시", None)
+            button.configure(command=lambda root=root, button=button: unhide(root, button))
+            button.grid(row=line, column=2, columnspan=2, sticky="e", pady=2)
+            line += 1
+        if not prefs["hidden"]:
+            tk.Label(frame, text="숨긴 프로젝트 없음", bg=self.BG, fg=self.DIM, font=self.font,
+                     anchor="w").grid(row=line, column=0, columnspan=4, sticky="w", padx=(8, 0), pady=2)
+            line += 1
+        order = self._button(frame, "순서 초기화 (최근 활동순)", None)
+        order.configure(command=lambda: (self._save({**load_prefs(self.home), "order": []}),
+                                         order.configure(text="초기화됨", state="disabled")))
+        order.grid(row=line, column=0, columnspan=4, sticky="w", padx=(8, 0), pady=(4, 2))
+        line += 1
         if sys.platform == "win32":
             autostart = tk.BooleanVar(window, value=startup_shortcut().exists())
             tk.Checkbutton(frame, text="Windows 시작 시 실행", variable=autostart,
@@ -2982,6 +3035,21 @@ class Strip:
             return
         self.refresh(reschedule=False)
         self._dialog("해제 완료", f"보관 위치:\n{target}", parent=self.root)
+
+    def _close_request(self, project, item):
+        status = REQUEST_STATES.get(item.get("status"), item.get("status"))
+        if not self._dialog(
+                "요청 닫기",
+                f"{item.get('name')} ({agent_name(item.get('agent') or '')} · {status})\n\n"
+                "이 요청을 실패로 닫을까요? 진행 중 표시에서 빠지고, 나중에 결과가 와도 받지 않습니다. "
+                "요청 기록은 지워지지 않습니다.", parent=self.root, confirm=True):
+            return
+        try:
+            close_request(project, item["id"], self.home)
+        except (OSError, ValueError, TimeoutError) as error:
+            self._dialog("요청 닫기 실패", ui_error(error), parent=self.root)
+            return
+        self.refresh(reschedule=False)
 
     # ---- menu actions ----
     def _is_busy(self, key):

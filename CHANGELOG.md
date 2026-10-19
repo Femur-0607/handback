@@ -5,6 +5,29 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Fixed
+
+- The taskbar widget no longer vanishes behind the taskbar until it is hidden
+  and shown again from the tray. Once it fell out of the topmost band with
+  hundreds of windows above it, the z-order repair gave up before reaching
+  the taskbar; it now restores topmost at once.
+- Hovering a disabled menu row closes the submenu that was open.
+
+### Added
+
+- A project's right-click menu lists its open requests under "요청 닫기", so
+  a request stuck open (e.g. an old Antigravity delivery whose outcome was
+  never learned) can be closed by hand. It is kept as failed, a later result
+  is not collected, and the project can then be released.
+
+### Changed
+
+- The global right-click menu keeps only 옵션…, 최신 버전 확인, 점검·복구 ▶
+  (설치 상태 점검, 앱 호환성 점검, 스킬·훅 설치·복구), 숨기기 and 종료. View
+  settings, hidden projects, order reset, autostart and update checks live in
+  the options window; 새로고침 is gone (the dashboard refreshes itself).
+- 역할 지정 and 모델·추론 설정 are one "에이전트 ▶" submenu.
+
 ## [0.3.9] - 2026-10-19
 
 The Windows installer for 0.3.8 was not published; 0.3.9 ships the same app.

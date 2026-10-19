@@ -47,6 +47,7 @@ class CompactPureTests(unittest.TestCase):
         user = Mock()
         user.GetAncestor.return_value = 12
         user.FindWindowW.return_value = 20
+        user.GetWindowLongW.return_value = 0x8  # already in the topmost band
         with patch.object(ctypes.windll, "user32", user):
             widget.winfo_ismapped.return_value = False
             dashboard.keep_above_taskbar(widget)
@@ -59,6 +60,14 @@ class CompactPureTests(unittest.TestCase):
             user.GetWindow.side_effect = [30, 0]
             dashboard.keep_above_taskbar(widget)
             user.SetWindowPos.assert_not_called()
+            # Dropped out of the topmost band (seen with 400+ windows above it):
+            # repair at once instead of walking past the bounded search.
+            user.GetWindowLongW.return_value = 0
+            user.GetWindow.reset_mock()
+            dashboard.keep_above_taskbar(widget)
+            user.SetWindowPos.assert_called_once_with(12, -1, 0, 0, 0, 0, 0x13)
+            user.GetWindow.assert_not_called()
+            user.SetWindowPos.reset_mock()
             user.FindWindowW.return_value = None
             dashboard.keep_above_taskbar(widget)
             user.SetWindowPos.assert_not_called()

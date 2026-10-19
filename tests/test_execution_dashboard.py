@@ -105,14 +105,44 @@ class DashboardExecutionTests(unittest.TestCase):
         self.strip.render(dashboard.snapshot(self.home))
         self.strip._menu(self.event, str(root))
         menu = self.strip._context_menu
-        menu.select(self.entry(menu, "모델·추론 설정 ▶"))
+        menu.select(self.entry(menu, "에이전트 ▶"))
         menu.open_child()
         child = menu.child
-        self.assertFalse(child.items[0]["enabled"])
-        self.assertEqual(child.items[1]["label"], "워커 · Codex")
+        heading = next(i for i, item in enumerate(child.items) if item and item["label"] == "모델·추론")
+        self.assertFalse(child.items[heading + 1]["enabled"])  # Claude Lead: set in the Claude app
+        self.assertEqual(child.items[heading + 2]["label"], "워커 · Codex")
         with patch.object(self.strip, "_execution_settings") as editor:
-            child.invoke(1)
+            child.invoke(heading + 2)
         editor.assert_called_once_with(str(root), "codex", "worker")
+
+    def test_stuck_request_closes_from_the_project_menu_and_frees_release(self):
+        root, state = self.project()
+        stuck = {"id": "8" * 32, "status": "delivery_unknown", "agent": "antigravity",
+                 "handle": "antigravity:pending-1", "created_utc": "2026-10-15T10:45:17+00:00"}
+        state.save_request(stuck)
+        state.save_request({"id": "9" * 32, "status": "completed", "agent": "codex"})
+        self.strip.render(dashboard.snapshot(self.home))
+        self.strip._menu(self.event, str(root))
+        menu = self.strip._context_menu
+        menu.select(self.entry(menu, "요청 닫기 ▶"))
+        menu.open_child()
+        [item] = [item for item in menu.child.items if item]
+        self.assertIn("전달 확인 안 됨", item["label"])
+        with patch.object(self.strip, "_dialog", return_value=False):
+            item["command"]()
+        self.assertEqual(state.load_request(stuck["id"])["status"], "delivery_unknown")
+        with self.assertRaisesRegex(ValueError, "요청 닫기"):
+            dashboard.release(str(root), self.home)
+        with patch.object(self.strip, "_dialog", return_value=True) as dialog:
+            self.strip._close_request(str(root), {**stuck, "name": "R1"})
+        self.assertTrue(dialog.call_args.kwargs["confirm"])
+        closed = state.load_request(stuck["id"])
+        self.assertEqual(closed["status"], "failed")
+        self.assertEqual(closed["closed"]["from"], "delivery_unknown")
+        self.assertEqual(state.load_request("9" * 32)["status"], "completed")
+        self.assertFalse(dashboard.close_request(str(root), stuck["id"], self.home))  # already closed
+        self.assertEqual(dashboard.snapshot(self.home)[0]["running"], [])
+        self.strip._close_menu()
 
 
 if __name__ == "__main__":

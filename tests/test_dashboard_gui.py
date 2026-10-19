@@ -148,7 +148,7 @@ class DashboardMenuTests(unittest.TestCase):
                 return index
         self.fail(f"Menu entry not found: {label}")
 
-    def submenu(self, menu, label="보기 설정 ▶"):
+    def submenu(self, menu, label="점검·복구 ▶"):
         menu.select(self.entry(menu, label))
         menu.open_child()
         return menu.child
@@ -438,17 +438,23 @@ class DashboardMenuTests(unittest.TestCase):
         expected = {**latest, "hidden": latest["hidden"] + ["new"]}
         self.assertEqual(dashboard.load_prefs(self.home), expected)
 
-        menu = self.context_menu("new")
-        rows = self.submenu(menu)
-        rows.invoke(self.entry(rows, "2줄"))
+        # View preferences moved to the options window; it too saves over the latest prefs.
+        self.strip._options()
+        window = self.strip._options_window
+        next(w for w in self.widgets(window)
+             if isinstance(w, self.tk.Radiobutton) and w.cget("text") == "2줄").invoke()
         expected = {**expected, "max_rows": 2}
         self.assertEqual(dashboard.load_prefs(self.home), expected)
 
-        menu = self.context_menu("new")
-        hidden = self.submenu(menu)
-        hidden.invoke(self.entry(hidden, "new-hidden 다시 표시"))
+        row = next(w for w in self.widgets(window)
+                   if isinstance(w, self.tk.Label) and w.cget("text") == "new-hidden").grid_info()["row"]
+        button = next(w for w in self.widgets(window) if isinstance(w, self.tk.Button)
+                      and w.cget("text") == "다시 표시" and w.grid_info()["row"] == row)
+        button.invoke()
+        self.assertEqual(button.cget("state"), "disabled")
         expected = {**expected, "hidden": ["keep-hidden", "new"]}
         self.assertEqual(dashboard.load_prefs(self.home), expected)
+        window.destroy()
 
     def test_close_command_destroys_the_current_menu_and_its_callbacks(self):
         menu = self.context_menu("project")
@@ -484,22 +490,16 @@ class DashboardMenuTests(unittest.TestCase):
     def test_item_context_disabled_checked_and_hidden(self):
         menu = self.context_menu()
         self.assertEqual([item["label"] for item in menu.items if item],
-                         ["보기 설정 ▶", "옵션…", *(["    Windows 시작 시 실행"] if dashboard.sys.platform == "win32" else []),
-                          "✓ 업데이트 자동 확인", f"최신 버전 확인 (현재 {dashboard.__version__})",
-                          "설치 상태 점검", "앱 호환성 점검", "설정 (스킬·훅 설치·복구)", "새로고침", "닫기"])
-        settings = self.submenu(menu)
-        self.assertFalse(settings.items[self.entry(settings, "펼친 패널 표시 줄 수")]["enabled"])
-        self.assertEqual([item["label"] for item in settings.items if item and item["label"].startswith("✓")],
-                         ["✓ 3줄", "✓ 펼쳐 보기"])
-        index = self.entry(settings, "숨긴 프로젝트 없음")
-        self.assertFalse(settings.items[index]["enabled"])
+                         ["옵션…", f"최신 버전 확인 (현재 {dashboard.__version__})", "점검·복구 ▶", "닫기"])
+        repair = self.submenu(menu)
+        self.assertEqual([item["label"] for item in repair.items if item],
+                         ["설치 상태 점검", "앱 호환성 점검", "스킬·훅 설치·복구"])
         menu = self.context_menu("project")
         index = self.entry(menu, "미확인 결과 모두 확인 처리 (0개)")
         self.assertFalse(menu.items[index]["enabled"])
         menu.invoke(index)
         self.assertIs(self.strip._context_menu, menu)
-        self.assertEqual(len([item for item in menu.items if item]),
-                         16 + (dashboard.sys.platform == "win32"))
+        self.assertEqual(len([item for item in menu.items if item]), 11)
 
     def test_keyboard_skips_disabled_and_submenu_returns_to_parent(self):
         menu = self.context_menu("project")
@@ -507,20 +507,19 @@ class DashboardMenuTests(unittest.TestCase):
         menu.step(1)
         self.assertEqual(menu.items[menu.active]["label"], "handback 등록 해제…")
         menu.step(1)
-        self.assertEqual(menu.items[menu.active]["label"], "역할 지정 ▶")
-        menu.step(2)
-        self.assertEqual(menu.items[menu.active]["label"], "보기 설정 ▶")
+        self.assertEqual(menu.items[menu.active]["label"], "에이전트 ▶")
+        menu.select(self.entry(menu, "점검·복구 ▶"))
         menu.open_child(keyboard=True)
         child = menu.child
-        self.assertEqual(child.items[child.active]["label"].strip("✓ "), "2줄")
+        self.assertEqual(child.items[child.active]["label"], "설치 상태 점검")
         child.step(-1)
-        self.assertEqual(child.items[child.active]["label"], "순서 초기화 (최근 활동순)")
+        self.assertEqual(child.items[child.active]["label"], "스킬·훅 설치·복구")
         child.back()
         self.assertIsNone(menu.child)
         self.assertIs(self.strip._context_menu, menu)
 
-    def test_view_menu_offers_two_modes_and_keeps_docking_to_dragging(self):
-        """Docking is only ever decided by a drop on the taskbar, never by the menu."""
+    def test_view_options_offer_two_modes_and_keep_docking_to_dragging(self):
+        """Docking is only ever decided by a drop on the taskbar, never by the options."""
         bottom = {"rect": (0, 1032, 1920, 1080), "edge": 3, "auto_hide": False}
         for info in (bottom, None, {**bottom, "auto_hide": True},
                      {**bottom, "rect": (0, 0, 48, 1080), "edge": 0}):
@@ -529,14 +528,16 @@ class DashboardMenuTests(unittest.TestCase):
                 for label, mode in (("작게 보기", "taskbar"), ("펼쳐 보기", "panel")):
                     with self.subTest(taskbar=info, docked=docked, label=label), \
                             patch.object(dashboard, "taskbar_info", return_value=info):
-                        menu = self.context_menu()
-                        settings = self.submenu(menu)
-                        labels = [item["label"].strip("✓ ") for item in settings.items if item]
-                        self.assertNotIn("작업표시줄에 넣기", labels)
-                        index = self.entry(settings, label)
-                        self.assertTrue(settings.items[index].get("enabled", True))
+                        self.strip._options()
+                        window = self.strip._options_window
+                        texts = [w.cget("text") for w in self.widgets(window)
+                                 if isinstance(w, (self.tk.Radiobutton, self.tk.Checkbutton))]
+                        self.assertNotIn("작업표시줄에 넣기", texts)
+                        radio = next(w for w in self.widgets(window)
+                                     if isinstance(w, self.tk.Radiobutton) and w.cget("text") == label)
                         with patch.object(self.strip, "_save") as save:
-                            settings.invoke(index)
+                            radio.invoke()
+                        window.destroy()
                         prefs = save.call_args.args[0]
                         self.assertEqual((prefs["mode"], prefs["docked"]), (mode, docked))
 
@@ -598,19 +599,21 @@ class DashboardMenuTests(unittest.TestCase):
     def test_keyboard_bindings_invoke_and_mouse_hover_opens_submenu(self):
         menu = self.context_menu()
         menu.window.update()
-        menu.window.event_generate("<Down>")
-        self.assertEqual(menu.active, self.entry(menu, "보기 설정 ▶"))
+        for _ in range(3):
+            menu.window.event_generate("<Down>")
+        self.assertEqual(menu.active, self.entry(menu, "점검·복구 ▶"))
         menu.window.event_generate("<Right>")
         child = menu.child
         child.window.update()
-        self.assertEqual(child.items[child.active]["label"].strip("✓ "), "2줄")
-        child.window.event_generate("<Down>")
-        child.window.event_generate("<Return>")
+        self.assertEqual(child.items[child.active]["label"], "설치 상태 점검")
+        with patch.object(self.strip, "_run_async") as run:
+            child.window.event_generate("<Down>")
+            child.window.event_generate("<Return>")
+        self.assertEqual(run.call_args.args[0], ("compat",))
         self.assertIsNone(self.strip._context_menu)
-        self.assertEqual(dashboard.load_prefs(self.home)["max_rows"], 3)
         menu = self.context_menu()
         menu.window.update()
-        menu.labels[0].event_generate("<Enter>")
+        menu.labels[self.entry(menu, "점검·복구 ▶")].event_generate("<Enter>")
         self.assertIsNotNone(menu.child)
         menu.open_child(keyboard=True)
         menu.child.window.update()
@@ -656,7 +659,7 @@ class DashboardMenuTests(unittest.TestCase):
                 dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "mode": mode}, self.home)
                 self.strip.render([])
                 menu = self.context_menu()
-                menu.select(self.entry(menu, "보기 설정 ▶"))
+                menu.select(self.entry(menu, "점검·복구 ▶"))
                 menu.open_child(keyboard=True)
                 child = menu.child
                 self.root.update()
