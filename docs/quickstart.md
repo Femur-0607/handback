@@ -51,7 +51,7 @@ python handback.py doctor --root "$relayRoot"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -DryRun
 ```
 
-`status`, `doctor`, and installer dry runs do not create relay state. Dashboard: right-click → **설치 상태 점검**. `doctor` probes app availability and versions; it is not a live round-trip test. Claude detection uses its CLI and can report unavailable even when Desktop is present. Confirm that your intended Lead can run relay commands and use Monitor.
+`status`, `doctor`, and installer dry runs do not create relay state. Dashboard: right-click → **점검·복구 ▶** › **설치 상태 점검**. `doctor` probes app availability and versions; it is not a live round-trip test. Claude detection uses its CLI and can report unavailable even when Desktop is present. Confirm that your intended Lead can run relay commands and use Monitor.
 
 The default Windows state home is `%USERPROFILE%\.handback`. If you already use `HANDBACK_HOME`, keep that same value in every terminal, Lead, collector, and recovery command. Do not choose a new state home to bypass an existing-state warning. The [manual](usage.ko.md#windows-msix-이전-상태) explains migration from older Windows locations.
 
@@ -61,7 +61,7 @@ The default Windows state home is `%USERPROFILE%\.handback`. If you already use 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Dashboard: right-click → **설정 (스킬·훅 설치·복구)**. The installer always writes the Claude skill and installs Codex or Antigravity skills when their app and target location are detected. It prints every installed path and backs up an existing `SKILL.md` beside it. `install-skills` alone does not install hooks or edit shared `AGENTS.md` / `GEMINI.md` files; the dashboard's 설정 window and the installer also install recovery hooks. Confirm the installed skill is available in each app; automatic loading and triggering from a fresh installation are not yet fully verified.
+Dashboard: right-click → **점검·복구 ▶** › **스킬·훅 설치·복구**. The installer always writes the Claude skill and installs Codex or Antigravity skills when their app and target location are detected. It prints every installed path and backs up an existing `SKILL.md` beside it. `install-skills` alone does not install hooks or edit shared `AGENTS.md` / `GEMINI.md` files; the dashboard's 설정 window and the installer also install recovery hooks. Confirm the installed skill is available in each app; automatic loading and triggering from a fresh installation are not yet fully verified.
 
 Codex results can be collected from its local transcript without observation hooks. To add Codex observations and Claude session recovery, preview and install these hooks:
 
@@ -82,7 +82,7 @@ python handback.py use --root "$relayRoot" --lead "$leadAddress" --workers codex
 python handback.py status --root "$relayRoot"
 ```
 
-Dashboard: right-click a project → **역할 지정 ▶** (Lead can be set to Claude only; Codex/Antigravity Leads are set from their app; blocked while requests are in flight or `HANDBACK_LEAD`/`HANDBACK_WORKERS` is set). Check that the returned Lead address and worker list match your selection. `use` changes state outside the checkout. Requests already sent retain their original return address when you later switch Leads.
+Dashboard: right-click a project → **에이전트 ▶** (Lead can be set to Claude only; Codex/Antigravity Leads are set from their app; blocked while requests are in flight or `HANDBACK_LEAD`/`HANDBACK_WORKERS` is set). Check that the returned Lead address and worker list match your selection. `use` changes state outside the checkout. Requests already sent retain their original return address when you later switch Leads.
 
 If you already know your Claude `session_id` from its session metadata or hook input, you can instead use `claude:<actual-Claude-session-id>` consistently in every command and install the Claude recovery hook. A conversation title or Codex thread ID is not a Claude session ID. This optional setup enables exact-session recovery; it is not required for the first test.
 
@@ -161,7 +161,7 @@ python handback.py configure --root "$relayRoot" --agent codex --role worker --m
 python handback.py status --root "$relayRoot"
 ```
 
-These project defaults are saved outside the checkout. In the dashboard, open a project row's context menu → **모델·추론 설정** → the role to edit. Blank fields inherit shared or native settings. CLI clearing uses `configure --clear-model` and/or `--clear-reasoning-effort` for that agent and role.
+These project defaults are saved outside the checkout. In the dashboard, open a project row's context menu → **에이전트 ▶** → the role to edit under **모델·추론**. Blank fields inherit shared or native settings. CLI clearing uses `configure --clear-model` and/or `--clear-reasoning-effort` for that agent and role.
 
 `new` can override the defaults with `--model` and `--reasoning-effort`. Codex saves the effective selection for the conversation, and subsequent relay `send` turns retain the stored selection. An explicit selection on Codex `send` changes the saved selection; actual next-turn application in a conversation already loaded by the desktop app remains unverified because its runtime settings can be cached. Later default edits apply to new conversations; they do not overwrite existing saved conversation settings. Model support for `ultra` and other effort values depends on the installed Codex build and selected model. App-entered user messages remain subject to the app's own settings. See the [settings verification record](verification/2026-10-09-role-model-settings.md) for the checks performed without a model turn.
 
@@ -171,7 +171,7 @@ Shared JSON defaults use `agents.codex.model` and `agents.codex.reasoning_effort
 
 On Windows the dashboard also lives in the notification area (the ^ arrow near the clock), not on the taskbar: left-click the tray icon to show or hide it, right-click for the menu, and choose **종료** there to exit; **닫기** only hides it. Run `handback-dashboard` after installing the package, or `pythonw dashboard.pyw` from the source checkout. The two-line widget shows project activity and unread results. Click it to toggle the expanded panel; drag it anywhere, toward a top/bottom taskbar to snap within about 20 DPI-scaled pixels, or away to undock. When docked, it matches the taskbar colour, avoids the notification area when space permits, and restores its position above the taskbar if covered. Activity is checked every three seconds without repainting unchanged widget content.
 
-Right-click → **보기 설정** to choose the compact widget (**작게 보기**) or the expanded panel (**펼쳐 보기**), choose panel rows, restore hidden projects, or reset the order. Either view docks by dragging it onto a top/bottom taskbar and undocks by dragging it away; the expanded panel docks flush against the taskbar. Project menus include model/reasoning settings, ACK of all unread results, and release of inactive project state. Preferences, widget coordinates, and docking state are saved in `<state-home>/dashboard.json`.
+Right-click → **옵션…** to choose the compact widget (**작게 보기**) or the expanded panel (**펼쳐 보기**), choose panel rows, restore hidden projects, or reset the order. Either view docks by dragging it onto a top/bottom taskbar and undocks by dragging it away; the expanded panel docks flush against the taskbar. Project menus include roles and model/reasoning settings (**에이전트 ▶**), closing stuck requests (**요청 닫기 ▶**), ACK of all unread results, and release of inactive project state. Preferences, widget coordinates, and docking state are saved in `<state-home>/dashboard.json`.
 
 - Left/right and auto-hide taskbars do not support snapping. If docking is unavailable, the widget falls back to the bottom-right of the screen; it can still be moved freely.
 - A full-screen window covering the widget's monitor hides the compact widget, docked or floating. This does not apply to pinned panel mode. Multi-monitor placement and exclusive full-screen Direct3D behavior have unit-test coverage only, without live verification.
