@@ -5,6 +5,13 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Fixed
+
+- `packaging/smoke-installer.ps1` waits for the uninstaller to take its
+  folder off the user PATH instead of failing when it reads PATH before the
+  uninstaller's background helper gets there (this failed the v0.3.8 Windows
+  build once).
+
 ## [0.3.8] - 2026-10-19
 
 ### Fixed

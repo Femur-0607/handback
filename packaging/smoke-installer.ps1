@@ -183,7 +183,12 @@ try {
     Write-Host 'PASS: uninstalled'
     if ($null -ne (Read-RealPart $realParts[0]).Data) { throw 'FAIL: uninstall entry still present after uninstall' }
     if (Test-Path -LiteralPath $shortcut) { throw "FAIL: shortcut still present after uninstall: $shortcut" }
-    $pathText = "$(@((Read-RealPart $realParts[1]).Data).Value)"
+    # The PATH entry goes at usPostUninstall, after the app dir, in the helper that outlives unins000.exe.
+    for ($i = 0; $i -lt 30; $i++) {
+        $pathText = "$(@((Read-RealPart $realParts[1]).Data).Value)"
+        if ((';' + $pathText + ';').IndexOf(';' + $app + ';', [StringComparison]::OrdinalIgnoreCase) -lt 0) { break }
+        Start-Sleep -Milliseconds 500
+    }
     if ((';' + $pathText + ';').IndexOf(';' + $app + ';', [StringComparison]::OrdinalIgnoreCase) -ge 0) {
         throw "FAIL: user PATH still contains $app"
     }
