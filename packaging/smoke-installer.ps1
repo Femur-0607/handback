@@ -3,13 +3,84 @@
 .PARAMETER Setup    Path to handback-<ver>-setup.exe.
 .PARAMETER Version  Expected version.
 .PARAMETER Sandbox  Optional sandbox root (default: new temp folder). USERPROFILE/APPDATA/etc. are redirected into it.
+.PARAMETER AllowRealProfile
+    Run even though handback is installed for this user. Setup writes its uninstall entry and the user
+    PATH in the real HKCU whatever the sandbox, so the smoke would replace and then delete an existing
+    install's entry. With this switch it backs them up and restores them afterwards; without it, it
+    refuses. (Shortcuts follow the redirected USERPROFILE into the sandbox; the real ones are still compared.)
 #>
 param(
     [Parameter(Mandatory)][string]$Setup,
     [Parameter(Mandatory)][string]$Version,
-    [string]$Sandbox
+    [string]$Sandbox,
+    [switch]$AllowRealProfile
 )
 $ErrorActionPreference = 'Stop'
+
+# Locations outside the sandbox: the first two are written by setup and uninstall, the shortcuts are
+# a guard in case Inno stops following USERPROFILE. Resolve the folders before the profile variables
+# are redirected so they name the real profile.
+$realParts = @(
+    @{ Name = 'uninstall entry'; Key = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F1C2A58-3B7E-4D0A-9C41-7A5E8B2D1F63}_is1' }
+    @{ Name = 'user PATH'; Key = 'Environment'; Value = 'Path' }
+    @{ Name = 'Start menu shortcut'; File = Join-Path ([Environment]::GetFolderPath('Programs')) 'handback.lnk' }
+    @{ Name = 'desktop shortcut'; File = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'handback.lnk' }
+)
+
+function Format-RegValue($kind, $value) {
+    if ($value -is [array]) { $value = ($value | ForEach-Object { "$_" }) -join ',' }
+    return "${kind}:$value"
+}
+
+function Read-RealPart($part) {
+    # Returns @{ Data = <what Write-RealPart needs, $null when absent>; Text = <comparable form> }.
+    if ($part.File) {
+        if (-not (Test-Path -LiteralPath $part.File)) { return @{ Data = $null; Text = '(absent)' } }
+        $bytes = [IO.File]::ReadAllBytes($part.File)
+        $hash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes))
+        return @{ Data = $bytes; Text = $hash }
+    }
+    $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($part.Key)
+    if (-not $k) { return @{ Data = $null; Text = '(absent)' } }
+    try {
+        # Keep the key's own value order for restoring; compare sorted, since only the values matter.
+        $names = if ($part.Value) { @($k.GetValueNames() | Where-Object { $_ -eq $part.Value }) } else { @($k.GetValueNames()) }
+        if ($part.Value -and -not $names) { return @{ Data = $null; Text = '(absent)' } }
+        $values = foreach ($n in $names) {
+            [pscustomobject]@{ Name = $n; Kind = $k.GetValueKind($n)
+                Value = $k.GetValue($n, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
+        }
+        return @{ Data = @($values); Text = (@($values | ForEach-Object { "$($_.Name)=$(Format-RegValue $_.Kind $_.Value)" } | Sort-Object) -join "`n") }
+    } finally { $k.Close() }
+}
+
+function Write-RealPart($part, $data) {
+    if ($part.File) {
+        if ($null -eq $data) { Remove-Item -LiteralPath $part.File -Force -ErrorAction SilentlyContinue; return }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $part.File) | Out-Null
+        [IO.File]::WriteAllBytes($part.File, $data)
+        return
+    }
+    $cu = [Microsoft.Win32.Registry]::CurrentUser
+    if (-not $part.Value) { $cu.DeleteSubKeyTree($part.Key, $false) }
+    if ($null -eq $data -and $part.Value) {
+        $k = $cu.OpenSubKey($part.Key, $true)
+        if ($k) { try { $k.DeleteValue($part.Value, $false) } finally { $k.Close() } }
+        return
+    }
+    if ($null -eq $data) { return }
+    $k = $cu.CreateSubKey($part.Key)
+    try { foreach ($v in $data) { $k.SetValue($v.Name, $v.Value, $v.Kind) } } finally { $k.Close() }
+}
+
+$before = @{}
+foreach ($part in $realParts) { $before[$part.Name] = Read-RealPart $part }
+if ($null -ne $before['uninstall entry'].Data -and -not $AllowRealProfile) {
+    throw ('handback is installed for this user. Setup writes its uninstall entry outside the sandbox, so the ' +
+        'smoke would repoint it at the sandbox and then delete it, leaving the installed copy unregistered. ' +
+        'Rerun with -AllowRealProfile to back it up and restore it afterwards.')
+}
+
 $Setup = (Resolve-Path -LiteralPath $Setup).Path
 if (-not $Sandbox) { $Sandbox = Join-Path ([IO.Path]::GetTempPath()) ('hb-inst-' + [guid]::NewGuid().ToString('N').Substring(0, 8)) }
 $Sandbox = [IO.Path]::GetFullPath($Sandbox)
@@ -53,6 +124,13 @@ try {
     $out = (& $exe --version | Out-String).Trim()
     if ($out -notmatch [regex]::Escape($Version)) { throw "FAIL: version '$out' != '$Version'" }
     Write-Host "PASS: installed ($out)"
+    # Confirm setup wrote the entry this script restores (so that check is not vacuous) and put the
+    # shortcut in the sandbox profile rather than the real one.
+    $appPath = @((Read-RealPart $realParts[0]).Data | Where-Object { $_.Name -eq 'Inno Setup: App Path' }).Value
+    if ($appPath -ne $app) { throw "FAIL: uninstall entry points at '$appPath', not $app" }
+    $shortcut = "$prof\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\handback.lnk"
+    if (-not (Test-Path -LiteralPath $shortcut)) { throw "FAIL: Start menu shortcut not created in the sandbox at $shortcut" }
+    Write-Host 'PASS: uninstall entry points at the sandbox and the shortcut stayed in it'
     $skill = Join-Path $prof '.claude\skills\handback\SKILL.md'
     if (-not (Test-Path -LiteralPath $skill)) { throw "FAIL: skill not created at $skill" }
     $text = [IO.File]::ReadAllText($skill, [Text.Encoding]::UTF8)
@@ -103,12 +181,32 @@ try {
     for ($i = 0; $i -lt 30 -and (Test-Path -LiteralPath $app); $i++) { Start-Sleep -Milliseconds 500 }
     if (Test-Path -LiteralPath $app) { throw 'FAIL: app dir still present after uninstall' }
     Write-Host 'PASS: uninstalled'
-    # The per-user PATH entry lives in the real HKCU and cannot be sandboxed, so it is not asserted here.
+    if ($null -ne (Read-RealPart $realParts[0]).Data) { throw 'FAIL: uninstall entry still present after uninstall' }
+    if (Test-Path -LiteralPath $shortcut) { throw "FAIL: shortcut still present after uninstall: $shortcut" }
+    $pathText = "$(@((Read-RealPart $realParts[1]).Data).Value)"
+    if ((';' + $pathText + ';').IndexOf(';' + $app + ';', [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        throw "FAIL: user PATH still contains $app"
+    }
+    Write-Host 'PASS: uninstall removed its entry, shortcut and PATH entry'
     if (Test-Path -LiteralPath $skill) { throw "FAIL: skill still present after uninstall: $skill" }
     Write-Host 'PASS: uninstall removed the skill'
-    Write-Host 'INSTALLER SMOKE OK'
 }
 finally {
     foreach ($k in $vars.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k], 'Process') }
+    # Put back whatever this run changed outside the sandbox (an existing install's entry and
+    # shortcut, or leftovers of a run that failed half way), then check nothing differs.
+    $changed = @()
+    foreach ($part in $realParts) {
+        if ((Read-RealPart $part).Text -ne $before[$part.Name].Text) {
+            try { Write-RealPart $part $before[$part.Name].Data } catch { Write-Warning "could not restore $($part.Name): $_" }
+            $changed += $part.Name
+        }
+    }
+    $restoreErrors = @($realParts | Where-Object { (Read-RealPart $_).Text -ne $before[$_.Name].Text } | ForEach-Object { $_.Name })
+    if ($changed) { Write-Host "restored: $($changed -join ', ')" }
+    if ($restoreErrors) { Write-Warning "FAIL: real profile differs from before the smoke: $($restoreErrors -join ', ')" }
     Remove-Item -LiteralPath $Sandbox -Recurse -Force -ErrorAction SilentlyContinue
 }
+if ($restoreErrors) { throw "FAIL: real profile differs from before the smoke: $($restoreErrors -join ', ')" }
+Write-Host 'PASS: real uninstall entry, shortcuts and user PATH match the state before the smoke'
+Write-Host 'INSTALLER SMOKE OK'

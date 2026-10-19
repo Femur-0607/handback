@@ -5,6 +5,19 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Fixed
+
+- `packaging/smoke-installer.ps1` no longer breaks a real handback install
+  when run on a developer PC. Setup writes its uninstall entry and the user
+  PATH in the real HKCU whatever the sandbox, so a local run repointed the
+  installed copy's entry at the sandbox and then deleted it, leaving it
+  missing from the Windows app list. The smoke now refuses to run while
+  handback is installed for the user unless `-AllowRealProfile` is given; it
+  then backs the entry and PATH up, restores them afterwards, and fails if
+  they or the real Start menu and desktop shortcuts differ from before. It
+  also checks that setup wrote the entry it restores, kept the shortcut in
+  the sandbox profile, and that uninstall removed both.
+
 ## [0.3.7] - 2026-10-19
 
 ### Fixed
