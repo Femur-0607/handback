@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-10-19
+
 ### Fixed
 
 - Upgrading no longer stops at "모든 응용 프로그램을 자동으로 닫지 못했습니다"
@@ -13,10 +15,16 @@ All notable changes to this project are documented here. This file follows the
   kept `handback.exe` locked and the installer could not close them (the
   silent in-app upgrade gave up with exit code 5); setup now stops just those
   two before it replaces files, in the setup wizard and the in-app upgrade
-  alike. Nothing is lost: unread results stay in the
-  inbox, the recovery hook asks the Lead to start the watcher again while
-  requests are open, and a watcher or the router resumes collection.
-  `route` deliveries and short hook runs are left alone.
+  alike. Nothing is lost: unread results stay in the inbox, the recovery hook
+  asks the Lead to start the watcher again while requests are open, and a
+  watcher or the router resumes collection. `route` deliveries and short hook
+  runs are left alone.
+
+### Verified
+
+- Antigravity 2.24.0 delivers to and collects from a new worker conversation,
+  also while the app's per-sidecar project copies of the same folder remain
+  (#4).
 
 ## [0.3.6] - 2026-10-19
 
@@ -368,6 +376,7 @@ All notable changes to this project are documented here. This file follows the
 - The release version check imports the checkout when run from a temporary
   directory.
 
+[0.3.7]: https://github.com/Femur-0607/handback/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/Femur-0607/handback/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/Femur-0607/handback/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/Femur-0607/handback/compare/v0.3.3...v0.3.4
