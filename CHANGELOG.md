@@ -5,6 +5,15 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Added
+
+- `handback handoff --root <checkout>` writes one Markdown note for a new Lead
+  session: topology, open requests, unacknowledged results with previews and
+  full-file paths, and the `use`, `inbox` and `explain` commands filled in for
+  the project. `--from` names the Lead being replaced, `--out` writes a file
+  (never replacing one without `--force`), and `--json` gives the same data.
+  It only reads: requests keep their return address and nothing is ACKed.
+
 ### Changed
 
 - Python 3.11 or newer is required; Python 3.10 reached end of life on

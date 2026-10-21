@@ -49,7 +49,13 @@ handback inbox ack --root "<absolute-project-path>" --for "claude:<old-session-i
 
 ### Make session handoff easier
 
-- **Future improvement:** A `handoff` command could write one note containing topology, open requests, unACKed results with previews, and next actions so a new Lead could start from that file alone. There is currently no such command; write and maintain the note manually.
+- **Current feature:** `handoff` writes one Markdown note containing topology, open requests, unACKed results with 600-character previews and full-file paths, and the `use`, `inbox watch`, `inbox list`/`ack` and `explain` commands filled in for this project. `--from "<agent:id>"` names the Lead being replaced (default: the configured Lead). The note prints to stdout; `--out` writes a file and refuses to replace one without `--force`. It is read-only: requests keep their return address and nothing is ACKed. It ends with empty "Decisions", "Next steps" and "Cautions" sections; fill those in before giving the note to the new session.
+
+```powershell
+handback handoff --root "<absolute-project-path>" --out "<absolute-note-path>"
+```
+
+- **Operating tip:** Run `handoff` in the old session before opening the new one, add the decisions and next actions, and start the new Lead from that file.
 
 ### Give each worker a bounded lifetime
 

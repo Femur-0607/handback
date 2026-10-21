@@ -673,6 +673,13 @@ def build_parser():
     explain.add_argument("--root", default=".")
     explain.add_argument("--request", required=True)
     explain.add_argument("--json", action="store_true")
+    handoff = sub.add_parser("handoff", help="read-only note for handing the Lead to a new session")
+    handoff.add_argument("--root", default=".")
+    handoff.add_argument("--from", dest="source", metavar="AGENT:ID",
+                         help="Lead address being replaced (default: the configured Lead)")
+    handoff.add_argument("--out", help="write the note to this file instead of stdout")
+    handoff.add_argument("--force", action="store_true", help="with --out, replace an existing file")
+    handoff.add_argument("--json", action="store_true")
     mail = sub.add_parser("inbox")
     mail_sub = mail.add_subparsers(dest="inbox_command", required=True)
     route = sub.add_parser("route", help="internal: external router and collector recovery")
@@ -923,6 +930,22 @@ def dispatch(args, parser):
             output(result)
         else:
             print(format_timeline(result))
+        return 0
+    if args.command == "handoff":
+        from . import handoff
+        if args.force and not args.out:
+            parser.error("--force requires --out")
+        if args.source is not None and ":" not in args.source:
+            parser.error("--from expects <agent>:<id>")
+        resolved = config.resolve(args.root, validate=False)
+        source = handle(args.source)[0] if args.source else lead_handle(resolved["values"])
+        data = handoff.collect(ProjectState(args.root), resolved, source)
+        text = (json.dumps(data, ensure_ascii=False, indent=2) + "\n" if args.json
+                else handoff.render_markdown(data))
+        if args.out:
+            print(handoff.write_note(args.out, text, force=args.force))
+        else:
+            sys.stdout.write(text)
         return 0
     if args.command == "inbox":
         state = ProjectState(args.root)
