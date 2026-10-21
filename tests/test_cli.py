@@ -153,6 +153,39 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(len(adapter.deliveries), 1)
         self.assertEqual(self.state.threads()[data["created_handle"]]["bound_to"], data["handle"])
 
+    def antigravity_new(self, project):
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "config.json").write_text('{"agents":{"antigravity":{"enabled":true}}}', encoding="utf-8")
+        config.use_topology(self.root, "claude:lead", ["antigravity"])
+
+        class AntigravityFake(FakeAdapter):
+            needs_context = True
+
+            def new_thread(self, *args, **kwargs):
+                return "pending-fake"
+
+            def deliver(self, thread, mail, **kwargs):
+                return {"accepted": True, "thread": "actual-conversation", "project": project}
+
+        with patch.object(cli, "get_adapter", return_value=AntigravityFake()):
+            return self.invoke_new("--worker", "antigravity", "--text", "task", "--no-wait")
+
+    def test_new_antigravity_names_the_project_copy_with_registered_name(self):
+        code, raw, err = self.antigravity_new({"name": "handback-2650df801dea", "copy_of": "Study"})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(raw)["antigravity_project"], "handback-2650df801dea (copy of Study)")
+
+    def test_new_antigravity_project_without_registered_name_shows_copy_only(self):
+        code, raw, err = self.antigravity_new({"name": "handback-2650df801dea", "copy_of": None})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(raw)["antigravity_project"], "handback-2650df801dea")
+
+    def test_new_other_adapter_has_no_project_line(self):
+        code, raw, err = self.invoke_new("--text", "task", "--no-wait")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("antigravity_project", json.loads(raw))
+        self.assertNotIn("project:", err)
+
     def test_legacy_no_wait_marker_and_durable_wait(self):
         code, marker, error = self.invoke("send", "--thread", "fake", "--text", "work", "--no-wait")
         self.assertEqual(code, 0, error)

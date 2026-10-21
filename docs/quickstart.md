@@ -183,6 +183,8 @@ Right-click → **옵션…** to choose the compact widget (**작게 보기**) o
 
 Before selecting Antigravity, register the working project in its app and merge the following into `<state-home>/config.json`. The examples below continue the first test with `$relayRoot`; for your own project, use its absolute path instead. Preserve any existing settings. The default model is `flash`; optional alternatives are `flash_lite` and `pro`. Select a project worker default with `configure --root "$relayRoot" --agent antigravity --role worker --model pro`, or use `new --model pro`. The current agentapi interface has no reasoning-effort option or existing-conversation model-change option; these selections are rejected rather than ignored.
 
+The Antigravity app shows the worker conversation under a project named `handback-<first 12 characters of the request id>` (for example `handback-2650df801dea`), not under the project you registered (for example `Study`). The app creates this copy itself for each request; it points to the same folder. The output of the delivery that starts the conversation names it.
+
 ```json
 {
   "agents": {
@@ -208,7 +210,7 @@ python handback.py uninstall-hooks --agents codex,claude --dry-run
 python handback.py uninstall-hooks --agents codex,claude
 ```
 
-If you used Antigravity or enabled the dashboard at startup, run the corresponding cleanup:
+If you used Antigravity or enabled the dashboard at startup, run the corresponding cleanup. `cleanup-sidecars` keeps any `handback-…` project copy that still holds a conversation in the app (and removes none if it cannot read the app's data):
 
 ```powershell
 python handback.py cleanup-sidecars --dry-run

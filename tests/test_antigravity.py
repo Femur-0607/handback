@@ -458,7 +458,9 @@ class DeliveryTests(Base):
         adapter = agy.AntigravityAdapter(delivery_timeout=10, gemini=self.gemini)
         delivery = adapter.deliver("pending-x", {"body": "[relay abababab] hi"}, state=self.state,
                                    request=self.request, title="My task")
-        self.assertEqual(delivery, {"accepted": True, "returncode": 0, "thread": CONVERSATION})
+        self.assertEqual(delivery, {"accepted": True, "returncode": 0, "thread": CONVERSATION,
+                                    "project": {"name": agy.SIDECAR_PREFIX + self.request["id"][:12],
+                                                "copy_of": "p"}})
         job = json.loads((self.state.path / "antigravity" / self.request["id"] / "job.json").read_text(encoding="utf-8"))
         self.assertEqual(job["args"][:3], ["new-conversation", "--title=My task", "--model=flash"])
         value = json.loads(self.config.read_text(encoding="utf-8"))
@@ -485,11 +487,23 @@ class DeliveryTests(Base):
         adapter = agy.AntigravityAdapter(delivery_timeout=10, gemini=self.gemini)
         delivery = adapter.deliver("pending-x", {"body": "[relay abababab] hi"}, state=self.state,
                                    request=self.request)
-        self.assertEqual(delivery, {"accepted": True, "returncode": 0, "thread": CONVERSATION})
+        self.assertEqual(delivery, {"accepted": True, "returncode": 0, "thread": CONVERSATION,
+                                    "project": {"name": agy.SIDECAR_PREFIX + self.request["id"][:12],
+                                                "copy_of": "p"}})
         projects = sorted(p.stem for p in (self.gemini / "config" / "projects").glob("*.json"))
         self.assertEqual(len(projects), 2)
         self.assertIn("proj-1", projects)
         self.assertTrue(any(name.startswith("managed-") for name in projects))
+
+    def test_known_conversation_delivery_names_no_project(self):
+        self.fake_app('{"ok": true}')
+        adapter = agy.AntigravityAdapter(delivery_timeout=10, gemini=self.gemini)
+        delivery = adapter.deliver(CONVERSATION, {"body": "x"}, state=self.state, request=self.request)
+        self.assertEqual(delivery, {"accepted": True, "returncode": 0})
+
+    def test_project_name_is_none_when_unreadable(self):
+        self.assertEqual(agy.project_name("proj-1", self.gemini), "p")
+        self.assertIsNone(agy.project_name("absent", self.gemini))
 
     def test_failure_before_agentapi_is_send_failed_not_unknown(self):
         self.fake_app("{}", agentapi=False)

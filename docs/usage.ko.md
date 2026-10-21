@@ -124,7 +124,7 @@ handback install-skills --target-home "<absolute-test-home>" --dry-run
 
 현황판: 우클릭 → **설정**에서 설치(기본으로 켜짐), 같은 창의 **훅 해제** 버튼으로 제거합니다(설정 파일과 백업 경로를 보여 줍니다).
 
-1. Antigravity를 쓴다면 체크아웃을 앱에서 프로젝트로 등록합니다. relay는 프로젝트를 만들지 않습니다.
+1. Antigravity를 쓴다면 체크아웃을 앱에서 프로젝트로 등록합니다. relay는 프로젝트를 만들지 않습니다. 다만 앱이 요청마다 `handback-<요청 id 앞 12자리>` 이름의 프로젝트 복사본(같은 폴더)을 스스로 만들고, 워커 대화는 등록한 프로젝트(예: `Study`)가 아니라 이 복사본 아래에 보입니다. 새 대화를 만드는 첫 전달의 출력이 그 프로젝트 이름을 알려 줍니다.
 2. 선택한 상태 홈의 `config.json`에서 `agents.antigravity.enabled`를 `true`로 설정합니다. 기존 설정에 병합합니다. 선택적 `model`은 `flash_lite`, `flash`, `pro`이며 기본값은 `flash`입니다.
 3. 사용할 에이전트의 훅을 미리 확인한 뒤 설치합니다. 아래 예의 `--agents`는 사용하는 앱 목록으로 바꿉니다. Claude 복구 훅도 필요하면 `claude`를 포함합니다.
 
@@ -308,9 +308,10 @@ python handback.py inbox redeliver --root "<absolute-checkout>" --id "<message-i
 ### Antigravity
 
 - agentapi는 사이드카 안에서 실행합니다. 전송마다 relay 소유 사이드카를 `~/.gemini/config/config.json`에 잠깐 켜고 agentapi를 한 번 호출합니다. 설정을 백업하고 동시 변경을 거부합니다. 성공 확인 뒤 항목·폴더를 제거하지만 앱 종료 등으로 제한시간(기본 60초)을 넘기면 `delivery_unknown`과 비활성 사이드카를 남깁니다. 다시 보내지 않습니다.
+- 앱은 사이드카 이름을 따라 `handback-<요청 id 앞 12자리>` 프로젝트 복사본을 만듭니다(예: `handback-2650df801dea`). 대화가 이 복사본에 속하므로 전달 뒤에도 남겨 둡니다. 지우면 앱이 그 대화를 숨깁니다.
 - `--sandbox read-only`는 거부합니다. 읽기 전용을 강제할 수 없으므로 제한을 브리프에 씁니다. 앱의 명령 자동 실행 설정이 켜져 있으면 워커가 명령을 바로 실행할 수 있습니다.
 - 반환은 마커가 있는 `transcript_full.jsonl` 입력 이후의 답과 `fullyIdle` Stop 관찰로 확정합니다. 다른 Stop 훅의 최대 제한시간도 기다립니다. 마커 없는 앱 직접 입력은 relay 답으로 수집하지 않습니다.
-- `cleanup-sidecars`는 이름·명령·소유 설명을 확인한 비활성 항목 중 열린 요청이 없는 것만 백업·제거합니다. 다른 상태 홈 항목과 열린 `delivery_unknown`은 보존합니다. `doctor --json`의 `sidecar_cleanup`에서 대상 개수를 확인할 수 있습니다.
+- `cleanup-sidecars`는 이름·명령·소유 설명을 확인한 비활성 항목 중 열린 요청이 없는 것만 백업·제거합니다. 다른 상태 홈 항목과 열린 `delivery_unknown`은 보존합니다. `doctor --json`의 `sidecar_cleanup`에서 대상 개수를 확인할 수 있습니다. 앱에 대화가 남아 있는 `handback-…` 프로젝트 복사본은 지우지 않고 남기며, 앱의 대화 DB를 읽을 수 없으면 복사본을 하나도 지우지 않습니다.
 
 ```powershell
 python handback.py cleanup-sidecars --dry-run

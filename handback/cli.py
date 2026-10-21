@@ -383,6 +383,14 @@ def cmd_send(args, created=None):
     summary = ({**created, "handle": request["handle"], "id": request["thread"],
                 "request_id": request["id"], "marker": request["marker"], "to": request["handle"]}
                if created is not None else None)
+    project = (request.get("delivery") or {}).get("project")
+    if project and not code:
+        line = project["name"] + (" (copy of " + project["copy_of"] + ")" if project.get("copy_of") else "")
+        if summary is not None:
+            summary["antigravity_project"] = line
+        else:
+            # stdout stays the legacy result text; the project line goes beside the warnings.
+            print("project: " + line, file=sys.stderr)
     if code:
         if summary is not None:
             output({**summary, "status": request["status"], "delivery": request.get("delivery"),

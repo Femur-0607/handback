@@ -151,6 +151,16 @@ def resolve_project(root, home=None):
     return matches[0]
 
 
+def project_name(project_id, home=None):
+    """Display name of a registered Antigravity project, or None when unreadable."""
+    try:
+        project = _read_json(Path(home or gemini_home()) / "config" / "projects" / (project_id + ".json"), {})
+    except (OSError, ValueError):
+        return None
+    name = project.get("name") if isinstance(project, dict) else None
+    return name if isinstance(name, str) and name.strip() else None
+
+
 def _hook_entries(value):
     """Yield (group_name, event, hook) from either documented or flat layouts."""
     if not isinstance(value, dict):
@@ -742,6 +752,9 @@ class AntigravityAdapter(BaseAdapter):
                         "classification": self.classify_error(result.get("stderr") or result.get("error") or "")}
             delivery = {"accepted": True, "returncode": 0}
             if thread.startswith("pending-"):
+                # The app shows a new conversation under this copy of the registered project. A later
+                # send joins the first delivery's copy, so only creation names one.
+                delivery["project"] = {"name": sidecar, "copy_of": project_name(project_id, self.gemini)}
                 try:
                     conversation = json.loads(result["stdout"])["response"]["newConversation"]["conversationId"]
                 except (KeyError, TypeError, ValueError) as error:
