@@ -28,7 +28,7 @@ This is an experimental project. Windows has live integration coverage; macOS an
 
 ## Requirements and supported combinations
 
-- Windows, PowerShell, and Python 3.10 or newer available as `python`; Git is needed only for cloning the source walkthrough. The relay has no runtime dependencies. The optional GUI needs Tk support.
+- Windows, PowerShell, and Python 3.11 or newer available as `python`; Git is needed only for cloning the source walkthrough. The relay has no runtime dependencies. The optional GUI needs Tk support.
 - Install and sign in to the apps used by your combination. The recommended first setup is **Claude Lead → Codex worker**. Start the apps before testing.
 - Claude Lead can use Codex, Antigravity, or both. Codex Lead supports Antigravity workers only.
 - Claude workers, Codex Lead → Codex worker, Antigravity Lead, and automatic `fallback next` are unsupported.

@@ -5,6 +5,12 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Changed
+
+- Python 3.11 or newer is required; Python 3.10 reached end of life on
+  2026-10-01. `doctor` and the dashboard report the new minimum, and CI tests
+  Python 3.11 and 3.14.
+
 ## [0.4.0] - 2026-10-19
 
 ### Fixed

@@ -123,7 +123,7 @@ gh attestation verify .\handback-<version>-setup.exe --repo Femur-0607/handback
 
 ## For developers
 
-Install with Python 3.10+ (`pip`, `pipx`, `uv`) or run from a source checkout. The sections through "Use it on your own project" are the CLI walkthrough.
+Install with Python 3.11+ (`pip`, `pipx`, `uv`) or run from a source checkout. The sections through "Use it on your own project" are the CLI walkthrough.
 
 ### Install from PyPI or source
 
@@ -154,7 +154,7 @@ The source-only walkthrough below remains supported; `install.ps1` is a thin wra
 
 Start with **Claude Lead → Codex worker**. Have these ready:
 
-- Windows, PowerShell, and Python 3.10 or newer available as `python`.
+- Windows, PowerShell, and Python 3.11 or newer available as `python`.
 - Git if you clone the repository, or an extracted source archive.
 - Claude and Codex installed and signed in; start the apps before testing.
 

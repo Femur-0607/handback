@@ -3809,7 +3809,7 @@ def _problem_line(row):
     if name.endswith(" version") or name == "Claude Monitor":
         return None  # informational only
     if name == "Python":
-        return "Python 버전이 낮음 — 3.10 이상을 설치하세요"
+        return "Python 버전이 낮음 — 3.11 이상을 설치하세요"
     if name == "State home":
         return "상태 폴더에 쓸 수 없음 — HANDBACK_HOME 폴더 권한을 확인하세요"
     if name in ("Codex executable", "Codex queue --thread"):

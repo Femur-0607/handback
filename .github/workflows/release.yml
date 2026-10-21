@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.13']
+        python-version: ['3.11', '3.14']
     env:
       PYTHONUTF8: '1'
     defaults:
@@ -89,7 +89,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
-        python-version: ['3.10', '3.13']
+        python-version: ['3.11', '3.14']
     env:
       PYTHONUTF8: '1'
     steps:
@@ -196,7 +196,7 @@ jobs:
           $setup = (Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\handback-exe" -Filter 'handback-*-setup.exe').FullName
           .\packaging\smoke-installer.ps1 -Setup $setup -Version $version
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ runner.temp }}\handback-exe\handback-*-setup.exe
       - name: Upload to GitHub Release

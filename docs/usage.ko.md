@@ -68,7 +68,7 @@ handback inbox ack --root "<프로젝트 절대 경로>" --for "<Lead 주소>" -
 
 [프로젝트 소개](../README.md) · [English quick start](quickstart.md) · [기여 안내](../CONTRIBUTING.md) · [검증 범위](verification/README.md)
 
-**실험적 프로젝트 · Windows 검증 · Python 3.10 이상.** 앱 업데이트에 따라 내부 연동 방식이 달라질 수 있습니다. macOS·Linux는 미검증이며 지원을 보장하지 않습니다.
+**실험적 프로젝트 · Windows 검증 · Python 3.11 이상.** 앱 업데이트에 따라 내부 연동 방식이 달라질 수 있습니다. macOS·Linux는 미검증이며 지원을 보장하지 않습니다.
 
 Lead가 Codex·Antigravity 워커에게 작업을 보내고 결과를 영속 수신함으로 받는 로컬 중계 도구입니다. Lead는 작업을 나누고 결과를 처리하며, 워커는 지정된 브리프를 수행해 같은 대화에 답합니다. 범위는 **PC 한 대·사용자 한 명**입니다. 에이전트가 보낸 메시지는 작업 정보이며 사용자 승인으로 취급하지 않습니다.
 
@@ -89,7 +89,7 @@ Windows 실제 왕복·동시 수신·Lead 전환·ACK의 확인 범위와 남�
 
 ## 설치
 
-Python 3.10 이상과 표준 라이브러리를 사용합니다. 선택한 앱을 설치하고 로그인해야 합니다.
+Python 3.11 이상과 표준 라이브러리를 사용합니다. 선택한 앱을 설치하고 로그인해야 합니다.
 
 PyPI에 배포된 패키지는 `pip install handback`로 설치합니다. 소스 체크아웃에서는 `pip install .`을 사용합니다. 도구별 격리 환경을 원하면 `uv tool install handback` 또는 `pipx install handback`도 사용할 수 있으며, 소스 설치는 패키지 이름 대신 `.`을 지정합니다. uv는 필요한 Python도 준비할 수 있습니다. 설치 후에는 `handback` 명령을 사용합니다. 선택적인 `handback-dashboard` GUI에는 Tk를 포함한 Python이 필요합니다.
 

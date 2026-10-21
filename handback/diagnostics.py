@@ -273,8 +273,8 @@ def checklist(state, resolved, agents):
     # Builtin defaults select a Codex worker. An invalid topology cannot
     # reliably establish optional dependencies, so keep the required checks.
     codex_required = bool(error) or lead == "codex" or "codex" in values["workers"]
-    add("Python", "OK" if sys.version_info >= (3, 10) else "FAIL", platform.python_version(),
-        "Install Python 3.10 or newer.")
+    add("Python", "OK" if sys.version_info >= (3, 11) else "FAIL", platform.python_version(),
+        "Install Python 3.11 or newer.")
     parent = state.home
     while not parent.exists() and parent != parent.parent:
         parent = parent.parent

@@ -7,7 +7,7 @@ name = "handback"
 dynamic = ["version"]
 description = "Local, durable relay between coding-agent apps"
 readme = "README.en.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = {file = "LICENSE"}
 dependencies = []
 

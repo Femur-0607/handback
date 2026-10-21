@@ -1,0 +1,21 @@
+version: 2
+
+# The relay has no runtime dependencies; only CI actions and the build tool are tracked.
+# cooldown waits until a release is two weeks old before proposing it.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    groups:
+      actions:
+        patterns: ['*']
+
+  - package-ecosystem: pip
+    directory: /packaging
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
