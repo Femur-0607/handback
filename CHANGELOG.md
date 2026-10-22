@@ -5,6 +5,22 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-22
+
+### Fixed
+
+- 업그레이드 in the dashboard menu did nothing after "예" in the installed
+  build: it starts without an explicit state home, and building the download
+  folder from it raised inside the menu callback, where the error was never
+  shown. It now downloads into the default state home. Builds up to 0.5.1
+  have this bug, so upgrade them once by running the new setup.exe.
+
+### Changed
+
+- The dashboard menu has one update item: **최신 버전 확인 (현재 …)** until a
+  newer release is known, then **업그레이드 (current → new)** in its place,
+  instead of a separate 업그레이드 item at the top of the menu.
+
 ## [0.5.1] - 2026-10-22
 
 ### Fixed
@@ -475,6 +491,7 @@ The Windows installer for 0.3.8 was not published; 0.3.9 ships the same app.
 - The release version check imports the checkout when run from a temporary
   directory.
 
+[0.5.2]: https://github.com/Femur-0607/handback/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/Femur-0607/handback/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Femur-0607/handback/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Femur-0607/handback/compare/v0.3.9...v0.4.0
