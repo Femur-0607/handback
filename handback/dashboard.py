@@ -70,7 +70,7 @@ DEFAULT_PREFS = {"max_rows": 3, "order": [], "hidden": [], "mode": "taskbar",
                  "ack_on_click": True, "auto_hide": False, "highlight_unread": True,
                  "animate_unread": True, "animate_running": True,
                  # Appearance: window opacity (%), colour theme, grab bar on the floating widget.
-                 "opacity": 100, "theme": "dark", "drag_handle": True}
+                 "opacity": 80, "theme": "dark", "drag_handle": True}
 # Attention effects: one shared animation tick, a short pulse for new results.
 ANIMATION_MS = 60
 PULSE_SECONDS = 6.0
@@ -1718,8 +1718,8 @@ class Strip:
         THEMES["dark"][key] for key in THEME_KEYS)
     COLORS = AGENT_COLORS_DARK
     theme = "dark"
-    _opacity = 100
-    _handle = None  # grab bar of the floating widget, when shown
+    _opacity = DEFAULT_PREFS["opacity"]
+    _handle = None  # grab bar above the compact rows, when shown
     _handle_press = False
     # Notification-area state (class defaults keep partially built test instances valid).
     tray = None
@@ -2318,10 +2318,12 @@ class Strip:
         border = 0 if self.docked else max(1, round(dpi / 96))
         # Negative Tk font sizes are pixels; derive them from this window's actual DPI.
         pixels = max(6, round(9 * dpi / 72))
+        # Grab bar above the rows; a little shorter in the taskbar, where height is tight.
+        handle = dock_motion.scaled(6 if self.docked else 8, dpi) if prefs["drag_handle"] else 0
         available = None
         if self.docked and info and info["edge"] in (1, 3) and not info["auto_hide"]:
             _, dock_top, _, dock_bottom = compact_taskbar_rect(info, dpi)
-            available = dock_bottom - dock_top
+            available = dock_bottom - dock_top - handle
         font_key = (dpi, available)
         if font_key != self._compact_font_key:
             self.compact_metrics.configure(size=-pixels)
@@ -2334,7 +2336,6 @@ class Strip:
         measure = self.compact_metrics.measure
         name_width = measure("프로젝트 이름 프로젝트")
         lines = compact_lines(rows, prefs, name_width, measure)
-        handle = prefs["drag_handle"] and not self.docked
         view_key = (self.docked, dpi, self.compact_metrics.cget("size"), tuple(palette.items()),
                     self._effects.get("highlight_unread"), handle, self._opacity,
                     tuple((line["row"]["root"], line["lead"], line["name"], line["running"], line["unread"],
@@ -2415,7 +2416,7 @@ class Strip:
         row = next((row for row in self._rows if row["root"] == project), None)
         return conversation_targets(row, kind) if row is not None else []
 
-    def _render_compact_items(self, lines, palette, padding, gap, border, handle=False, dpi=96):
+    def _render_compact_items(self, lines, palette, padding, gap, border, handle=0, dpi=96):
         with self.tooltip.preserve_on_rebuild(self.frame):
             bg = palette["bg"]
             # The floating border is the root showing through: tint it while results wait.
@@ -2497,15 +2498,14 @@ class Strip:
                     self.tooltip.bind(dot, "리드 · " + agent_name(line["lead"]),
                                       key=("compact-lead", line["row"]["root"]))
             if handle:
-                self._build_handle(palette, dpi)
+                self._build_handle(palette, handle, dpi)
 
-    def _build_handle(self, palette, dpi):
+    def _build_handle(self, palette, height, dpi):
         """Grab bar above the rows: drags like the rest, but a click opens nothing.
 
         Created last and packed first, so row child indices stay stable.
         """
-        bar = self._handle = self.tk.Frame(self.frame, bg=palette["bg"], cursor="fleur",
-                                           height=dock_motion.scaled(8, dpi))
+        bar = self._handle = self.tk.Frame(self.frame, bg=palette["bg"], cursor="fleur", height=height)
         bar.pack(fill="x", before=self.frame.winfo_children()[0])
         grip = self.tk.Frame(bar, bg=palette["dim"], cursor="fleur", width=dock_motion.scaled(28, dpi),
                              height=dock_motion.scaled(3, dpi))

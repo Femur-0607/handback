@@ -18,7 +18,10 @@ class AppearancePureTests(unittest.TestCase):
 
     def test_appearance_prefs_default_round_trip_and_reject_bad_values(self):
         prefs = dashboard.load_prefs(self.home)
-        self.assertEqual((prefs["opacity"], prefs["theme"], prefs["drag_handle"]), (100, "dark", True))
+        self.assertEqual((prefs["opacity"], prefs["theme"], prefs["drag_handle"]), (80, "dark", True))
+        # A saved choice wins over the default, including the old 100% default.
+        dashboard.save_prefs({"opacity": 100}, self.home)
+        self.assertEqual(dashboard.load_prefs(self.home)["opacity"], 100)
         dashboard.save_prefs({"opacity": 70, "theme": "system", "drag_handle": False}, self.home)
         prefs = dashboard.load_prefs(self.home)
         self.assertEqual((prefs["opacity"], prefs["theme"], prefs["drag_handle"]), (70, "system", False))
@@ -114,15 +117,48 @@ class AppearanceGuiTests(compact.CompactGuiTests):
         self.assertEqual((prefs["compact_x"], prefs["compact_y"]), (280, 340))
         self.assertIsNone(self.strip.panel)
 
-    def test_grab_bar_follows_option_and_never_shows_while_docked(self):
+    def test_grab_bar_follows_option_floating_and_docked(self):
         self.render(drag_handle=False)
         self.assertIsNone(self.strip._handle)
+        self.render()
+        floating = self.strip._handle.winfo_reqheight()
         with patch.object(dashboard, "taskbar_colors", return_value=[(32, 32, 32)]):
+            self.render(docked=True, drag_handle=False)
+            self.assertIsNone(self.strip._handle)
+            free = self.strip.compact_metrics.cget("size")
             self.render(docked=True)
         self.assertTrue(self.strip.docked)
-        self.assertIsNone(self.strip._handle)
-        self.render()
-        self.assertIsNotNone(self.strip._handle)
+        handle = self.strip._handle
+        self.assertIsNotNone(handle)
+        self.assertIs(self.strip.frame.pack_slaves()[0], handle)
+        self.assertEqual(handle.cget("bg"), self.strip._compact_palette["bg"])
+        self.assertLess(handle.winfo_reqheight(), floating)
+        # The bar and both lines still fit the taskbar height.
+        self.assertGreaterEqual(abs(free), abs(self.strip.compact_metrics.cget("size")))
+        self.root.update_idletasks()
+        self.assertLessEqual(self.strip.frame.winfo_reqheight(), self.root.winfo_height())
+
+    def test_docked_grab_bar_click_opens_nothing_and_pulling_it_undocks(self):
+        with patch.object(dashboard, "taskbar_colors", return_value=[(32, 32, 32)]):
+            self.render(docked=True)
+            handle = self.strip._handle
+            start = [handle.winfo_rootx() + 4, handle.winfo_rooty() + 2]
+            with patch.object(self.strip, "_toggle_panel") as toggle:
+                self.cursor[:] = start
+                handle.event_generate("<Button-1>", x=4, y=2)
+                handle.event_generate("<ButtonRelease-1>", x=4, y=2)
+                toggle.assert_not_called()
+            self.cursor[:] = start
+            handle.event_generate("<Button-1>", x=4, y=2)
+            self.cursor[:] = [start[0] - 100, start[1] - 300]
+            handle.event_generate("<B1-Motion>", x=4, y=2)
+            self.root.update_idletasks()
+            self.strip._flush_drag()
+            self.root.event_generate("<ButtonRelease-1>", x=4, y=2)
+            self.root.update_idletasks()
+            self.strip._stop_settle()
+        self.assertFalse(self.strip.docked)
+        self.assertFalse(dashboard.load_prefs(self.home)["docked"])
 
     def test_opacity_applies_to_floating_widget_panels_but_not_docked_widget(self):
         self.assertEqual(self.alpha_calls(opacity=80), [0.8])
@@ -191,7 +227,7 @@ class AppearanceGuiTests(compact.CompactGuiTests):
         self.strip._options()
         window = self.strip._options_window
         self.assertEqual({key: window.variables[key].get() for key in ("theme", "opacity", "drag_handle")},
-                         {"theme": "dark", "opacity": 100, "drag_handle": True})
+                         {"theme": "dark", "opacity": 80, "drag_handle": True})
         next(widget for widget in self.widgets(window)
              if isinstance(widget, self.tk.Radiobutton) and widget.cget("text") == "70%").invoke()
         next(widget for widget in self.widgets(window)

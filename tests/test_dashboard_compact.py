@@ -509,6 +509,8 @@ class CompactGuiTests(DashboardMenuTests):
                 self.assertEqual(self.root.cget("bg"), "#ececec")
                 positions = []
                 for row in self.strip.frame.winfo_children():
+                    if row is self.strip._handle:
+                        continue
                     name = row.winfo_children()[0]
                     self.assertEqual(name.cget("fg"), "#202020")
                     self.assertEqual(name.cget("bg"), "#ececec")
