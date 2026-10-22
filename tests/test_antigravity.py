@@ -348,10 +348,11 @@ class SidecarTests(Base):
 
     def test_runs_once_with_executable_not_bat(self):
         folder = self.job(["send-message", "c", "line1\nline2 \"q\" %x% & y"])
-        calls = []
+        calls, projects = [], []
 
-        def fake_run(command, **kwargs):
+        def fake_run(command, env=None, **kwargs):
             calls.append(command)
+            projects.append(env["ANTIGRAVITY_PROJECT_ID"])
             return subprocess.CompletedProcess(command, 0, '{"ok":1}', "")
 
         with patch.dict(os.environ, {"ANTIGRAVITY_AGENTAPI_EXE": "C:/x/language_server.exe",
@@ -362,6 +363,16 @@ class SidecarTests(Base):
         self.assertEqual(calls, [["C:/x/language_server.exe", "agentapi", "send-message", "c",
                                   "line1\nline2 \"q\" %x% & y"]])
         self.assertEqual(json.loads((folder / "result.json").read_text(encoding="utf-8"))["exit"], 0)
+        self.assertEqual(projects, ["proj-1"])
+
+    def test_agentapi_is_pointed_at_the_registered_project_from_the_copy(self):
+        # Antigravity 2.23+ runs the sidecar in its copy; agentapi still gets the registered project (issue #5).
+        self.register_project("managed", name=agy.SIDECAR_PREFIX + "0123456789ab")
+        folder = self.job(["new-conversation", "x"])
+        with patch.dict(os.environ, {"ANTIGRAVITY_AGENTAPI_EXE": "a", "ANTIGRAVITY_PROJECT_ID": "managed"}), \
+                patch.object(agy.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "{}", "")) as run:
+            agy.run_sidecar_job(folder / "job.json")
+        self.assertEqual(run.call_args.kwargs["env"]["ANTIGRAVITY_PROJECT_ID"], "proj-1")
 
     def test_project_mismatch_is_recorded_not_sent(self):
         folder = self.job(["send-message", "c", "x"])
@@ -404,10 +415,12 @@ class DeliveryTests(Base):
         self.state = ProjectState(self.root)
         self.request = {"id": "ab" * 16, "root": str(self.root), "marker": "[relay abababab]"}
 
-    def fake_app(self, stdout, before_result=None, managed=False, agentapi=True):
+    def fake_app(self, stdout, before_result=None, managed=False, agentapi=True, place=None):
         """Stand-in for Antigravity: run an enabled relay sidecar's job once.
 
-        managed=True mimics 2.23+, which runs the sidecar in a copy of the project named after it."""
+        managed=True mimics 2.23+, which runs the sidecar in a copy of the project named after it.
+        place lists the new conversation like the app does: "env" under the project agentapi was
+        given, "sidecar" under the project the sidecar runs in; None leaves the list unreadable."""
         def app():
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
@@ -423,10 +436,20 @@ class DeliveryTests(Base):
                             project = "managed-" + name
                             self.register_project(project, name=name)
                         exe = {"ANTIGRAVITY_AGENTAPI_EXE": "agentapi.exe"} if agentapi else {}
+
+                        def agentapi_call(command, env=None, sidecar_project=project, **kwargs):
+                            if place:
+                                self.conversations()
+                                owner = env["ANTIGRAVITY_PROJECT_ID"] if place == "env" else sidecar_project
+                                database = self.gemini / "antigravity" / "conversation_summaries.db"
+                                with contextlib.closing(sqlite3.connect(database)) as connection, connection:
+                                    connection.execute("INSERT INTO conversation_summaries VALUES (?, ?)",
+                                                       (CONVERSATION, owner))
+                            return subprocess.CompletedProcess([], 0, stdout, "")
+
                         with patch.dict(os.environ, {"ANTIGRAVITY_PROJECT_ID": project, **exe}), \
                                 patch.object(agy.shutil, "which", return_value=None), \
-                                patch.object(agy.subprocess, "run",
-                                             return_value=subprocess.CompletedProcess([], 0, stdout, "")):
+                                patch.object(agy.subprocess, "run", side_effect=agentapi_call):
                             agy.run_sidecar_job(job)
                         return
                 time.sleep(0.05)
@@ -473,9 +496,7 @@ class DeliveryTests(Base):
         adapter = agy.AntigravityAdapter(delivery_timeout=10, gemini=self.gemini)
         delivery = adapter.deliver("pending-x", {"body": "[relay abababab] hi"}, state=self.state,
                                    request=self.request, title="My task")
-        self.assertEqual(delivery, {"accepted": True, "returncode": 0, "thread": CONVERSATION,
-                                    "project": {"name": "handback-p-abababababab",
-                                                "copy_of": "p"}})
+        self.assertEqual(delivery, {"accepted": True, "returncode": 0, "thread": CONVERSATION})
         job = json.loads((self.state.path / "antigravity" / self.request["id"] / "job.json").read_text(encoding="utf-8"))
         self.assertEqual(job["args"][:3], ["new-conversation", "--title=My task", "--model=flash"])
         value = json.loads(self.config.read_text(encoding="utf-8"))
@@ -496,19 +517,35 @@ class DeliveryTests(Base):
         self.assertEqual(self.collector(self.request["marker"]).poll()["text"], "RELAY_OK")
         self.assertEqual(len(agy._observations(self.relay, CONVERSATION)), 1)
 
-    def test_sidecar_in_managed_project_delivers_and_keeps_that_project(self):
-        # The new conversation belongs to the managed project; deleting it hides the conversation in the app.
-        self.fake_app(json.dumps({"response": {"newConversation": {"conversationId": CONVERSATION}}}), managed=True)
+    def deliver_new(self, **app):
+        self.fake_app(json.dumps({"response": {"newConversation": {"conversationId": CONVERSATION}}}), **app)
         adapter = agy.AntigravityAdapter(delivery_timeout=10, gemini=self.gemini)
         delivery = adapter.deliver("pending-x", {"body": "[relay abababab] hi"}, state=self.state,
                                    request=self.request)
+        projects = {p.stem: json.loads(p.read_text(encoding="utf-8"))["name"]
+                    for p in (self.gemini / "config" / "projects").glob("*.json")}
+        return delivery, projects
+
+    def test_new_conversation_lands_in_the_registered_project_and_the_copy_goes(self):
+        # Like Codex, the conversation is listed under the registered project, not the app's copy (issue #5).
+        delivery, projects = self.deliver_new(managed=True, place="env")
+        self.assertEqual(delivery, {"accepted": True, "returncode": 0, "thread": CONVERSATION})
+        self.assertEqual(agy._conversation_project(self.gemini, CONVERSATION), "proj-1")
+        self.assertEqual(projects, {"proj-1": "p"})
+        self.assertTrue(any(path.name.startswith("managed-") for path in
+                            (self.state.home / "antigravity" / "backups").iterdir()))
+
+    def test_conversation_kept_in_the_copy_keeps_that_project_and_names_it(self):
+        # Deleting the project a conversation belongs to hides that conversation in the app.
+        delivery, projects = self.deliver_new(managed=True, place="sidecar")
         self.assertEqual(delivery, {"accepted": True, "returncode": 0, "thread": CONVERSATION,
-                                    "project": {"name": "handback-p-abababababab",
-                                                "copy_of": "p"}})
-        projects = sorted(p.stem for p in (self.gemini / "config" / "projects").glob("*.json"))
-        self.assertEqual(len(projects), 2)
-        self.assertIn("proj-1", projects)
-        self.assertTrue(any(name.startswith("managed-") for name in projects))
+                                    "project": {"name": "handback-p-abababababab", "copy_of": "p"}})
+        self.assertEqual(sorted(projects.values()), ["handback-p-abababababab", "p"])
+
+    def test_copy_stays_when_the_conversation_list_is_unreadable(self):
+        delivery, projects = self.deliver_new(managed=True)
+        self.assertNotIn("project", delivery)
+        self.assertEqual(sorted(projects.values()), ["handback-p-abababababab", "p"])
 
     def test_known_conversation_delivery_names_no_project(self):
         self.fake_app('{"ok": true}')

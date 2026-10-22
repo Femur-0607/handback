@@ -518,6 +518,38 @@ def _conversation_projects(home):
     return {str(row[0]) for row in rows if row[0]}
 
 
+def _conversation_project(home, conversation):
+    """Project ID one Antigravity conversation belongs to; None when unknown."""
+    database = Path(home) / "antigravity" / "conversation_summaries.db"
+    if not database.is_file():
+        return None
+    import sqlite3
+    try:
+        connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=5)
+        try:
+            row = connection.execute("SELECT project_id FROM conversation_summaries WHERE conversation_id = ?",
+                                     (conversation,)).fetchone()
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        return None
+    return str(row[0]) if row and row[0] else None
+
+
+def _remove_sidecar_copy(home, sidecar, root, backups):
+    """Remove the project the app made for this sidecar once no conversation uses it (issue #5)."""
+    in_use = _conversation_projects(home)
+    if in_use is None:
+        return []
+    copies = [path for path, project in _projects(home)
+              if project.get("name") == sidecar and _sidecar_managed(project)
+              and set(_project_roots(project)) == {_norm(root)} and path.stem not in in_use]
+    try:
+        return _remove_project_files(copies, backups)
+    except OSError:
+        return []  # cleanup-sidecars removes it later
+
+
 def run_sidecar_job(job_path):
     """Body of the relay sidecar: one agentapi call, recorded, never repeated."""
     job_path = Path(job_path)
@@ -540,8 +572,11 @@ def run_sidecar_job(job_path):
         command = [executable] + ([] if Path(executable).stem.lower() == "agentapi" else ["agentapi"]) + job["args"]
         # From here on agentapi may have received the message; before it, nothing was sent.
         result["invoked"] = True
+        # Antigravity 2.23+ runs the sidecar in a copy of the project it makes for it; agentapi puts a new
+        # conversation in the project this names, so name the registered one, as Codex would (issue #5).
+        env = {**os.environ, "ANTIGRAVITY_PROJECT_ID": job["project_id"]}
         completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                   timeout=120, **_options())
+                                   timeout=120, env=env, **_options())
         result.update(exit=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
     except Exception as error:
         result.update(exit=None, error=f"{type(error).__name__}: {error}")
@@ -740,6 +775,7 @@ class AntigravityAdapter(BaseAdapter):
             value.setdefault("sidecars", {})[sidecar] = {"enabled": True, "projectId": project_id}
 
         settled = False
+        drop_copy = False
         try:
             if not thread.startswith("pending-"):
                 # A known conversation can stop before agentapi returns too.
@@ -767,14 +803,19 @@ class AntigravityAdapter(BaseAdapter):
                         "classification": self.classify_error(result.get("stderr") or result.get("error") or "")}
             delivery = {"accepted": True, "returncode": 0}
             if thread.startswith("pending-"):
-                # The app shows a new conversation under this copy of the registered project. A later
-                # send joins the first delivery's copy, so only creation names one.
-                delivery["project"] = {"name": sidecar, "copy_of": registered}
                 try:
                     conversation = json.loads(result["stdout"])["response"]["newConversation"]["conversationId"]
                 except (KeyError, TypeError, ValueError) as error:
                     raise AdapterError("agentapi did not return a conversation id") from error
                 delivery["thread"] = conversation
+                placed = _conversation_project(self.gemini, conversation)
+                # Drop the sidecar's project copy only once the conversation is known to be elsewhere.
+                drop_copy = placed == project_id
+                if placed and placed != project_id:
+                    # The app kept it in another project (e.g. its copy); name it so the user can find it.
+                    delivery["project"] = {"name": project_name(placed, self.gemini) or sidecar, "copy_of": registered}
+            else:
+                drop_copy = True  # an existing conversation stays where it is
             # Open the spool so the relay hook records observations for this conversation.
             observe_lead(state.home, delivery.get("thread") or thread)
             return delivery
@@ -789,8 +830,9 @@ class AntigravityAdapter(BaseAdapter):
                     entry["enabled"] = False  # keep for diagnosis when the outcome is unknown
             update_user_json(config, settle, backups)
             if settled:
-                # The project Antigravity 2.23+ made for this sidecar stays: the new conversation lives in it.
                 shutil.rmtree(sidecar_dir, ignore_errors=True)
+            if drop_copy:
+                _remove_sidecar_copy(self.gemini, sidecar, root, backups)
 
     def deliver_to_lead(self, thread, text, state=None):
         if state is None:
