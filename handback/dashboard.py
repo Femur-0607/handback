@@ -34,6 +34,21 @@ AGENT_NAME = {"claude": "Claude", "codex": "Codex", "antigravity": "Antigravity"
 # widget, dark taskbar) and darker variants for light docked taskbars.
 AGENT_COLORS_DARK = {"claude": "#d97757", "codex": "#9fb3c8", "antigravity": "#5b9bf8"}
 AGENT_COLORS_LIGHT = {"claude": "#b45309", "codex": "#4b5f73", "antigravity": "#1d4ed8"}
+# Window themes for every dashboard surface; a docked widget follows the
+# sampled taskbar instead (compact_palette). Each value is unique within its
+# theme so open windows can be recoloured by mapping old colours to new ones.
+THEMES = {
+    "dark": {"bg": "#1f1f1f", "fg": "#e6e6e6", "dim": "#8a8a8a", "border": "#6a6a70",
+             "green": "#5fd38a", "yellow": "#f2c94c", "red": "#f28b82", "surface": "#2b2b2b",
+             "hover": "#3a3a3a", "disabled": "#6b6b6b", "field": "#555555", "agents": AGENT_COLORS_DARK},
+    "light": {"bg": "#f3f3f3", "fg": "#202020", "dim": "#595959", "border": "#9a9aa2",
+              "green": "#126b35", "yellow": "#805000", "red": "#b3261e", "surface": "#ffffff",
+              "hover": "#e1e1e1", "disabled": "#a6a6a6", "field": "#b8b8b8", "agents": AGENT_COLORS_LIGHT},
+}
+# Theme key -> Strip attribute (BG, FG, …), in Strip's order.
+THEME_KEYS = ("bg", "fg", "dim", "border", "green", "yellow", "red", "surface", "hover", "disabled", "field")
+THEME_CHOICES = ("dark", "light", "system")
+OPACITY_CHOICES = (100, 90, 80, 70, 60)
 AGENT_DOT = "●"
 REFRESH_MS = 3000
 # Cheap native checks; a short tick keeps full-screen hiding prompt.
@@ -53,7 +68,9 @@ DEFAULT_PREFS = {"max_rows": 3, "order": [], "hidden": [], "mode": "taskbar",
                  "docked": False, "update_check": True,
                  # Options window: ✉ click behaviour, idle hiding, attention effects.
                  "ack_on_click": True, "auto_hide": False, "highlight_unread": True,
-                 "animate_unread": True, "animate_running": True}
+                 "animate_unread": True, "animate_running": True,
+                 # Appearance: window opacity (%), colour theme, grab bar on the floating widget.
+                 "opacity": 100, "theme": "dark", "drag_handle": True}
 # Attention effects: one shared animation tick, a short pulse for new results.
 ANIMATION_MS = 60
 PULSE_SECONDS = 6.0
@@ -437,10 +454,57 @@ def load_prefs(home=None):
     if type(stored.get("docked")) is bool:
         prefs["docked"] = stored["docked"]
     for key in ("update_check", "ack_on_click", "auto_hide", "highlight_unread",
-                "animate_unread", "animate_running"):
+                "animate_unread", "animate_running", "drag_handle"):
         if type(stored.get(key)) is bool:
             prefs[key] = stored[key]
+    if type(stored.get("opacity")) is int and stored["opacity"] in OPACITY_CHOICES:
+        prefs["opacity"] = stored["opacity"]
+    if stored.get("theme") in THEME_CHOICES:
+        prefs["theme"] = stored["theme"]
     return prefs
+
+
+def system_prefers_light():
+    """Windows app mode (Settings > Personalization > Colors); dark when unknown."""
+    if sys.platform != "win32":
+        return False
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+            return winreg.QueryValueEx(key, "AppsUseLightTheme")[0] == 1
+    except OSError:
+        return False
+
+
+def resolve_theme(choice):
+    """The concrete theme ("dark"/"light") for a stored theme choice."""
+    if choice == "system":
+        return "light" if system_prefers_light() else "dark"
+    return choice if choice in THEMES else "dark"
+
+
+_COLOR_OPTIONS = ("background", "foreground", "activebackground", "activeforeground", "selectcolor",
+                  "highlightbackground", "highlightcolor", "insertbackground")
+
+
+def recolor(widget, mapping):
+    """Swap theme colours in place across a widget tree, Text tags included."""
+    import tkinter
+    for option in _COLOR_OPTIONS:
+        try:
+            value = str(widget.cget(option)).lower()
+        except tkinter.TclError:
+            continue  # this widget class has no such option
+        if value in mapping:
+            widget.configure({option: mapping[value]})
+    if isinstance(widget, tkinter.Text):
+        for tag in widget.tag_names():
+            value = str(widget.tag_cget(tag, "foreground")).lower()
+            if value in mapping:
+                widget.tag_configure(tag, foreground=mapping[value])
+    for child in widget.winfo_children():
+        recolor(child, mapping)
 
 
 def blend(start, end, amount):
@@ -604,8 +668,8 @@ class DarkTooltip:
         window.withdraw()
         window.overrideredirect(True)
         window.attributes("-topmost", True)
-        window.configure(bg=DarkMenu.HOVER)
-        strip.tk.Label(window, text=text, bg=DarkMenu.BG, fg=strip.FG,
+        window.configure(bg=strip.HOVER)
+        strip.tk.Label(window, text=text, bg=strip.SURFACE, fg=strip.FG,
                        font=strip.font, wraplength=520, justify="left",
                        padx=8, pady=5).pack(padx=1, pady=1)
         window.update_idletasks()
@@ -1235,8 +1299,8 @@ def compact_palette(samples=()):
     else:
         rgb = (28, 28, 28)
     light = _luminance(rgb) > .179
-    palette = ({"fg": "#202020", "dim": "#595959", "green": "#126b35", "yellow": "#805000"}
-               if light else {"fg": "#e6e6e6", "dim": "#8a8a8a", "green": "#5fd38a", "yellow": "#f2c94c"})
+    theme = THEMES["light" if light else "dark"]
+    palette = {key: theme[key] for key in ("fg", "dim", "green", "yellow")}
     background = _luminance(rgb)
     for key, color in palette.items():
         foreground = _luminance(tuple(int(color[i:i+2], 16) for i in (1, 3, 5)))
@@ -1377,8 +1441,8 @@ def _monitor_area(widget, x, y, full=False):
             widget.winfo_vrooty() + widget.winfo_vrootheight())
 
 
-def _dark_titlebar(window):
-    """Ask supported Windows versions to use a dark native title bar."""
+def _dark_titlebar(window, dark=True):
+    """Ask supported Windows versions for a dark (or, with dark=False, light) title bar."""
     if sys.platform != "win32":
         return
     import ctypes
@@ -1391,7 +1455,7 @@ def _dark_titlebar(window):
         hwnd = user.GetParent(window.winfo_id())
         setter = ctypes.windll.dwmapi.DwmSetWindowAttribute
         setter.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
-        enabled = wintypes.BOOL(True)
+        enabled = wintypes.BOOL(dark)
         setter(hwnd, 20, ctypes.byref(enabled), ctypes.sizeof(enabled))
     except (AttributeError, OSError):
         pass  # The themed client area also works without DWM support.
@@ -1399,11 +1463,13 @@ def _dark_titlebar(window):
 
 class DarkMenu:
     """One owned popup tree. All event callbacks belong to disposable widgets."""
-    BG, FG, HOVER, DISABLED = "#2b2b2b", "#e6e6e6", "#3a3a3a", "#6b6b6b"
+    # Dark defaults; each menu takes the strip's current theme in __init__.
+    BG, FG, HOVER, DISABLED = (THEMES["dark"][key] for key in ("surface", "fg", "hover", "disabled"))
 
     def __init__(self, strip, items, area, parent=None):
         tk = strip.tk
         self.strip, self.items, self.area, self.parent = strip, items, area, parent
+        self.BG, self.FG, self.HOVER, self.DISABLED = strip.SURFACE, strip.FG, strip.HOVER, strip.DISABLED
         self.child = None
         self.active = None
         self.pending = None
@@ -1591,18 +1657,12 @@ class PanelViewport:
         self.canvas = tk.Canvas(self.container, bg=strip.BG, bd=0,
                                 highlightthickness=0, takefocus=0, yscrollincrement=1)
         from tkinter import ttk
-        style = ttk.Style(parent)
-        if style.theme_use() != "clam":
-            style.theme_use("clam")
-        style.configure("Dark.Vertical.TScrollbar", background=DarkMenu.BG, troughcolor=strip.BG,
-                        bordercolor=strip.BG, arrowcolor=strip.FG, lightcolor=DarkMenu.BG,
-                        darkcolor=DarkMenu.BG)
-        style.map("Dark.Vertical.TScrollbar", background=[("active", DarkMenu.HOVER)])
+        strip._style_scrollbar(parent)
         self.scrollbar = ttk.Scrollbar(self.container, orient="vertical", command=self.scroll,
                                        takefocus=0, style="Dark.Vertical.TScrollbar")
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
         self.content = tk.Frame(self.canvas, bg=strip.BG, padx=10, pady=6,
-                                highlightthickness=1, highlightbackground=DarkMenu.HOVER)
+                                highlightthickness=1, highlightbackground=strip.HOVER)
         self._item = self.canvas.create_window(0, 0, window=self.content, anchor="nw")
         self.canvas.pack(side="left", fill="both", expand=True)
         # Scrollbar gestures must not reach Strip's top-level drag bindings.
@@ -1653,10 +1713,14 @@ class PanelViewport:
 
 
 class Strip:
-    BG, FG, DIM = "#1f1f1f", "#e6e6e6", "#8a8a8a"
-    BORDER = "#6a6a70"
+    # Dark theme colours; _set_theme replaces them per instance.
+    BG, FG, DIM, BORDER, GREEN, YELLOW, RED, SURFACE, HOVER, DISABLED, FIELD = (
+        THEMES["dark"][key] for key in THEME_KEYS)
     COLORS = AGENT_COLORS_DARK
-    GREEN, YELLOW = "#5fd38a", "#f2c94c"
+    theme = "dark"
+    _opacity = 100
+    _handle = None  # grab bar of the floating widget, when shown
+    _handle_press = False
     # Notification-area state (class defaults keep partially built test instances valid).
     tray = None
     _tray_timer = None
@@ -1737,7 +1801,10 @@ class Strip:
         self._compact_palette = compact_palette()
         self._anim_labels = {}
         self._pulse_until = {}
-        self.mode = load_prefs(home)["mode"]
+        prefs = load_prefs(home)
+        self.mode = prefs["mode"]
+        self._set_theme(resolve_theme(prefs["theme"]))
+        self._opacity = prefs["opacity"]
         self.root = tk.Tk()
         self.root.withdraw()
         self.root.title("handback")
@@ -1759,7 +1826,7 @@ class Strip:
             self.root.iconphoto(True, *self.icons)
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
-        self.root.attributes("-alpha", 0.93)
+        self.root.attributes("-alpha", self._opacity / 100)
         self.root.configure(bg=self.BG)
         self.font = ("Segoe UI", 9)
         self.bold = ("Segoe UI Semibold", 9)
@@ -1771,7 +1838,7 @@ class Strip:
         self.row_height = max(22, self.metrics.metrics("linespace") + 6)
         self.tooltip = DarkTooltip(self)
         self.frame = tk.Frame(self.root, bg=self.BG, padx=10, pady=6,
-                              highlightthickness=1, highlightbackground=DarkMenu.HOVER)
+                              highlightthickness=1, highlightbackground=self.HOVER)
         self._root_frame = self.frame
         self.frame.pack()
         self.root.bind("<Destroy>", lambda event: self.tooltip.hide()
@@ -1788,6 +1855,48 @@ class Strip:
         self.root.bind("<Configure>", self._sync_window_corners, add="+")
         self._root_frame.bind("<Configure>", self._sync_window_corners, add="+")
         self.root.bind("<Map>", lambda event: self._sync_window_corners(event, force=True), add="+")
+
+    def _set_theme(self, name):
+        theme = THEMES[name]
+        self.theme = name
+        for key in THEME_KEYS:
+            setattr(self, key.upper(), theme[key])
+        self.COLORS = theme["agents"]
+
+    def _style_scrollbar(self, master):
+        from tkinter import ttk
+        style = ttk.Style(master)
+        if style.theme_use() != "clam":
+            style.theme_use("clam")
+        style.configure("Dark.Vertical.TScrollbar", background=self.SURFACE, troughcolor=self.BG,
+                        bordercolor=self.BG, arrowcolor=self.FG, lightcolor=self.SURFACE,
+                        darkcolor=self.SURFACE)
+        style.map("Dark.Vertical.TScrollbar", background=[("active", self.HOVER)])
+
+    def _apply_appearance(self, prefs):
+        """Follow the opacity and theme preferences; recolour open windows on a theme change."""
+        if prefs["opacity"] != self._opacity and self.panel is not None:
+            self.panel.attributes("-alpha", prefs["opacity"] / 100)
+        self._opacity = prefs["opacity"]
+        theme = resolve_theme(prefs["theme"])
+        if theme == self.theme:
+            return
+        old, new = THEMES[self.theme], THEMES[theme]
+        mapping = {old[key]: new[key] for key in THEME_KEYS}
+        mapping.update({old["agents"][agent]: new["agents"][agent] for agent in old["agents"]})
+        self._set_theme(theme)
+        self.tooltip.hide()
+        self._close_menu()
+        self._style_scrollbar(self.root)
+        recolor(self.root, mapping)
+        for window in self.root.winfo_children():
+            if isinstance(window, self.tk.Toplevel):
+                _dark_titlebar(window, theme == "dark")
+        # Rebuild whatever caches its look: the compact view, the panel rows.
+        self._compact_view_key = self._compact_style_key = None
+        for frame in (self.frame, self.panel_frame):
+            if frame is not None:
+                frame._panel_view_key = None
 
     def _corner_parameters(self):
         floating = self.mode == "taskbar" and not self.docked
@@ -2046,7 +2155,7 @@ class Strip:
             for target in targets:
                 target.configure(bg=color)
         for target in targets:
-            target.bind("<Enter>", lambda event: paint(DarkMenu.BG))
+            target.bind("<Enter>", lambda event: paint(self.SURFACE))
             target.bind("<Leave>", lambda event: paint(self.BG))
             if project:
                 target.bind("<Button-3>", lambda event: self._menu(event, project))
@@ -2058,6 +2167,7 @@ class Strip:
     def render(self, rows):
         self._rows = rows
         prefs = load_prefs(self.home)
+        self._apply_appearance(prefs)
         self._effects = {key: prefs[key] for key in
                          ("highlight_unread", "animate_unread", "animate_running")}
         self._note_new_results(rows)
@@ -2078,7 +2188,7 @@ class Strip:
                 self._fixed_viewport = PanelViewport(self, self.root)
             self._fixed_viewport.container.pack(fill="both", expand=True)
             self.frame = self._fixed_viewport.content
-            self.root.attributes("-alpha", 0.93)
+            self.root.attributes("-alpha", self._opacity / 100)
             self.root.configure(bg=self.BG)
             self.frame.configure(bg=self.BG, padx=10, pady=6, highlightthickness=1)
             self._render_panel(rows)
@@ -2224,8 +2334,9 @@ class Strip:
         measure = self.compact_metrics.measure
         name_width = measure("프로젝트 이름 프로젝트")
         lines = compact_lines(rows, prefs, name_width, measure)
+        handle = prefs["drag_handle"] and not self.docked
         view_key = (self.docked, dpi, self.compact_metrics.cget("size"), tuple(palette.items()),
-                    self._effects.get("highlight_unread"),
+                    self._effects.get("highlight_unread"), handle, self._opacity,
                     tuple((line["row"]["root"], line["lead"], line["name"], line["running"], line["unread"],
                            line["more"],
                            line["overflow_unread"],
@@ -2233,7 +2344,7 @@ class Strip:
                            bool(conversation_targets(line["row"], "running")),
                            bool(conversation_targets(line["row"], "unread"))) for line in lines))
         if view_key != self._compact_view_key:
-            self._render_compact_items(lines, palette, padding, gap, border)
+            self._render_compact_items(lines, palette, padding, gap, border, handle=handle, dpi=dpi)
             self.root.update_idletasks()
             self._compact_view_key = view_key
         width = max(self.frame.winfo_reqwidth(), name_width + sum(measure(text) for text in
@@ -2304,28 +2415,31 @@ class Strip:
         row = next((row for row in self._rows if row["root"] == project), None)
         return conversation_targets(row, kind) if row is not None else []
 
-    def _render_compact_items(self, lines, palette, padding, gap, border):
+    def _render_compact_items(self, lines, palette, padding, gap, border, handle=False, dpi=96):
         with self.tooltip.preserve_on_rebuild(self.frame):
             bg = palette["bg"]
             # The floating border is the root showing through: tint it while results wait.
             attention = bool(border and self._effects.get("highlight_unread")
                              and any(line["row"]["unread"] or line["overflow_unread"] for line in lines))
-            style_key = (self.docked, bg, padding, border, attention)
+            # Docked colours are sampled through the taskbar's own transparency: stay opaque.
+            alpha = 1.0 if self.docked else self._opacity / 100
+            style_key = (self.docked, bg, padding, border, attention, alpha, self.BORDER)
             if style_key != self._compact_style_key:
-                if self.root.attributes("-alpha") != 1.0:
-                    self.root.attributes("-alpha", 1.0)
+                if self.root.attributes("-alpha") != alpha:
+                    self.root.attributes("-alpha", alpha)
                 root_bg = (blend(self.BORDER, palette["yellow"], 0.7) if attention
                            else self.BORDER if border else bg)
                 if self.root.cget("bg") != root_bg:
                     self.root.configure(bg=root_bg)
                 self.frame.configure(bg=bg, padx=padding, pady=0 if self.docked else 2,
                                      highlightthickness=0,
-                                     highlightbackground=DarkMenu.HOVER)
+                                     highlightbackground=self.HOVER)
                 self.frame.pack_configure(fill="both", expand=True, padx=border, pady=border)
                 self._compact_style_key = style_key
             for child in self.frame.winfo_children():
                 child.destroy()
             self._purge_effects()
+            self._handle = None
             if not lines:
                 self.tk.Label(self.frame, text="handback · 대기", bg=bg, fg=palette["dim"],
                               font=self.compact_metrics, bd=0, padx=0).pack(anchor="w", expand=True)
@@ -2382,6 +2496,30 @@ class Strip:
                 if line["lead"]:
                     self.tooltip.bind(dot, "리드 · " + agent_name(line["lead"]),
                                       key=("compact-lead", line["row"]["root"]))
+            if handle:
+                self._build_handle(palette, dpi)
+
+    def _build_handle(self, palette, dpi):
+        """Grab bar above the rows: drags like the rest, but a click opens nothing.
+
+        Created last and packed first, so row child indices stay stable.
+        """
+        bar = self._handle = self.tk.Frame(self.frame, bg=palette["bg"], cursor="fleur",
+                                           height=dock_motion.scaled(8, dpi))
+        bar.pack(fill="x", before=self.frame.winfo_children()[0])
+        grip = self.tk.Frame(bar, bg=palette["dim"], cursor="fleur", width=dock_motion.scaled(28, dpi),
+                             height=dock_motion.scaled(3, dpi))
+        grip.place(relx=0.5, rely=0.5, anchor="center")
+        for target in (bar, grip):
+            target.bind("<ButtonPress-1>", self._press_handle)
+            target.bind("<Enter>", lambda event: grip.configure(bg=palette["fg"]))
+            target.bind("<Leave>", lambda event: grip.configure(bg=palette["dim"]))
+            target.bind("<Button-3>", lambda event: self._menu(event, None))
+
+    def _press_handle(self, event):
+        self._press(event)
+        self._handle_press = True
+        return "break"
 
     def _collapse_panel(self):
         if self._outside_timer is not None:
@@ -2407,6 +2545,7 @@ class Strip:
         panel.withdraw()
         panel.overrideredirect(True)
         panel.attributes("-topmost", True)
+        panel.attributes("-alpha", self._opacity / 100)
         panel.configure(bg=self.BG)
         self._panel_viewport = PanelViewport(self, panel)
         self._panel_viewport.container.pack(fill="both", expand=True)
@@ -2567,13 +2706,13 @@ class Strip:
                     for index, item in enumerate(data["unread"][:DETAIL_LIMIT]):
                         when = _local_time(item["created_utc"])
                         details.append((f"✉ {when} · {item['from']} · {item['body']}",
-                                        self.YELLOW if item["kind"] == "result" else "#f28b82", index,
+                                        self.YELLOW if item["kind"] == "result" else self.RED, index,
                                         ("unread", item.get("id"), item.get("sender"), item.get("created_utc"))))
                     if len(data["unread"]) > DETAIL_LIMIT:
                         details.append((f"… 전체 {len(data['unread'])}개 보기", self.DIM, 0, ("all",)))
                     box = self.tk.Frame(self.frame, bg=self.BG)
                     box.grid(row=line, column=0, sticky="ew", padx=(9, 0), pady=(0, 3))
-                    self.tk.Frame(box, bg=DarkMenu.HOVER, width=2).pack(side="left", fill="y", padx=(0, 8))
+                    self.tk.Frame(box, bg=self.HOVER, width=2).pack(side="left", fill="y", padx=(0, 8))
                     body = self.tk.Frame(box, bg=self.BG)
                     body.pack(side="left", fill="both", expand=True)
                     for text, color, index, identity in details or [("세부 항목 없음", self.DIM, None, ("empty",))]:
@@ -2704,12 +2843,12 @@ class Strip:
 
     def _button(self, parent, text, command):
         button = self.tk.Button(parent, text=text, command=command, font=self.font,
-                                bg="#2b2b2b", fg=self.FG, activebackground="#3a3a3a",
+                                bg=self.SURFACE, fg=self.FG, activebackground=self.HOVER,
                                 activeforeground=self.FG, relief="flat", bd=0, padx=14, pady=6,
-                                highlightthickness=1, highlightbackground="#3a3a3a",
+                                highlightthickness=1, highlightbackground=self.HOVER,
                                 highlightcolor=self.YELLOW, cursor="hand2")
-        button.bind("<Enter>", lambda event: button.configure(bg="#3a3a3a"))
-        button.bind("<Leave>", lambda event: button.configure(bg="#2b2b2b"))
+        button.bind("<Enter>", lambda event: button.configure(bg=self.HOVER))
+        button.bind("<Leave>", lambda event: button.configure(bg=self.SURFACE))
         button.bind("<Return>", lambda event: button.invoke())
         return button
 
@@ -2746,9 +2885,9 @@ class Strip:
         for row, (key, label) in enumerate(fields, 1):
             tk.Label(frame, text=label, bg=self.BG, fg=self.FG,
                      font=self.font).grid(row=row, column=0, sticky="w", padx=(0, 14), pady=6)
-            entry = tk.Entry(frame, width=34, bg="#2b2b2b", fg=self.FG,
+            entry = tk.Entry(frame, width=34, bg=self.SURFACE, fg=self.FG,
                              insertbackground=self.FG, relief="flat", font=self.font,
-                             highlightthickness=1, highlightbackground="#555555", highlightcolor=self.YELLOW)
+                             highlightthickness=1, highlightbackground=self.FIELD, highlightcolor=self.YELLOW)
             entry.grid(row=row, column=1, sticky="ew", pady=6, ipady=5)
             entry.insert(0, selected.get(key) or "")
             entries[key] = entry
@@ -2760,7 +2899,7 @@ class Strip:
         tk.Label(frame, text=notes, bg=self.BG, fg=self.DIM, font=self.font, wraplength=430,
                  justify="left").grid(row=len(fields) + 1, column=0, columnspan=2, sticky="w", pady=(12, 4))
         error_text = tk.StringVar(window)
-        tk.Label(frame, textvariable=error_text, bg=self.BG, fg="#f28b82", font=self.font,
+        tk.Label(frame, textvariable=error_text, bg=self.BG, fg=self.RED, font=self.font,
                  wraplength=430, justify="left").grid(row=len(fields) + 2, column=0, columnspan=2, sticky="w")
         footer = tk.Frame(frame, bg=self.BG)
         footer.grid(row=len(fields) + 3, column=0, columnspan=2, sticky="e", pady=(12, 0))
@@ -2800,7 +2939,7 @@ class Strip:
         window.bind("<Escape>", lambda event: window.destroy())
         window.bind("<Return>", lambda event: save())
         fit()
-        _dark_titlebar(window)
+        _dark_titlebar(window, self.theme == "dark")
         window.deiconify()
         entries["model"].focus_set()
 
@@ -2808,6 +2947,10 @@ class Strip:
     OPTION_SECTIONS = (
         ("표시", [("mode", "표시 방식", (("taskbar", "작게 보기"), ("panel", "펼쳐 보기"))),
                   ("max_rows", "펼친 패널 줄 수", ((2, "2줄"), (3, "3줄"), (0, "전부")))]),
+        ("모양", [("theme", "테마", (("dark", "다크"), ("light", "라이트"), ("system", "시스템"))),
+                ("opacity", "불투명도", tuple((value, f"{value}%") for value in OPACITY_CHOICES)),
+                ("drag_handle", "드래그 손잡이 표시",
+                 "떠 있는 작은 위젯 위쪽에 잡아 옮기는 막대를 둡니다. 막대는 눌러도 패널이 열리지 않습니다.")]),
         ("미확인 결과", [("ack_on_click", "✉ 클릭 시 확인 처리",
                           "대화를 열면서 ✉ 표시를 지웁니다. 끄면 우클릭 메뉴나 결과 창에서 정리합니다."),
                          ("highlight_unread", "강조색으로 표시",
@@ -2844,7 +2987,7 @@ class Strip:
         prefs = load_prefs(self.home)
         variables = {}
         common = dict(bg=self.BG, fg=self.FG, activebackground=self.BG, activeforeground=self.FG,
-                      selectcolor="#2b2b2b", font=self.font, bd=0, highlightthickness=0,
+                      selectcolor=self.SURFACE, font=self.font, bd=0, highlightthickness=0,
                       cursor="hand2", anchor="w")
 
         def apply(key):
@@ -2857,11 +3000,11 @@ class Strip:
         line = 0
         for heading, options in self.OPTION_SECTIONS:
             tk.Label(frame, text=heading, bg=self.BG, fg=self.YELLOW, font=("Segoe UI Semibold", 10),
-                     anchor="w").grid(row=line, column=0, columnspan=4, sticky="w", pady=(10 if line else 0, 4))
+                     anchor="w").grid(row=line, column=0, columnspan=6, sticky="w", pady=(10 if line else 0, 4))
             line += 1
             for key, label, extra in options:
                 if isinstance(extra, tuple):  # radio choices
-                    variables[key] = (tk.IntVar if key == "max_rows" else tk.StringVar)(
+                    variables[key] = (tk.IntVar if isinstance(extra[0][0], int) else tk.StringVar)(
                         window, value=prefs[key])
                     tk.Label(frame, text=label, bg=self.BG, fg=self.FG, font=self.font,
                              anchor="w").grid(row=line, column=0, sticky="w", padx=(8, 16), pady=2)
@@ -2874,15 +3017,15 @@ class Strip:
                 variables[key] = tk.BooleanVar(window, value=prefs[key])
                 box = tk.Checkbutton(frame, text=label, variable=variables[key],
                                      command=lambda key=key: apply(key), **common)
-                box.grid(row=line, column=0, columnspan=4, sticky="w", padx=(4, 0), pady=(2, 0))
+                box.grid(row=line, column=0, columnspan=6, sticky="w", padx=(4, 0), pady=(2, 0))
                 line += 1
                 if extra:
                     tk.Label(frame, text=extra, bg=self.BG, fg=self.DIM, font=self.font, wraplength=380,
-                             justify="left", anchor="w").grid(row=line, column=0, columnspan=4, sticky="w",
+                             justify="left", anchor="w").grid(row=line, column=0, columnspan=6, sticky="w",
                                                               padx=(30, 0), pady=(0, 4))
                     line += 1
         tk.Label(frame, text="프로젝트", bg=self.BG, fg=self.YELLOW, font=("Segoe UI Semibold", 10),
-                 anchor="w").grid(row=line, column=0, columnspan=4, sticky="w", pady=(10, 4))
+                 anchor="w").grid(row=line, column=0, columnspan=6, sticky="w", pady=(10, 4))
         line += 1
 
         def unhide(root, button):
@@ -2894,25 +3037,25 @@ class Strip:
                      font=self.font, anchor="w").grid(row=line, column=0, columnspan=2, sticky="w", padx=(8, 16))
             button = self._button(frame, "다시 표시", None)
             button.configure(command=lambda root=root, button=button: unhide(root, button))
-            button.grid(row=line, column=2, columnspan=2, sticky="e", pady=2)
+            button.grid(row=line, column=2, columnspan=4, sticky="e", pady=2)
             line += 1
         if not prefs["hidden"]:
             tk.Label(frame, text="숨긴 프로젝트 없음", bg=self.BG, fg=self.DIM, font=self.font,
-                     anchor="w").grid(row=line, column=0, columnspan=4, sticky="w", padx=(8, 0), pady=2)
+                     anchor="w").grid(row=line, column=0, columnspan=6, sticky="w", padx=(8, 0), pady=2)
             line += 1
         order = self._button(frame, "순서 초기화 (최근 활동순)", None)
         order.configure(command=lambda: (self._save({**load_prefs(self.home), "order": []}),
                                          order.configure(text="초기화됨", state="disabled")))
-        order.grid(row=line, column=0, columnspan=4, sticky="w", padx=(8, 0), pady=(4, 2))
+        order.grid(row=line, column=0, columnspan=6, sticky="w", padx=(8, 0), pady=(4, 2))
         line += 1
         if sys.platform == "win32":
             autostart = tk.BooleanVar(window, value=startup_shortcut().exists())
             tk.Checkbutton(frame, text="Windows 시작 시 실행", variable=autostart,
                            command=lambda: self._toggle_autostart(autostart.get()), **common).grid(
-                row=line, column=0, columnspan=4, sticky="w", padx=(4, 0), pady=(2, 0))
+                row=line, column=0, columnspan=6, sticky="w", padx=(4, 0), pady=(2, 0))
             line += 1
         footer = tk.Frame(frame, bg=self.BG)
-        footer.grid(row=line, column=0, columnspan=4, sticky="ew", pady=(14, 0))
+        footer.grid(row=line, column=0, columnspan=6, sticky="ew", pady=(14, 0))
         tk.Label(footer, text="바꾸는 즉시 적용됩니다", bg=self.BG, fg=self.DIM,
                  font=self.font).pack(side="left")
         self._button(footer, "닫기", window.destroy).pack(side="right")
@@ -2923,7 +3066,7 @@ class Strip:
         x, y, width, height = popup_position(x, y, window.winfo_reqwidth(), window.winfo_reqheight(),
                                            _monitor_area(self.root, x, y))
         window.geometry(f"{width}x{height}+{x}+{y}")
-        _dark_titlebar(window)
+        _dark_titlebar(window, self.theme == "dark")
         window.deiconify()
         window.focus_force()
 
@@ -2966,7 +3109,7 @@ class Strip:
         previous_grab = parent.grab_current()
         window.deiconify()
         window.wait_visibility()
-        _dark_titlebar(window)
+        _dark_titlebar(window, self.theme == "dark")
         window.grab_set()
         safe.focus_force()
         try:
@@ -3002,18 +3145,13 @@ class Strip:
         text = tk.Text(window, wrap="word", bg=self.BG, fg=self.FG, insertbackground=self.FG,
                        font=("Segoe UI", 10), padx=12, pady=10, bd=0)
         from tkinter import ttk
-        style = ttk.Style(window)
-        style.theme_use("clam")
-        style.configure("Dark.Vertical.TScrollbar", background="#2b2b2b", troughcolor=self.BG,
-                        bordercolor=self.BG, arrowcolor=self.FG, lightcolor="#2b2b2b",
-                        darkcolor="#2b2b2b")
-        style.map("Dark.Vertical.TScrollbar", background=[("active", "#3a3a3a")])
+        self._style_scrollbar(window)
         bar = ttk.Scrollbar(window, command=text.yview, style="Dark.Vertical.TScrollbar")
         text.configure(yscrollcommand=bar.set)
         bar.pack(side="right", fill="y")
         text.pack(side="left", fill="both", expand=True)
         text.tag_configure("head", foreground=self.YELLOW, font=("Segoe UI Semibold", 10))
-        text.tag_configure("error", foreground="#f28b82", font=("Segoe UI Semibold", 10))
+        text.tag_configure("error", foreground=self.RED, font=("Segoe UI Semibold", 10))
         for index, item in enumerate(data["unread"]):
             text.mark_set(f"m{index}", "end-1c")
             text.mark_gravity(f"m{index}", "left")
@@ -3023,7 +3161,7 @@ class Strip:
         text.configure(state="disabled")
         text.see(f"m{focus}")
         text.yview(f"m{focus}")
-        _dark_titlebar(window)
+        _dark_titlebar(window, self.theme == "dark")
 
     def _acknowledge(self, project, parent=None, ids=None):
         """ACK ids when given (viewer), otherwise every pending result (project menu)."""
@@ -3259,7 +3397,7 @@ class Strip:
         text.insert("1.0", report)
         text.configure(state="disabled")
         window.bind("<Escape>", lambda event: window.destroy())
-        _dark_titlebar(window)
+        _dark_titlebar(window, self.theme == "dark")
         return window
 
     def _open_setup(self):
@@ -3426,6 +3564,7 @@ class Strip:
             self._finish_drag()
         self._stop_settle()
         self._status_press = None
+        self._handle_press = False
         cursor = self.root.winfo_pointerxy()
         self._start = (*cursor, self.root.winfo_x(), self.root.winfo_y())
         self._dragged = False
@@ -3586,6 +3725,7 @@ class Strip:
                     self._palette_key = None
                     drop_geometry = geometry
         status_press, self._status_press = self._status_press, None
+        handle_press, self._handle_press = self._handle_press, False
         self._start = None
         self._dragging = False
         drag_context, self._drag_context = self._drag_context, None
@@ -3622,7 +3762,7 @@ class Strip:
                 self._place()
                 self._sync_zorder_timer()
                 self._settle(shown)
-        elif click and self.mode == "taskbar":
+        elif click and self.mode == "taskbar" and not handle_press:
             if status_press is not None and status_press[1] == "unread":
                 self._open_unread(event, status_press[0])
             elif status_press is not None:

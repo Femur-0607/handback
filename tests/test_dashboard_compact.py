@@ -523,7 +523,8 @@ class CompactGuiTests(DashboardMenuTests):
                 self.assertEqual(positions, [padding, padding])
 
     def dots(self):
-        return [row.winfo_children()[-1] for row in self.strip.frame.winfo_children()]
+        return [row.winfo_children()[-1] for row in self.strip.frame.winfo_children()
+                if row is not self.strip._handle]
 
     def test_lead_dot_uses_agent_color_floating_docked_and_dim_when_unknown(self):
         rows = self.sample_rows()

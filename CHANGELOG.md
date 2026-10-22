@@ -5,6 +5,21 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Added
+
+- 옵션 › **모양** in the dashboard: a theme (**다크**, **라이트**, or
+  **시스템**, which follows the Windows app mode within a refresh), window
+  opacity (100–60%), and a thin grab bar on top of the floating widget that
+  moves it without opening the panel. The theme covers the widget, panels,
+  menus, tooltips and the options/result windows, and recolours open windows
+  at once. A widget docked in the taskbar keeps the taskbar's colour, stays
+  opaque, and has no grab bar. Choices are saved in `dashboard.json`.
+
+### Changed
+
+- The pinned expanded panel (**펼쳐 보기**) is now opaque by default; it was
+  fixed at 93%. Pick 90% under 옵션 › 모양 for about the old look.
+
 ## [0.5.2] - 2026-10-22
 
 ### Fixed
