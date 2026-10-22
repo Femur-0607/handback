@@ -5,6 +5,18 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-22
+
+### Fixed
+
+- A new Antigravity worker conversation is listed under the registered
+  project, as a Codex worker is, instead of under a `handback-…` copy (#5).
+  The relay sidecar now tells agentapi to use the registered project, and the
+  copy the app makes for each sidecar is removed, with a backup, once the
+  app's conversation list shows the conversation in the registered project;
+  otherwise the copy stays and the delivery output names it. Conversations
+  made earlier stay in their copies.
+
 ## [0.5.0] - 2026-10-22
 
 ### Added
@@ -463,6 +475,7 @@ The Windows installer for 0.3.8 was not published; 0.3.9 ships the same app.
 - The release version check imports the checkout when run from a temporary
   directory.
 
+[0.5.1]: https://github.com/Femur-0607/handback/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/Femur-0607/handback/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Femur-0607/handback/compare/v0.3.9...v0.4.0
 [0.3.9]: https://github.com/Femur-0607/handback/compare/v0.3.8...v0.3.9
