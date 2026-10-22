@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-22
+
 ### Added
 
 - `handback handoff --root <checkout>` writes one Markdown note for a new Lead
@@ -16,10 +18,14 @@ All notable changes to this project are documented here. This file follows the
 
 ### Changed
 
-- Docs now explain that the Antigravity app shows the worker conversation under
-  a `handback-<first 12 hex characters of the request id>` project, not the
-  registered one, and that `cleanup-sidecars` keeps copies that still hold a
-  conversation. A delivery that starts a new conversation now names that project in its output (#5).
+- The Antigravity app shows a worker conversation under its own copy of the
+  registered project, named after the relay sidecar (#5). That name now
+  carries the registered project's name in lowercase letters and digits
+  (`handback-study-2650df801dea` instead of `handback-2650df801dea`), so the
+  copy says whose it is; older copies keep their names and are still
+  recognized. A delivery that starts a new conversation names that project in
+  its output, and the docs explain the copy and that `cleanup-sidecars` keeps
+  copies that still hold a conversation.
 - Python 3.11 or newer is required; Python 3.10 reached end of life on
   2026-10-01. `doctor` and the dashboard report the new minimum, and CI tests
   Python 3.11 and 3.14.
@@ -457,6 +463,7 @@ The Windows installer for 0.3.8 was not published; 0.3.9 ships the same app.
 - The release version check imports the checkout when run from a temporary
   directory.
 
+[0.5.0]: https://github.com/Femur-0607/handback/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Femur-0607/handback/compare/v0.3.9...v0.4.0
 [0.3.9]: https://github.com/Femur-0607/handback/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/Femur-0607/handback/compare/v0.3.7...v0.3.8
