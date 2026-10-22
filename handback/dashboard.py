@@ -2678,12 +2678,6 @@ class Strip:
                           "tooltip": "실패 항목과 관련 로그를 복사해 GitHub 이슈로 올릴 수 있습니다",
                           "command": lambda r=r: self._compat_report(r)}
                          for r in self._compat_failures] + [None]
-        if self._update and not project:
-            updating = self._is_busy(("update",))
-            items[:0] = [{"label": "업데이트 받는 중…" if updating else f"업그레이드 ({self._update['version']})",
-                          "tooltip": ("설치 파일을 받아 검증한 뒤 그 자리에서 설치합니다" if updater.supported()
-                                      else "소스 실행 중이라 GitHub 릴리스 페이지를 엽니다"),
-                          "enabled": not updating, "command": self._install_update}, None]
         checking = self._is_busy(("doctor",))
         compat_busy = self._is_busy(("compat",))
         repair = [
@@ -2696,8 +2690,7 @@ class Strip:
         items.extend([
             {"label": "옵션…", "tooltip": "표시 방식·숨긴 프로젝트·시작 시 실행·업데이트 확인을 한 창에서 바꿉니다",
              "command": self._options},
-            {"label": f"최신 버전 확인 (현재 {__version__})",
-             "enabled": not self._is_busy(("update",)), "command": self._check_update},
+            self._update_item(),
             {"label": "점검·복구 ▶", "children": repair},
             None]
             + ([{"label": "보이기" if self._user_hidden else "숨기기",
@@ -3156,6 +3149,17 @@ class Strip:
                 self._dialog("업데이트 확인", f"최신 버전입니다 ({__version__})")
         self._run_async(("update",), updater.check, done)
 
+    def _update_item(self):
+        """One menu item for updates: it checks until a newer release is known, then upgrades to it."""
+        busy = self._is_busy(("update",))
+        if not self._update:
+            return {"label": "확인 중…" if busy else f"최신 버전 확인 (현재 {__version__})",
+                    "enabled": not busy, "command": self._check_update}
+        return {"label": "업데이트 받는 중…" if busy else f"업그레이드 ({__version__} → {self._update['version']})",
+                "tooltip": ("설치 파일을 받아 검증한 뒤 그 자리에서 설치합니다" if updater.supported()
+                            else "소스 실행 중이라 GitHub 릴리스 페이지를 엽니다"),
+                "enabled": not busy, "command": self._install_update}
+
     def _install_update(self):
         release = self._update
         if not release or self._is_busy(("update",)):
@@ -3183,7 +3187,9 @@ class Strip:
                 self._dialog("업데이트", "설치 파일을 실행하지 못했습니다 — " + str(failure)[:80])
                 return
             self.quit()  # the installer replaces these files, then relaunches the dashboard
-        folder = Path(self.home) / "updates"
+        # The installed dashboard starts with home=None; Path(None) raised inside the Tk callback, so
+        # "예" silently did nothing.
+        folder = Path(self.home or state_home()) / "updates"
         self._run_async(("update",), lambda: updater.download(release, folder), done)
 
     def _compat_timer(self):

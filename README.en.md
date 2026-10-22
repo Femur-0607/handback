@@ -105,7 +105,7 @@ Windows has live integration coverage. macOS and Linux are unverified. App queue
 
 ## Update
 
-The dashboard checks GitHub Releases once a day. When a newer version exists, right-click › **업데이트 설치** downloads the installer, verifies it against the release's `SHA256SUMS.txt`, upgrades in place, and reopens the dashboard (turn the check off under 옵션…). You can also run the new `handback-<version>-setup.exe` yourself; it closes the dashboard and upgrades in place. Either way, setup reinstalls the skills and recovery hooks. To uninstall, use Windows **설정 › 앱 › handback**. This removes autostart, the PATH entry, and handback's own hooks and skills (Claude, Codex and Antigravity); your `~/.handback` data is kept.
+The dashboard checks GitHub Releases once a day. Right-click › **최신 버전 확인** checks now; once a newer version is known, that item becomes **업그레이드 (current → new)**, which downloads the installer, verifies it against the release's `SHA256SUMS.txt`, upgrades in place, and reopens the dashboard (turn the check off under 옵션…). You can also run the new `handback-<version>-setup.exe` yourself; it closes the dashboard and upgrades in place. Either way, setup reinstalls the skills and recovery hooks. To uninstall, use Windows **설정 › 앱 › handback**. This removes autostart, the PATH entry, and handback's own hooks and skills (Claude, Codex and Antigravity); your `~/.handback` data is kept.
 
 ## Verify the download
 

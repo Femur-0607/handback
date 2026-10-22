@@ -36,15 +36,30 @@ class MenuActionTests(DashboardMenuTests):
                     patch.object(dashboard.updater, "supported", return_value=supported):
                 self.strip._update = release
                 menu = self.context_menu()
-                self.assertEqual(self.labels(menu)[0], "업그레이드 (9.0.0)")
-                self.assertIn("릴리스 페이지" if not supported else "설치", menu.items[0]["tooltip"])
-                labels = [item["label"] for item in menu.items if item]
-                self.assertIn(f"최신 버전 확인 (현재 {dashboard.__version__})", labels)
+                upgrade = f"업그레이드 ({dashboard.__version__} → 9.0.0)"
+                # One update item: once a newer release is known, it replaces the check (no second entry).
+                self.assertEqual(self.labels(menu), ["옵션…", upgrade, "점검·복구 ▶", "닫기"])
+                item = next(i for i in menu.items if i and i["label"] == upgrade)
+                self.assertIn("릴리스 페이지" if not supported else "설치", item["tooltip"])
                 self.strip._close_menu()
-                self.assertNotIn("업그레이드 (9.0.0)", self.labels(self.context_menu(self.project())))
+                self.assertEqual(self.labels(self.context_menu(self.project())).count(upgrade), 1)
                 self.strip._close_menu()
         self.strip._update = None
         self.assertTrue(dashboard.load_prefs(self.home)["update_check"])
+
+    def test_installed_dashboard_without_a_home_downloads_into_the_state_home(self):
+        # The installed build starts Strip(None); "예" used to raise inside Tk and do nothing.
+        self.strip._update = {"version": "9.0.0", "installer": "i", "sums": "s"}
+        self.strip.home = None
+        with self.sync_async(), patch.object(dashboard.updater, "supported", return_value=True), \
+                patch.object(dashboard, "state_home", return_value=self.home), \
+                patch.object(dashboard.updater, "download", return_value="C:/u/setup.exe") as get, \
+                patch.object(dashboard.updater, "run_installer") as launch, \
+                patch.object(self.strip, "quit"), patch.object(self.strip, "_dialog", return_value=True):
+            self.strip._install_update()
+        self.assertEqual(get.call_args[0][1], self.home / "updates")
+        launch.assert_called_once_with("C:/u/setup.exe")
+        self.strip._update = None
 
     def test_source_checkout_upgrade_opens_the_release_page_instead_of_installing(self):
         release = {"version": "9.0.0", "installer": None, "sums": None,
