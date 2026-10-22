@@ -131,7 +131,22 @@ class ProjectAndHookConfigTests(Base):
         # Antigravity 2.23 copies the target project for each sidecar (issue #4).
         self.register_project()
         self.register_project("managed", name=agy.SIDECAR_PREFIX + "83089e491ed3")
+        self.register_project("named", name=agy.sidecar_name("2650df801dea" * 2, "Study"))
         self.assertEqual(agy.resolve_project(self.root, self.gemini), "proj-1")
+
+    def test_sidecar_name_carries_the_registered_project(self):
+        # The app names the project copy after the sidecar, so the copy should say whose it is (issue #5).
+        request_id = "2650df801dea" + "0" * 20
+        cases = {"Study": "handback-study-2650df801dea",
+                 "My App (v2)": "handback-my-app-v2-2650df801dea",
+                 "공부": "handback-2650df801dea",
+                 None: "handback-2650df801dea",
+                 "x" * 40 + "-y": "handback-" + "x" * agy.PROJECT_LABEL_LIMIT + "-2650df801dea"}
+        for registered, expected in cases.items():
+            name = agy.sidecar_name(request_id, registered)
+            self.assertEqual(name, expected)
+            self.assertTrue(agy._sidecar_managed({"name": name}), name)
+        self.assertFalse(agy._sidecar_managed({"name": "handback-notes"}))
 
     def test_other_stop_hooks_counts_everything_but_relay(self):
         hooks_file = self.gemini / "config" / "hooks.json"
@@ -459,13 +474,13 @@ class DeliveryTests(Base):
         delivery = adapter.deliver("pending-x", {"body": "[relay abababab] hi"}, state=self.state,
                                    request=self.request, title="My task")
         self.assertEqual(delivery, {"accepted": True, "returncode": 0, "thread": CONVERSATION,
-                                    "project": {"name": agy.SIDECAR_PREFIX + self.request["id"][:12],
+                                    "project": {"name": "handback-p-abababababab",
                                                 "copy_of": "p"}})
         job = json.loads((self.state.path / "antigravity" / self.request["id"] / "job.json").read_text(encoding="utf-8"))
         self.assertEqual(job["args"][:3], ["new-conversation", "--title=My task", "--model=flash"])
         value = json.loads(self.config.read_text(encoding="utf-8"))
         self.assertEqual(value, {"sidecars": {"old": {"enabled": False, "projectId": "p"}}, "userSettings": {"k": "v"}})
-        self.assertFalse((self.gemini / "config" / "sidecars" / (agy.SIDECAR_PREFIX + self.request["id"][:12])).exists())
+        self.assertFalse((self.gemini / "config" / "sidecars" / "handback-p-abababababab").exists())
         self.assertTrue((agy.observation_dir(self.state.home) / (CONVERSATION + ".jsonl")).exists())
         self.assertTrue(any((self.state.home / "antigravity" / "backups").iterdir()))
 
@@ -488,7 +503,7 @@ class DeliveryTests(Base):
         delivery = adapter.deliver("pending-x", {"body": "[relay abababab] hi"}, state=self.state,
                                    request=self.request)
         self.assertEqual(delivery, {"accepted": True, "returncode": 0, "thread": CONVERSATION,
-                                    "project": {"name": agy.SIDECAR_PREFIX + self.request["id"][:12],
+                                    "project": {"name": "handback-p-abababababab",
                                                 "copy_of": "p"}})
         projects = sorted(p.stem for p in (self.gemini / "config" / "projects").glob("*.json"))
         self.assertEqual(len(projects), 2)
@@ -517,7 +532,7 @@ class DeliveryTests(Base):
         adapter = agy.AntigravityAdapter(delivery_timeout=0.3, gemini=self.gemini)
         delivery = adapter.deliver(CONVERSATION, {"body": "x"}, state=self.state, request=self.request)
         self.assertTrue(delivery["unknown"])
-        entry = json.loads(self.config.read_text(encoding="utf-8"))["sidecars"][agy.SIDECAR_PREFIX + self.request["id"][:12]]
+        entry = json.loads(self.config.read_text(encoding="utf-8"))["sidecars"]["handback-p-abababababab"]
         self.assertFalse(entry["enabled"])
 
     def test_read_only_sandbox_is_refused(self):
@@ -577,13 +592,13 @@ class CliRebindTests(Base):
 
 
 class CleanupTests(Base):
-    def add_sidecar(self, request_id, status=None, enabled=False):
+    def add_sidecar(self, request_id, status=None, enabled=False, registered=None):
         state = ProjectState(self.root)
         folder = state.path / 'antigravity' / request_id
-        agy._write_json(folder / 'job.json', {'request_id': request_id})
+        name = agy.sidecar_name(request_id, registered)
+        agy._write_json(folder / 'job.json', {'request_id': request_id, 'sidecar': name})
         if status:
             state.save_request({'id': request_id, 'status': status})
-        name = agy.SIDECAR_PREFIX + request_id[:12]
         agy._write_json(self.gemini / 'config' / 'sidecars' / name / 'sidecar.json', {
             'description': 'handback: one agentapi call',
             'args': [str(agy.ENTRY_SCRIPT), 'antigravity-sidecar', '--job', str(folder / 'job.json')]})
@@ -624,6 +639,15 @@ class CleanupTests(Base):
         self.assertEqual(set(value['sidecars']), {active, opened, foreign})
         self.assertEqual(value['other'], 7)
         self.assertFalse((self.gemini / 'config' / 'sidecars' / removed).exists())
+
+    def test_named_sidecar_is_owned_only_under_its_recorded_name(self):
+        named = self.add_sidecar('4' * 32, 'completed', registered='Study')
+        self.assertEqual(named, 'handback-study-444444444444')
+        self.add_sidecar('5' * 32, 'completed', registered='Study')
+        # A key that is not the one recorded for its request is not provably ours.
+        job = ProjectState(self.root).path / 'antigravity' / ('5' * 32) / 'job.json'
+        agy._write_json(job, {'request_id': '5' * 32, 'sidecar': 'handback-other-555555555555'})
+        self.assertEqual(agy.cleanup_sidecars(self.relay, True, self.gemini)['candidates'], [named])
 
     def test_concurrent_config_refusal_keeps_everything(self):
         name = self.add_sidecar('f' * 32, 'completed')

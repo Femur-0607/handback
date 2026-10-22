@@ -33,7 +33,9 @@ from ..discovery import antigravity_version
 from ..invocation import entry_args, self_argv
 
 SIDECAR_PREFIX = "handback-"
-MANAGED_PROJECT = re.compile(r"(?:handback|agent-relay)-[0-9a-f]{12}")
+# Older sidecars were named prefix + request id; since issue #5 the registered project's name sits in between.
+MANAGED_PROJECT = re.compile(r"(?:handback|agent-relay)-(?:[a-z0-9-]+-)?[0-9a-f]{12}")
+PROJECT_LABEL_LIMIT = 32
 HOOK_GROUP = "handback"
 HOOK_EVENTS = ("Stop", "PreInvocation")
 DEFAULT_HOOK_TIMEOUT = 30
@@ -159,6 +161,17 @@ def project_name(project_id, home=None):
         return None
     name = project.get("name") if isinstance(project, dict) else None
     return name if isinstance(name, str) and name.strip() else None
+
+
+def sidecar_name(request_id, registered_name=None):
+    """Sidecar key for one request.
+
+    Antigravity 2.23+ names the project copy it makes for a sidecar after this key, and a new
+    worker conversation is listed under that copy, so the key carries the registered project's name.
+    Lowercase ASCII only: the only keys the app is known to accept look like that.
+    """
+    label = re.sub(r"[^a-z0-9]+", "-", (registered_name or "").lower()).strip("-")[:PROJECT_LABEL_LIMIT].strip("-")
+    return SIDECAR_PREFIX + (label + "-" if label else "") + request_id[:12]
 
 
 def _hook_entries(value):
@@ -575,7 +588,8 @@ def cleanup_sidecars(relay_home, dry_run=False, home=None):
                 from ..state import ID_PATTERN
                 if not isinstance(request_id, str) or not ID_PATTERN.fullmatch(request_id):
                     continue
-                if name not in (SIDECAR_PREFIX + request_id[:12], "agent-relay-" + request_id[:12]):
+                if not MANAGED_PROJECT.fullmatch(name) or name not in (
+                        job.get("sidecar"), SIDECAR_PREFIX + request_id[:12], "agent-relay-" + request_id[:12]):
                     continue
                 request = _read_json(job_path.parents[2] / "requests" / (request_id + ".json"))
                 if request is not None and (not isinstance(request, dict) or
@@ -709,7 +723,8 @@ class AntigravityAdapter(BaseAdapter):
             args = ["new-conversation", f"--title={title or 'handback'}", f"--model={self.model}", envelope["body"]]
         else:
             args = ["send-message", thread, envelope["body"]]
-        sidecar = SIDECAR_PREFIX + request["id"][:12]
+        registered = project_name(project_id, self.gemini)
+        sidecar = sidecar_name(request["id"], registered)
         job = {"request_id": request["id"], "project_id": project_id, "args": args, "created": utcnow(),
                "sidecar": sidecar, "root": str(root), "gemini": str(self.gemini)}
         _write_json(folder / "job.json", job)
@@ -754,7 +769,7 @@ class AntigravityAdapter(BaseAdapter):
             if thread.startswith("pending-"):
                 # The app shows a new conversation under this copy of the registered project. A later
                 # send joins the first delivery's copy, so only creation names one.
-                delivery["project"] = {"name": sidecar, "copy_of": project_name(project_id, self.gemini)}
+                delivery["project"] = {"name": sidecar, "copy_of": registered}
                 try:
                     conversation = json.loads(result["stdout"])["response"]["newConversation"]["conversationId"]
                 except (KeyError, TypeError, ValueError) as error:

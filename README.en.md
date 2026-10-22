@@ -261,7 +261,7 @@ For terminal commands, use `--cwd "$projectRoot"` when creating a worker and `--
 
 For automatic results in a Claude conversation, have the Lead run `inbox watch` through its **Monitor** tool. A watcher in an ordinary terminal prints only to that terminal. Started with `--idle-exit 1200`, the watcher stops after 20 idle minutes; re-arm Monitor only while requests are open. If Monitor is unavailable, use explicit `wait` and `inbox list` commands. Fresh skill auto-loading and global recovery hook loading remain incompletely verified; the [detailed setup guide](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md) covers these limits and the exact watcher command.
 
-For Antigravity, register **your working project** in its app, enable its adapter, and install its relay hooks before selecting it. Follow the [Antigravity setup](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md#optional-antigravity-setup); the Codex-only test above does not configure that combination. The app shows the worker conversation under a project named `handback-<request id prefix>`, not your registered project.
+For Antigravity, register **your working project** in its app, enable its adapter, and install its relay hooks before selecting it. Follow the [Antigravity setup](https://github.com/Femur-0607/handback/blob/main/docs/quickstart.md#optional-antigravity-setup); the Codex-only test above does not configure that combination. The app shows the worker conversation under a project named `handback-<project>-<request id prefix>` (for example `handback-study-2650df801dea`), not your registered project.
 
 ## Choose models and reasoning for each role
 

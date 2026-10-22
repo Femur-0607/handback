@@ -95,7 +95,7 @@ handback handoff --root "<absolute-project-path>" --out "<absolute-note-path>"
 - **Operating tip:** State allowed files and actions in the brief, understanding that these are instructions rather than enforced isolation.
 - **Current feature:** Codex worker creation supports `--sandbox read-only` when the supported topology permits a Codex worker.
 
-**Where the conversation appears:** The Antigravity app shows the worker conversation under a project named `handback-<first 12 characters of the request id>` (for example `handback-2650df801dea`), not under your registered project (for example `Study`). The app creates this copy of the same folder itself, and handback keeps it because removing it hides the conversation. `cleanup-sidecars` removes a copy only when no conversation in the app still uses it. The output of the delivery that starts the conversation names the project.
+**Where the conversation appears:** The Antigravity app shows the worker conversation under a project named `handback-<registered project>-<first 12 characters of the request id>` (for example `handback-study-2650df801dea`), not under your registered project (for example `Study`). The middle part is the registered name in lowercase letters and digits; it is left out when nothing remains, and copies made before 0.5.0 have no middle part. The app creates this copy of the same folder itself, and handback keeps it because removing it hides the conversation. `cleanup-sidecars` removes a copy only when no conversation in the app still uses it. The output of the delivery that starts the conversation names the project.
 
 ## 5. Application updates can break integration
 
