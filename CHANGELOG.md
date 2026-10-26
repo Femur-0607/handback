@@ -5,6 +5,14 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Fixed
+
+- The docked widget took on a maximised window's colour (white under the
+  Claude desktop app) instead of the taskbar's. A maximised frameless window
+  spills its hidden resize border a few pixels past the work area, and half of
+  the colour samples sat in those rows. Both sample bands now sit on the
+  taskbar's screen-edge side, where only the bar itself is drawn.
+
 ## [0.5.3] - 2026-10-22
 
 ### Added

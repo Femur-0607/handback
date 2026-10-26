@@ -93,7 +93,9 @@ class CompactPureTests(unittest.TestCase):
         points = dashboard.taskbar_sample_points(info, 144, excluded)
         self.assertTrue(points)
         self.assertLessEqual(len(points), 18)
-        self.assertTrue(all(-1920 < x < 0 and y in (1038, 1073) for x, y in points))
+        # Both bands hug the screen edge: a maximised frameless window spills a
+        # few pixels over the bar's desktop-facing rows and must not be sampled.
+        self.assertTrue(all(-1920 < x < 0 and y in (1069, 1073) for x, y in points))
         self.assertFalse(any(-1300 <= x < -900 for x, y in points))
         # A translucent bar varies along its length: read only the strips beside the widget.
         self.assertTrue(all(-1320 <= x < -1300 or -900 <= x < -880 for x, y in points))
@@ -107,6 +109,20 @@ class CompactPureTests(unittest.TestCase):
         self.assertEqual(len(dashboard.taskbar_sample_points(info, 144)), 18)
         for unavailable in (None, {**info, "auto_hide": True}, {**info, "edge": 0}):
             self.assertEqual(dashboard.taskbar_sample_points(unavailable, 96), [])
+
+    def test_sample_points_stay_on_the_screen_edge_side(self):
+        # Bottom bar at 96 DPI: rows 1032-1039 may belong to a window spilling
+        # over the work area, so nothing above the bar's lower eight pixels.
+        bottom = {"rect": (0, 1032, 1920, 1080), "edge": 3, "auto_hide": False}
+        self.assertEqual({y for x, y in dashboard.taskbar_sample_points(bottom, 96)}, {1072, 1075})
+        self.assertEqual({y for x, y in dashboard.taskbar_sample_points(bottom, 96, (420, 1033, 648, 1080))},
+                         {1072, 1075})
+        top = {"rect": (0, 0, 1920, 48), "edge": 1, "auto_hide": False}
+        self.assertEqual({y for x, y in dashboard.taskbar_sample_points(top, 96)}, {4, 7})
+        # A bar too thin for two distinct bands samples one row, never a duplicate.
+        thin = {"rect": (0, 1075, 1920, 1080), "edge": 3, "auto_hide": False}
+        points = dashboard.taskbar_sample_points(thin, 96)
+        self.assertEqual(len(points), len(set(points)))
 
     def test_geometry_bottom_notification_offsets_and_clamping(self):
         info = {"rect": (-1920, 1032, 0, 1080), "edge": 3, "auto_hide": False,

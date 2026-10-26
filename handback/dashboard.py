@@ -1317,7 +1317,13 @@ def compact_palette(samples=()):
 
 
 def taskbar_sample_points(info, dpi, excluded=None):
-    """Sample inset top/bottom bands, away from icon centres and our own window.
+    """Sample two inset bands on the bar's screen-edge side, away from icon
+    centres and our own window.
+
+    Only that side is reliably the bar: a maximised frameless window (Electron
+    apps such as the Claude desktop app) spills its hidden resize border a few
+    pixels past the work area, so rows along the desktop-facing edge show the
+    window's own colour instead of the taskbar's.
 
     A translucent (acrylic) taskbar tints each stretch with the wallpaper behind
     it, so one bar-wide shade can be far from what surrounds the widget. When
@@ -1329,10 +1335,15 @@ def taskbar_sample_points(info, dpi, excluded=None):
     inset = max(2, round(4 * dpi / 96))
     if right - left <= inset * 2 or bottom - top <= inset * 2:
         return []
-    bands = (top + inset, bottom - inset - 1)
+    step = max(1, round(3 * dpi / 96))
+    if info["edge"] == 3:
+        edge_band = bottom - inset - 1
+        bands = tuple(dict.fromkeys((max(top + inset, edge_band - step), edge_band)))
+    else:
+        edge_band = top + inset
+        bands = tuple(dict.fromkeys((edge_band, min(bottom - inset - 1, edge_band + step))))
     if excluded is not None and excluded[0] < right and excluded[2] > left \
             and excluded[1] < bottom and excluded[3] > top:
-        step = max(1, round(3 * dpi / 96))
         beside = [excluded[0] - inset - step * i for i in range(3)]
         beside += [excluded[2] + inset - 1 + step * i for i in range(3)]
         points = [(x, y) for x in beside if left <= x < right for y in bands]
