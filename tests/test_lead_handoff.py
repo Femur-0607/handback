@@ -143,7 +143,9 @@ class LeadHandoffTests(unittest.TestCase):
         self.assertIn(copy["id"], self.recover("new")["hookSpecificOutput"]["additionalContext"])
         self.assertEqual(self.state.load_request(old)["reply_id"], copy["id"])
         explained = json.loads(self.run_cli("explain", "--request", old, "--json"))
-        self.assertIn("--for claude:new", json.dumps(explained))
+        result_stage = next(s for s in explained["timeline"] if s["stage"] == "result in inbox")
+        self.assertEqual(result_stage["message_id"], copy["id"])
+        self.assertIn("claude:new", explained["next_action"])
         # Repeating finds nothing left; ACK works on the new address.
         self.assertEqual(self.reassign()["mail"], [])
         self.run_cli("inbox", "ack", "--for", "claude:new", "--request", old)
