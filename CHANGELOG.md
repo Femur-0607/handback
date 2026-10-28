@@ -24,6 +24,17 @@ All notable changes to this project are documented here. This file follows the
 
 ### Fixed
 
+- An Antigravity send that failed before its sidecar was enabled (for
+  example from a checkout or worktree not registered in Antigravity) was
+  recorded as `delivery_unknown`, which kept the worker blocked by an open
+  request. Nothing was sent, so it is now `send_failed`.
+- A blank (whitespace-only) worker answer, or one with an unpaired surrogate,
+  could not be stored as mail, so the request stayed open and the Lead never
+  heard back. It is now published as `(empty response)` or with the
+  character replaced.
+- An Antigravity Lead delivery that timed out waiting for another delivery to
+  the same Lead was recorded as `delivery_unknown` although nothing was sent;
+  it now stays pending and is retried.
 - One result whose Lead delivery raised (a damaged delivery record, or a
   placeholder recipient such as `codex:lead`) stopped every newer result from
   being delivered to a Codex or Antigravity Lead on each scan. The others are
