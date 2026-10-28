@@ -2535,9 +2535,11 @@ class Strip:
         """Keep the input shield over the colour-keyed docked widget, or withdraw it."""
         if event is not None and event.widget != self.root:
             return
+        if self._shield is None and not self._transparent_key:
+            return  # never docked transparently: nothing to cover or withdraw
         if self._start is not None:
             return  # a press is in progress: the shield (and its capture) stays as it is
-        wanted = (self.mode == "taskbar" and self.docked and bool(self._transparent_key)
+        wanted = (bool(self._transparent_key) and self.mode == "taskbar" and self.docked
                   and not (self._user_hidden or self._fullscreen_hidden or self._idle_hidden)
                   and self.root.winfo_ismapped())
         if wanted and self._shield is None:

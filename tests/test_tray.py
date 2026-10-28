@@ -112,6 +112,7 @@ class FakeStrip(dashboard.Strip):
         self._tray_text = "대기"
         self._user_hidden = False
         self._fullscreen_hidden = False
+        self._shield = self._transparent_key = self._start = None
         self._context_menu = None
         self._collapse_panel = MagicMock()
         self._close_menu = MagicMock()
