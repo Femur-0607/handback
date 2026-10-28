@@ -5,6 +5,8 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-10-28
+
 ### Fixed
 
 - The docked widget took on a maximised window's colour (white under the
@@ -520,6 +522,7 @@ The Windows installer for 0.3.8 was not published; 0.3.9 ships the same app.
 - The release version check imports the checkout when run from a temporary
   directory.
 
+[0.5.4]: https://github.com/Femur-0607/handback/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/Femur-0607/handback/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/Femur-0607/handback/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/Femur-0607/handback/compare/v0.5.0...v0.5.1
