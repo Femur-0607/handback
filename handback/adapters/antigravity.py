@@ -116,13 +116,19 @@ def _norm(path):
     return os.path.normcase(os.path.realpath(path))
 
 
+def _uri_path(uri):
+    # file:///C%3A/x -> C:/x on Windows; file:///home/x keeps its leading slash.
+    path = unquote(urlparse(uri).path)
+    return path[1:] if re.match(r"/[A-Za-z]:", path) else path
+
+
 def _project_roots(project):
     """Normalized git folders of one Antigravity project file."""
     roots = []
     for resource in ((project or {}).get("projectResources") or {}).get("resources") or []:
         uri = ((resource or {}).get("gitFolder") or {}).get("folderUri") or ""
         if uri:
-            roots.append(_norm(unquote(urlparse(uri).path).lstrip("/")))
+            roots.append(_norm(_uri_path(uri)))
     return roots
 
 

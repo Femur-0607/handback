@@ -5,6 +5,13 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Fixed
+
+- Off Windows, an Antigravity project registered for the checkout was never
+  found: reading its `file:///home/...` folder URI dropped the leading slash.
+  Windows `file:///C%3A/...` URIs read as before. macOS and Linux remain
+  unverified with the live app.
+
 ## [0.5.5] - 2026-10-28
 
 ### Changed

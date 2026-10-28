@@ -58,7 +58,8 @@ class Base(unittest.TestCase):
         self.now = 1_000_000.0
 
     def register_project(self, pid="proj-1", root=None, name="p"):
-        uri = "file:///" + str(root or self.root).replace("\\", "/").replace(":", "%3A", 1)
+        path = str(root or self.root).replace("\\", "/").replace(":", "%3A", 1)
+        uri = "file://" + ("" if path.startswith("/") else "/") + path
         (self.gemini / "config" / "projects" / (pid + ".json")).write_text(json.dumps(
             {"name": name, "projectResources": {"resources": [{"gitFolder": {"folderUri": uri}}]}}), encoding="utf-8")
 
@@ -126,6 +127,10 @@ class ProjectAndHookConfigTests(Base):
         self.register_project("proj-2")
         with self.assertRaises(AdapterUnavailable):
             agy.resolve_project(self.root, self.gemini)
+
+    def test_folder_uri_keeps_a_posix_root(self):
+        self.assertEqual(agy._uri_path("file:///C%3A/Users/me/x"), "C:/Users/me/x")
+        self.assertEqual(agy._uri_path("file:///home/me/x"), "/home/me/x")
 
     def test_sidecar_managed_project_is_not_a_registration(self):
         # Antigravity 2.23 copies the target project for each sidecar (issue #4).
