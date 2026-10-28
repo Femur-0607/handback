@@ -714,6 +714,13 @@ def build_parser():
                                       "(the Claude Lead skill uses 1200)")
             command.add_argument("--no-collect", action="store_true",
                                  help="only print mail; do not collect this recipient's open requests")
+    move = mail_sub.add_parser("reassign", help="send one recipient's open requests and unACKed results "
+                                                "to another; nothing goes to a worker")
+    move.add_argument("--root", default=".")
+    move.add_argument("--from", dest="source", required=True, metavar="AGENT:ID")
+    move.add_argument("--to", dest="target", required=True, metavar="AGENT:ID")
+    move.add_argument("--request", help="only this request")
+    move.add_argument("--dry-run", action="store_true", help="show what would move; change nothing")
     skills = sub.add_parser("install-skills", help="install packaged agent skills")
     skills.add_argument("--dry-run", action="store_true")
     skills.add_argument("--target-home", help="isolated home; never inspect host PATH or CODEX_HOME")
@@ -969,6 +976,16 @@ def dispatch(args, parser):
         elif args.inbox_command == "redeliver":
             from .router import redeliver
             output(redeliver(state, args.id, args.recipient))
+        elif args.inbox_command == "reassign":
+            from .reassign import reassign
+            if ":" not in args.source:
+                parser.error("--from expects <agent>:<id>")
+            source = handle(args.source)[0]
+            target = resolve_return_to(config.resolve(args.root), args.root, args.target)
+            output(reassign(state, source, target, args.request, dry_run=args.dry_run))
+            if watcher.is_live(state.path, source):
+                print(f"Warning: {source} still has a live inbox watcher; that session may already have "
+                      "read the moved results.", file=sys.stderr)
         else:
             if args.interval <= 0:
                 parser.error("--interval must be positive")

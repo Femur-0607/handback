@@ -5,6 +5,16 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Added
+
+- `inbox reassign --from <old> --to <new>` hands a replaced Lead's work to the
+  new one: open requests get the new return address, and each unacknowledged
+  result is copied to the new address and then acknowledged for the old one.
+  The original mail stays on disk, nothing is resent to a worker, and an
+  interrupted run can be repeated without duplicating mail. `--request` limits
+  it to one request; `--dry-run` only lists what would move. The `handoff`
+  note shows the command when anything is still addressed to the old Lead.
+
 ### Fixed
 
 - Off Windows, an Antigravity project registered for the checkout was never

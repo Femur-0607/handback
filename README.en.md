@@ -333,7 +333,7 @@ The large-inbox figure measures Python allocations, not total process memory, an
 ## Limitations
 
 - Long-running Lead and reused worker conversations accumulate context; use bounded units and documented stage handoffs.
-- Replacing the Lead preserves old requests' return addresses; explicitly read and ACK the old inbox. `handoff --out <note>` writes the open requests, unACKed results and these commands into one note for the new session.
+- Replacing the Lead preserves old requests' return addresses; explicitly read and ACK the old inbox, or move it to the new Lead with `inbox reassign --from <old> --to <new>`. `handoff --out <note>` writes the open requests, unACKed results and these commands into one note for the new session.
 - Windows has live verification; operation is local to one computer and OS user, with restricted agent combinations.
 - App updates, uncertain delivery, and Monitor expiry require deliberate diagnostics and recovery; Antigravity cannot enforce read-only access.
 - Shared-checkout work should be sequential, and dashboard scan cost grows with history. See [known limitations and workarounds](https://github.com/Femur-0607/handback/blob/main/docs/limitations.md) for details and commands.

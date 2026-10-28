@@ -106,6 +106,89 @@ class LeadHandoffTests(unittest.TestCase):
         self.assertEqual(len(self.mail("old", old)), 1)
         self.assertEqual(len(self.adapter.deliveries), 2)
 
+    def reassign(self, *extra):
+        return json.loads(self.run_cli("inbox", "reassign", "--from", "claude:old", "--to", "claude:new", *extra))
+
+    def test_reassign_moves_an_open_request_to_the_new_lead(self):
+        self.switch("old")
+        old = self.send("first")
+        self.switch("new")
+        moved = self.reassign()
+        self.assertEqual(moved["requests"], [{"id": old, "status": "accepted"}])
+        request = self.state.load_request(old)
+        self.assertEqual(request["return_to"], "claude:new")
+        self.assertEqual(request["reassigned"][0]["from"], "claude:old")
+        # The new Lead's watch now follows and receives it; the old address gets nothing.
+        event = json.loads(self.run_cli("inbox", "watch", "--for", "claude:new", "--once"))
+        self.assertEqual(event["request_id"], old)
+        self.assertEqual(self.mail("old", old), [])
+        self.assertEqual(len(self.adapter.deliveries), 1)
+
+    def test_reassign_copies_an_unacknowledged_result_then_acks_the_original(self):
+        self.switch("old")
+        old = self.send("first")
+        self.run_cli("wait", "--request", old, "--timeout", "1")
+        original = self.mail("old", old)[0]
+        self.switch("new")
+        self.assertIsNone(self.recover("new"))
+        moved = self.reassign()
+        self.assertEqual(moved["requests"], [])
+        self.assertEqual([m["id"] for m in moved["mail"]], [original["id"]])
+        self.assertEqual(self.mail("old", old), [])
+        copy = self.mail("new", old)[0]
+        self.assertEqual(copy["id"], moved["mail"][0]["copy_id"])
+        for field in ("request_id", "sender", "kind", "body", "hop", "created_utc"):
+            self.assertEqual(copy[field], original[field], field)
+        self.assertTrue((self.state.path / "inbox" / (original["id"] + ".json")).exists())
+        self.assertIn(copy["id"], self.recover("new")["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(self.state.load_request(old)["reply_id"], copy["id"])
+        explained = json.loads(self.run_cli("explain", "--request", old, "--json"))
+        self.assertIn("--for claude:new", json.dumps(explained))
+        # Repeating finds nothing left; ACK works on the new address.
+        self.assertEqual(self.reassign()["mail"], [])
+        self.run_cli("inbox", "ack", "--for", "claude:new", "--request", old)
+        self.assertEqual(self.mail("new", old), [])
+
+    def test_reassign_retry_after_a_crash_publishes_the_same_copy_once(self):
+        self.switch("old")
+        old = self.send("first")
+        self.run_cli("wait", "--request", old, "--timeout", "1")
+        self.switch("new")
+        with patch.object(cli.inbox, "acknowledge", side_effect=OSError("crash")):
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertNotEqual(cli.main(["inbox", "reassign", "--from", "claude:old", "--to", "claude:new",
+                                              "--root", str(self.root)]), 0)
+        self.assertEqual(len(self.mail("old", old)), 1)
+        self.assertEqual(len(self.mail("new", old)), 1)
+        moved = self.reassign()
+        self.assertEqual(len(moved["mail"]), 1)
+        self.assertEqual(self.mail("old", old), [])
+        self.assertEqual([m["id"] for m in self.mail("new", old)], [moved["mail"][0]["copy_id"]])
+
+    def test_reassign_dry_run_and_request_filter(self):
+        self.switch("old")
+        first, second = self.send("first"), self.send("second")
+        self.switch("new")
+        preview = self.reassign("--dry-run")
+        self.assertTrue(preview["dry_run"])
+        self.assertEqual({r["id"] for r in preview["requests"]}, {first, second})
+        self.assertEqual(self.state.load_request(first)["return_to"], "claude:old")
+        self.assertEqual([r["id"] for r in self.reassign("--request", first)["requests"]], [first])
+        self.assertEqual(self.state.load_request(first)["return_to"], "claude:new")
+        self.assertEqual(self.state.load_request(second)["return_to"], "claude:old")
+
+    def test_reassign_refuses_placeholder_or_same_recipient(self):
+        self.switch("old")
+        self.send("first")
+        for source, target in (("claude:old", "claude:old"), ("claude:old", "claude:lead"), ("old", "claude:new")):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    code = cli.main(["inbox", "reassign", "--from", source, "--to", target, "--root", str(self.root)])
+                except SystemExit as exit:
+                    code = exit.code
+            self.assertNotEqual(code, 0, (source, target))
+        self.assertTrue(all(r["return_to"] == "claude:old" for r in self.state.requests()))
+
 
 class CallerIdentityTests(LeadHandoffTests):
     """Issue #3: a second Claude session in the same root must not receive another session's result."""

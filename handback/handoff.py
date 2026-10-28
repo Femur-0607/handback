@@ -150,6 +150,12 @@ def render_markdown(data, command=command_text):
               "Make this session the Lead (replace the placeholder with its own address):", "",
               *_code([command("use", "--root", root, "--lead", f"{agent}:<new-session-id>",
                               "--workers", ",".join(workers) or "codex")])]
+    if (any(item["return_to"] == source for item in data["open_requests"])
+            or any(item["recipient"] == source for item in data["unacknowledged"])):
+        lines += ["", f"To have the new Lead receive what is still addressed to `{source}`, move it there "
+                  "instead of using the old-address commands below:", "",
+                  *_code([command("inbox", "reassign", "--root", root, "--from", source,
+                                  "--to", f"{agent}:<new-session-id>")])]
     if any(item["return_to"] == source for item in data["open_requests"]):
         lines += ["", f"Open requests keep returning to `{source}`. Collect and read them there:", "",
                   *_code([command("inbox", "watch", "--root", root, "--for", source, "--timeout", "60")])]

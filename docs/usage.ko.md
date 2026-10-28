@@ -291,11 +291,11 @@ python handback.py inbox redeliver --root "<absolute-checkout>" --id "<message-i
 ## 알려진 한계
 
 - Lead와 재사용하는 워커 대화는 문맥이 누적됩니다. 작은 작업은 Lead에서 처리하고, 중간 작업은 워커에 위임해 결과만 검토하며, 큰 작업은 계획 문서와 단계별 새 Lead 세션으로 나누는 운영 방식을 권합니다. 단계 사이에는 문서로 인계합니다.
-- Lead를 바꿔도 기존 요청의 반환 주소는 유지됩니다. 새 Lead의 훅·watch는 이전 주소의 결과를 자동으로 받지 않습니다. 같은 상태 홈에서 `inbox list --for "<old-lead-address>" --request "<request-id>"`로 읽고, 검토 후 같은 주소와 요청 ID로 `inbox ack`합니다. 명령에 `--root "<absolute-checkout>"`을 지정합니다.
+- Lead를 바꿔도 기존 요청의 반환 주소는 유지됩니다. 새 Lead의 훅·watch는 이전 주소의 결과를 자동으로 받지 않습니다. 같은 상태 홈에서 `inbox list --for "<old-lead-address>" --request "<request-id>"`로 읽고, 검토 후 같은 주소와 요청 ID로 `inbox ack`합니다. 새 Lead가 받게 하려면 `inbox reassign`으로 옮깁니다. 명령에 `--root "<absolute-checkout>"`을 지정합니다.
 - 검증 범위는 Windows의 한 컴퓨터·한 OS 사용자이며, 지원 조합에 제한이 있습니다. Antigravity는 읽기 전용을 강제하지 못합니다. 앱 업데이트 뒤에는 진단이 필요하고, 접수 불명·시간 초과에서는 재전송 없이 기존 요청을 회수해야 합니다.
 - Claude Monitor는 열린 요청이 남은 채 만료되면 다시 걸고, 같은 체크아웃의 작업은 순차 실행합니다. 현황판의 스캔 비용은 저장된 이력에 따라 커집니다.
 
-[알려진 한계와 우회 방법](limitations.md)은 현재 기능·운영 팁·미구현 개선안을 구분하며, Lead 교체 명령과 결과 크기·미리보기의 정확한 동작을 설명합니다. `handoff --root "<absolute-checkout>" --out "<노트 경로>"`는 토폴로지, 열린 요청, ACK 안 된 결과, 새 Lead가 실행할 명령을 노트 한 장으로 씁니다. 읽기만 하며 요청을 옮기거나 ACK하지 않습니다. 열린 요청을 새 Lead로 재할당하는 명령이나 결과 요약·길이 강제 옵션은 현재 기능이 아닙니다.
+[알려진 한계와 우회 방법](limitations.md)은 현재 기능·운영 팁·미구현 개선안을 구분하며, Lead 교체 명령과 결과 크기·미리보기의 정확한 동작을 설명합니다. `handoff --root "<absolute-checkout>" --out "<노트 경로>"`는 토폴로지, 열린 요청, ACK 안 된 결과, 새 Lead가 실행할 명령을 노트 한 장으로 씁니다. 읽기만 하며 요청을 옮기거나 ACK하지 않습니다. 이전 주소로 남은 열린 요청과 ACK 안 된 결과를 새 Lead로 옮기려면 `inbox reassign --root "<absolute-checkout>" --from "<old-lead-address>" --to "<new-lead-address>"`를 실행합니다. 열린 요청은 반환 주소가 바뀌고, ACK 안 된 결과는 새 주소로 사본을 만든 뒤 원래 주소에서 ACK합니다. 원문은 남고 워커에게는 아무것도 보내지 않습니다. `--dry-run`은 옮길 목록만 보여 주고 `--request`는 한 요청만 옮깁니다. 결과 요약·길이 강제 옵션은 현재 기능이 아닙니다.
 
 ## 어댑터별 한계
 
