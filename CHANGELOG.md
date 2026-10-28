@@ -5,6 +5,16 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Changed
+
+- The docked widget no longer paints a sampled taskbar colour. Its background
+  is keyed out, so the taskbar's own material shows through and follows the
+  windows behind it, exactly as on the bar itself; the sampled shade now only
+  picks the key colour and light or dark text. Windows passes clicks on keyed
+  pixels through to the taskbar, so a near-invisible input shield over the
+  widget replays pointer events on it: clicks, drags, hover colours and
+  tooltips work on the background as before.
+
 ## [0.5.4] - 2026-10-28
 
 ### Fixed

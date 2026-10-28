@@ -505,7 +505,8 @@ class CompactGuiTests(DashboardMenuTests):
                 self.strip._watch_zorder()
                 self.assertEqual(self.strip._fullscreen_hidden, hidden)
                 self.assertIsNone(self.strip.panel)
-                self.assertEqual(show.call_count, int(was_hidden != hidden))
+                self.assertEqual(sum(call.args[0] is self.root for call in show.call_args_list),
+                                 int(was_hidden != hidden))
                 self.assertEqual(repair.call_count, int(not hidden))
                 self.strip.refresh(reschedule=False)
                 self.root.update_idletasks()
@@ -1392,6 +1393,91 @@ class CompactGuiTests(DashboardMenuTests):
             self.strip._watch_outside()
         self.assertIsNone(self.strip.panel)
         self.assertIsNone(self.strip._outside_timer)
+
+
+    def test_widget_at_returns_deepest_viewable_child_under_a_screen_point(self):
+        self.root.deiconify()
+        outer = self.tk.Frame(self.strip.frame, width=60, height=40)
+        outer.pack_propagate(False)
+        outer.pack()
+        inner = self.tk.Label(outer, text="x")
+        inner.place(x=10, y=10, width=20, height=10)
+        hidden = self.tk.Label(outer, text="h")
+        hidden.place(x=10, y=25, width=20, height=10)
+        hidden.place_forget()
+        self.root.update()
+        x, y = outer.winfo_rootx(), outer.winfo_rooty()
+        self.assertIs(dashboard.widget_at(self.root, x + 15, y + 15), inner)
+        self.assertIs(dashboard.widget_at(self.root, x + 15, y + 30), outer)
+        self.assertIs(dashboard.widget_at(self.root, x - 5000, y), self.root)
+
+    @unittest.skipUnless(dashboard.sys.platform == "win32", "Windows layered windows")
+    def test_docked_widget_keys_out_its_background_under_an_input_shield(self):
+        dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "docked": True}, self.home)
+        with patch.object(dashboard, "taskbar_colors", return_value=[(32, 32, 32)]), \
+                patch.object(dashboard, "keep_above_taskbar"):
+            self.strip.render(self.sample_rows())
+            self.root.deiconify()
+            self.root.update()
+            self.strip._sync_shield()
+            self.assertEqual(str(self.root.attributes("-transparentcolor")), "#202020")
+            shield = self.strip._shield
+            self.assertIsNotNone(shield)
+            self.assertTrue(shield.window.winfo_ismapped())
+            self.assertEqual((shield.window.winfo_width(), shield.window.winfo_height(),
+                              shield.window.winfo_rootx(), shield.window.winfo_rooty()),
+                             (self.root.winfo_width(), self.root.winfo_height(),
+                              self.root.winfo_rootx(), self.root.winfo_rooty()))
+            # Hidden to the tray, the shield goes too; shown again, it comes back.
+            self.strip.hide()
+            self.root.update()
+            self.assertFalse(shield.window.winfo_ismapped())
+            self.strip.show()
+            self.root.update()
+            self.strip._sync_shield()
+            self.assertTrue(shield.window.winfo_ismapped())
+            # Floating again: opaque, and the shield steps aside.
+            dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "compact_x": 200, "compact_y": 300}, self.home)
+            self.strip.docked = False
+            self.strip.render(self.sample_rows())
+            self.root.update()
+            self.assertEqual(str(self.root.attributes("-transparentcolor")), "")
+            self.assertFalse(shield.window.winfo_ismapped())
+
+    @unittest.skipUnless(dashboard.sys.platform == "win32", "Windows layered windows")
+    def test_shield_replays_presses_and_hover_on_the_widget_under_the_pointer(self):
+        dashboard.save_prefs({**dashboard.DEFAULT_PREFS, "docked": True}, self.home)
+        with patch.object(dashboard, "taskbar_colors", return_value=[(32, 32, 32)]), \
+                patch.object(dashboard, "keep_above_taskbar"):
+            self.strip.render(self.sample_rows())
+            self.root.deiconify()
+            self.root.update()
+            self.strip._sync_shield()
+        shield = self.strip._shield
+        # A plain text label: its click reaches the strip's own press handler on the root.
+        label = next(widget for widget in self.widgets(self.strip.frame)
+                     if isinstance(widget, self.tk.Label) and widget.winfo_width() > 4
+                     and not widget.bind("<Button-1>"))
+        x, y = label.winfo_rootx() + 2, label.winfo_rooty() + 2
+        seen = []
+        label.bind("<Enter>", lambda event: seen.append("enter"), add="+")
+        label.bind("<Leave>", lambda event: seen.append("leave"), add="+")
+        label.bind("<Button-1>", lambda event: seen.append(("press", event.x_root, event.y_root)), add="+")
+        self.root.bind("<ButtonPress-1>", lambda event: seen.append("strip"), add="+")
+        shield.window.event_generate("<Motion>", rootx=x, rooty=y)
+        self.assertEqual(seen, ["enter"])
+        shield.window.event_generate("<ButtonPress-1>", rootx=x, rooty=y)
+        # The label's own binding and, through its bindtags, the root's press handler.
+        self.assertEqual(seen, ["enter", ("press", x, y), "strip"])
+        shield.window.event_generate("<ButtonRelease-1>", rootx=x, rooty=y)
+        self.assertIsNone(self.strip._start)
+        # Off the label but still on the widget: the label is left, nothing is pressed.
+        frame_x, frame_y = self.strip.frame.winfo_rootx() + 1, self.strip.frame.winfo_rooty() + 1
+        shield.window.event_generate("<Motion>", rootx=frame_x, rooty=frame_y)
+        self.assertEqual(seen, ["enter", ("press", x, y), "strip", "leave"])
+        shield.window.event_generate("<Leave>")
+        self.assertIsNone(shield._hovered)
+        self.assertEqual(seen[-1], "leave")
 
 
 # Only the new cases run on this subclass; the base module covers panel behavior.

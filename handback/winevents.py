@@ -126,6 +126,7 @@ class ForegroundWatcher:
         self.target = None  # Tk's native wrapper (GA_ROOT) handle
         self.taskbar = None
         self.active = False
+        self.companion = None  # input shield above the target; keeps the same z-order
         self._thread = None
         self._thread_id = None
         self._ready = threading.Event()
@@ -158,7 +159,7 @@ class ForegroundWatcher:
     # ---- hook thread (no Tk) ------------------------------------------------------
     def _event(self):
         self.changed.set()
-        target, taskbar = self.target, self.taskbar
+        target, taskbar, companion = self.target, self.taskbar, self.companion
         if not target or self._api is None:
             return
         if foreground_covers(self._api, target):
@@ -167,8 +168,10 @@ class ForegroundWatcher:
             # restores topmost when the cover ends.
             if self._api.IsWindowVisible(target):
                 self._api.SetWindowPos(target, HWND_BOTTOM, 0, 0, 0, 0, RAISE_FLAGS)
+                if companion:
+                    self._api.SetWindowPos(companion, HWND_BOTTOM, 0, 0, 0, 0, RAISE_FLAGS)
         else:
-            raise_above_taskbar(self._api, target, taskbar)
+            raise_above_taskbar(self._api, target, taskbar, companion)
 
     def _run(self):
         try:
@@ -242,8 +245,11 @@ class ForegroundWatcher:
             self._follow = None
 
 
-def raise_above_taskbar(user, hwnd, taskbar=None):
-    """Native-only twin of dashboard.keep_above_taskbar for the hook thread."""
+def raise_above_taskbar(user, hwnd, taskbar=None, companion=None):
+    """Native-only twin of dashboard.keep_above_taskbar for the hook thread.
+
+    ``companion`` is raised right after ``hwnd`` so it stays directly above it.
+    """
     if not user.IsWindowVisible(hwnd):
         return False
     taskbar = taskbar or user.FindWindowW("Shell_TrayWnd", None)
@@ -256,6 +262,8 @@ def raise_above_taskbar(user, hwnd, taskbar=None):
             return False
         if above == taskbar:
             user.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, RAISE_FLAGS)
+            if companion:
+                user.SetWindowPos(companion, HWND_TOPMOST, 0, 0, 0, 0, RAISE_FLAGS)
             return True
         above = user.GetWindow(above, GW_HWNDPREV)
     return False

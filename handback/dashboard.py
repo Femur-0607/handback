@@ -863,6 +863,138 @@ def show_widget_without_activation(widget, visible):
     user.ShowWindow(user.GetAncestor(widget.winfo_id(), 2), 4)  # SW_SHOWNOACTIVATE
 
 
+def widget_at(root, x, y):
+    """Deepest viewable descendant of ``root`` under screen point (x, y), else ``root``."""
+    target = root
+    while True:
+        for child in reversed(target.winfo_children()):
+            try:
+                # Toplevels (the shield itself, panels, tooltips) are children too.
+                if child.winfo_manager() == "wm" or not child.winfo_viewable():
+                    continue
+                left, top = child.winfo_rootx(), child.winfo_rooty()
+                width, height = child.winfo_width(), child.winfo_height()
+            except Exception:  # destroyed mid-walk (TclError)
+                continue
+            if left <= x < left + width and top <= y < top + height:
+                target = child
+                break
+        else:
+            return target
+
+
+class InputShield:
+    """A nearly invisible window over the docked widget that takes its mouse input.
+
+    The docked widget is colour-keyed so the taskbar shows through its
+    background, and Windows lets clicks on keyed pixels fall through to the
+    taskbar: only the glyphs would stay clickable. The shield (alpha 1/255) sits
+    directly above the widget and replays every pointer event on the widget
+    under the pointer, so bindings, hover colours and tooltips behave as if the
+    widget were opaque. Once a drag sets Tk's grab, events reach the widget
+    directly and the shield stays put until the button is released.
+    """
+    ALPHA = 1 / 255
+    BUTTONS = ("<ButtonPress-1>", "<B1-Motion>", "<ButtonRelease-1>",
+               "<ButtonPress-3>", "<ButtonRelease-3>")
+
+    def __init__(self, strip):
+        self.strip = strip
+        self.window = strip.tk.Toplevel(strip.root)
+        self.window.overrideredirect(True)
+        self.window.attributes("-topmost", True)
+        self.window.attributes("-alpha", self.ALPHA)
+        self.window.configure(bg="black")
+        self.window.withdraw()
+        self.hwnd = None
+        self._geometry = None
+        self._hovered = None
+        for sequence in self.BUTTONS:
+            self.window.bind(sequence, lambda event, sequence=sequence: self._forward(sequence, event))
+        self.window.bind("<Motion>", self._motion)
+        self.window.bind("<Leave>", lambda event: self._hover(None))
+        self.window.bind("<Escape>", lambda event: strip._collapse_panel())
+        self.window.bind("<Return>", strip._keyboard_toggle_panel)
+        self.window.bind("<space>", strip._keyboard_toggle_panel)
+
+    def _target(self, event):
+        root = self.strip.root
+        if not root.winfo_exists() or not root.winfo_ismapped():
+            return None
+        return widget_at(root, event.x_root, event.y_root)
+
+    def _forward(self, sequence, event):
+        target = self._target(event)
+        if target is None:
+            return None
+        if sequence.startswith("<ButtonPress"):
+            self._hover(target)
+        target.event_generate(sequence, x=event.x_root - target.winfo_rootx(),
+                              y=event.y_root - target.winfo_rooty(),
+                              rootx=event.x_root, rooty=event.y_root)
+        return "break"
+
+    def _motion(self, event):
+        self._hover(self._target(event))
+
+    def _hover(self, target):
+        """Replay Enter/Leave: Tk never sees the pointer cross the covered widget."""
+        if target is self._hovered:
+            return
+        old, self._hovered = self._hovered, target
+        if old is not None and old.winfo_exists():
+            old.event_generate("<Leave>")
+        if target is not None and target.winfo_exists():
+            target.event_generate("<Enter>")
+            cursor = target.cget("cursor") or ""
+            if self.window.cget("cursor") != cursor:
+                self.window.configure(cursor=cursor)
+
+    def sync(self, visible):
+        """Cover the widget exactly, directly above it, or withdraw."""
+        root = self.strip.root
+        if not visible:
+            if self.window.winfo_ismapped():
+                self.window.withdraw()
+            self._hover(None)
+            return
+        geometry = (root.winfo_width(), root.winfo_height(), root.winfo_rootx(), root.winfo_rooty())
+        if geometry != self._geometry:
+            self.window.geometry("%dx%d+%d+%d" % geometry)
+            self._geometry = geometry
+        if not self.window.winfo_ismapped():
+            show_widget_without_activation(self.window, True)
+        self.raise_above(root)
+
+    def raise_above(self, root):
+        if sys.platform != "win32":
+            return
+        import ctypes
+        from ctypes import wintypes
+        user = ctypes.windll.user32
+        user.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+        user.GetWindow.restype = wintypes.HWND
+        user.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                     ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        self.hwnd = self.hwnd or _root_hwnd(self.window)
+        target = _root_hwnd(root)
+        if not self.hwnd or not target:
+            return
+        above = target
+        for _ in range(8):  # IME helper windows may sit between the two
+            above = user.GetWindow(above, 3)  # GW_HWNDPREV
+            if not above or above == self.hwnd:
+                return
+        # HWND_TOPMOST; NOMOVE | NOSIZE | NOACTIVATE: top of the topmost band, above the widget.
+        user.SetWindowPos(self.hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+
+    def destroy(self):
+        try:
+            self.window.destroy()
+        except Exception:
+            pass
+
+
 def keep_above_taskbar(widget, taskbar=None):
     """Repair Explorer's topmost ordering without activating or repainting Tk."""
     if sys.platform != "win32" or not widget.winfo_ismapped():
@@ -1777,6 +1909,8 @@ class Strip:
         self._palette_burst_until = 0
         self._palette_source = None
         self._fullscreen_hidden = False
+        self._shield = None
+        self._transparent_key = None
         self.docked = load_prefs(home)["docked"]
         self._dragging = False
         self._dragged = False
@@ -1866,6 +2000,7 @@ class Strip:
         self.root.bind("<Configure>", self._sync_window_corners, add="+")
         self._root_frame.bind("<Configure>", self._sync_window_corners, add="+")
         self.root.bind("<Map>", lambda event: self._sync_window_corners(event, force=True), add="+")
+        self.root.bind("<Configure>", self._sync_shield, add="+")
 
     def _set_theme(self, name):
         theme = THEMES[name]
@@ -2040,6 +2175,7 @@ class Strip:
         self.tooltip.hide()
         self._user_hidden = True
         self.root.withdraw()
+        self._sync_shield()
 
     def show(self):
         self._user_hidden = False
@@ -2050,6 +2186,7 @@ class Strip:
         show_widget_without_activation(self.root, True)
         self.root.lift()
         self._sync_animation()
+        self._sync_shield()
 
     def close(self):
         """Close means hide while the tray can bring it back, otherwise exit."""
@@ -2103,6 +2240,7 @@ class Strip:
                 self._sync_animation()
         if not hidden:
             keep_above_taskbar(self.root, self._taskbar_hwnd)
+        self._sync_shield()
         # Schedule first: a colour change re-renders, and rendering must find the
         # timer already armed instead of starting a second one.
         self._zorder_timer = self.root.after(TASKBAR_ZORDER_MS, self._watch_zorder)
@@ -2123,6 +2261,9 @@ class Strip:
                 self._palette_burst_until = now + PALETTE_BURST_LENGTH
             watcher.target = None if hidden or self._user_hidden else _root_hwnd(self.root)
             watcher.taskbar = self._taskbar_hwnd
+            shield = self._shield
+            watcher.companion = (shield.hwnd if shield is not None and watcher.target
+                                 and shield.window.winfo_ismapped() else None)
         if (hidden or self._user_hidden or not self.docked or self._dragging
                 or self._palette_source is None or not self.root.winfo_ismapped()):
             return
@@ -2388,6 +2529,21 @@ class Strip:
             self._drag_height = self._compact_free_height
             self._drag_applied_geometry = shown
         self._sync_window_corners()
+        self._sync_shield()
+
+    def _sync_shield(self, event=None):
+        """Keep the input shield over the colour-keyed docked widget, or withdraw it."""
+        if event is not None and event.widget != self.root:
+            return
+        if self._start is not None:
+            return  # a press is in progress: the shield (and its capture) stays as it is
+        wanted = (self.mode == "taskbar" and self.docked and bool(self._transparent_key)
+                  and not (self._user_hidden or self._fullscreen_hidden or self._idle_hidden)
+                  and self.root.winfo_ismapped())
+        if wanted and self._shield is None:
+            self._shield = InputShield(self)
+        if self._shield is not None:
+            self._shield.sync(wanted)
 
     def _ack_on_click(self):
         return load_prefs(self.home)["ack_on_click"]
@@ -2439,6 +2595,12 @@ class Strip:
             if style_key != self._compact_style_key:
                 if self.root.attributes("-alpha") != alpha:
                     self.root.attributes("-alpha", alpha)
+                # Docked: key out the background so the taskbar's own material shows
+                # through; the sampled shade only picks the key and the text colours.
+                transparent = bg if self.docked and sys.platform == "win32" else ""
+                if transparent != self._transparent_key:
+                    self.root.attributes("-transparentcolor", transparent)
+                    self._transparent_key = transparent
                 root_bg = (blend(self.BORDER, palette["yellow"], 0.7) if attention
                            else self.BORDER if border else bg)
                 if self.root.cget("bg") != root_bg:
@@ -3780,6 +3942,7 @@ class Strip:
                 self._conversations(event, self._compact_targets(*status_press))
             else:
                 self._toggle_panel()
+        self._sync_shield()
 
     def _settle(self, start):
         """Spring from where the drag left the window into its final place."""
