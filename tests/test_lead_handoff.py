@@ -159,11 +159,44 @@ class LeadHandoffTests(unittest.TestCase):
                 self.assertNotEqual(cli.main(["inbox", "reassign", "--from", "claude:old", "--to", "claude:new",
                                               "--root", str(self.root)]), 0)
         self.assertEqual(len(self.mail("old", old)), 1)
-        self.assertEqual(len(self.mail("new", old)), 1)
+        copy = self.mail("new", old)[0]["id"]
+        # The request already follows the copy, so the original's ACK is all a retry has left.
+        self.assertEqual(self.state.load_request(old)["reply_id"], copy)
         moved = self.reassign()
         self.assertEqual(len(moved["mail"]), 1)
         self.assertEqual(self.mail("old", old), [])
-        self.assertEqual([m["id"] for m in self.mail("new", old)], [moved["mail"][0]["copy_id"]])
+        self.assertEqual([m["id"] for m in self.mail("new", old)], [copy])
+        self.assertEqual(len(self.state.load_request(old)["reassigned"]), 1)
+
+    def test_reassign_moves_mail_without_a_readable_request(self):
+        self.switch("old")
+        legacy = cli.inbox.send(self.state.path / "inbox", "legacy-task", "codex:w", "result", "old style",
+                                 recipient="claude:old")
+        self.switch("new")
+        moved = self.reassign()
+        self.assertEqual([m["id"] for m in moved["mail"]], [legacy["id"]])
+        copy = cli.inbox.pending(self.state.path / "inbox", "claude:new")[0]
+        self.assertEqual((copy["request_id"], copy["body"]), ("legacy-task", "old style"))
+        self.assertEqual(cli.inbox.pending(self.state.path / "inbox", "claude:old"), [])
+
+    def test_reassign_refuses_while_the_old_address_is_watched(self):
+        from handback import watcher
+        self.switch("old")
+        old = self.send("first")
+        self.switch("new")
+        lease = watcher.Lease(self.state.path, "claude:old")
+        lease.beat()
+        self.addCleanup(lease.release)
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = cli.main(["inbox", "reassign", "--from", "claude:old", "--to", "claude:new",
+                             "--root", str(self.root)])
+        self.assertNotEqual(code, 0)
+        self.assertIn("Nothing was moved", err.getvalue())
+        self.assertEqual(self.state.load_request(old)["return_to"], "claude:old")
+        self.assertTrue(self.reassign("--dry-run")["dry_run"])
+        self.assertEqual(self.reassign("--force")["requests"][0]["id"], old)
+        self.assertEqual(self.state.load_request(old)["return_to"], "claude:new")
 
     def test_reassign_dry_run_and_request_filter(self):
         self.switch("old")

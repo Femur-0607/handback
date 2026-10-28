@@ -240,7 +240,7 @@ def emit_result(result, return_file=None, summary=None, shown=None):
         return 3
     if summary is not None:
         output({**summary, "status": "failed", "result": result})
-    print(result.get("error") or result.get("text") or "Worker turn failed", file=sys.stderr)
+    print(shown or result.get("error") or result.get("text") or "Worker turn failed", file=sys.stderr)
     return 2
 
 
@@ -269,8 +269,8 @@ def collect(state, request, timeout, return_file, values, summary=None):
 
 
 def shown_text(state, request):
-    """The limited text when --max-result-chars cut a completed result, else None."""
-    text = (request.get("result") or {}).get("text") or ""
+    """The text the inbox mail holds when --max-result-chars cut the result, else None."""
+    text = collector.result_text(request.get("result") or {})
     shown = collector.limit_text(state, request, text)
     return None if shown == text else shown
 
@@ -647,8 +647,8 @@ def build_parser():
     new.add_argument("--label", default=os.environ.get("HANDBACK_LABEL", "the Lead"))
     new.add_argument("--return-to", help="agent:id that receives the result instead of the configured Lead")
     new.add_argument("--max-result-chars", type=positive_int, metavar="N",
-                     help="ask for an answer within N characters and show the Lead at most N; "
-                          "the complete result stays in a file")
+                     help="ask for an answer within N characters; the Lead sees the first N and "
+                          "the path of the complete result")
     send = sub.add_parser("send")
     send.add_argument("--model", help="override this thread's saved model after accepted delivery")
     send.add_argument("--reasoning-effort", choices=config.REASONING_EFFORTS,
@@ -662,8 +662,8 @@ def build_parser():
     send.add_argument("--label", default=os.environ.get("HANDBACK_LABEL", "the Lead"))
     send.add_argument("--return-to", help="agent:id that receives the result instead of the configured Lead")
     send.add_argument("--max-result-chars", type=positive_int, metavar="N",
-                      help="ask for an answer within N characters and show the Lead at most N; "
-                           "the complete result stays in a file")
+                      help="ask for an answer within N characters; the Lead sees the first N and "
+                           "the path of the complete result")
     mode = send.add_mutually_exclusive_group()
     mode.add_argument("--wait", action="store_true")
     mode.add_argument("--no-wait", action="store_true")
@@ -752,6 +752,7 @@ def build_parser():
     move.add_argument("--to", dest="target", required=True, metavar="AGENT:ID")
     move.add_argument("--request", help="only this request")
     move.add_argument("--dry-run", action="store_true", help="show what would move; change nothing")
+    move.add_argument("--force", action="store_true", help="move even while the old address has a live watcher")
     skills = sub.add_parser("install-skills", help="install packaged agent skills")
     skills.add_argument("--dry-run", action="store_true")
     skills.add_argument("--target-home", help="isolated home; never inspect host PATH or CODEX_HOME")
@@ -1013,10 +1014,13 @@ def dispatch(args, parser):
                 parser.error("--from expects <agent>:<id>")
             source = handle(args.source)[0]
             target = resolve_return_to(config.resolve(args.root), args.root, args.target)
-            output(reassign(state, source, target, args.request, dry_run=args.dry_run))
             if watcher.is_live(state.path, source):
-                print(f"Warning: {source} still has a live inbox watcher; that session may already have "
-                      "read the moved results.", file=sys.stderr)
+                note = (f"{source} still has a live inbox watcher; that session may be reading these results. "
+                        "Stop its watch or close it first")
+                if not (args.dry_run or args.force):
+                    raise ValueError(note + ", or pass --force. Nothing was moved.")
+                print("Warning: " + note + ".", file=sys.stderr)
+            output(reassign(state, source, target, args.request, dry_run=args.dry_run))
         else:
             if args.interval <= 0:
                 parser.error("--interval must be positive")

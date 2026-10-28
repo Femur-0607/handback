@@ -2,19 +2,18 @@
 
 Open requests get the new ``return_to``; a collector rereads it under the
 project lock before publishing, so a late result goes to the new address.
-An unacknowledged result/error is copied to the new recipient and only then
-acknowledged for the old one, so a crash can leave both readable but never
-neither. The copy has a deterministic ID and the original timestamp, so a
-retry republishes identical mail. Nothing is sent to a worker.
+An unacknowledged result/error is copied to the new recipient, its request
+is pointed at the copy, and only then is the original acknowledged for the
+old one, so a crash can leave both readable but never neither. The copy has
+a deterministic ID and the original timestamp, so a retry republishes
+identical mail and finishes the move. Nothing is sent to a worker.
 """
 from datetime import datetime, timezone
 import uuid
 
-from . import envelope, inbox
+from . import inbox
 from .collector import OPEN_STATES
-
-
-RESULT_KINDS = ("result", "error")
+from .handoff import RESULT_KINDS
 
 
 def copy_id(message_id, recipient):
@@ -52,12 +51,15 @@ def reassign(state, source, target, request_id=None, dry_run=False):
             moved["mail"].append({"id": mail["id"], "request_id": mail["request_id"], "copy_id": copy["id"]})
             if dry_run:
                 continue
-            inbox.put(path, envelope.validate(copy))
-            inbox.acknowledge(path, mail["id"], source)
-            request = state.load_request(mail["request_id"])
+            inbox.put(path, copy)
+            try:
+                request = state.load_request(mail["request_id"])
+            except ValueError:
+                request = None  # legacy task id or damaged record: move the mail alone
             if request is not None and request.get("reply_id") == mail["id"]:
                 # Keep explain/try consistent: the live result is now the copy.
                 request.update(return_to=target, reply_id=copy["id"])
                 _note(request, source, target, now, reply_id=mail["id"])
                 state.save_request(request)
+            inbox.acknowledge(path, mail["id"], source)
     return moved

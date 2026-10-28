@@ -12,16 +12,22 @@ All notable changes to this project are documented here. This file follows the
   result is copied to the new address and then acknowledged for the old one.
   The original mail stays on disk, nothing is resent to a worker, and an
   interrupted run can be repeated without duplicating mail. `--request` limits
-  it to one request; `--dry-run` only lists what would move. The `handoff`
-  note shows the command when anything is still addressed to the old Lead.
+  it to one request; `--dry-run` only lists what would move. It refuses while
+  the old address still has a live inbox watcher unless `--force` is given.
+  The `handoff` note shows the command when anything is still addressed to
+  the old Lead.
 - `new`/`send --max-result-chars N` keeps a long answer out of the Lead
   conversation. The brief asks the worker for an answer within N characters,
-  summary first; the inbox mail and synchronous output then hold at most the
-  first N characters and the path of the complete result file, while
-  `--return-file` still receives everything.
+  summary first; the inbox mail and synchronous output, failures included,
+  then hold the first N characters and a note with the path of the complete
+  result file, while `--return-file` still receives everything.
 
 ### Fixed
 
+- One result whose Lead delivery raised (a damaged delivery record, or a
+  placeholder recipient such as `codex:lead`) stopped every newer result from
+  being delivered to a Codex or Antigravity Lead on each scan. The others are
+  now routed first, and the error is still logged.
 - Off Windows, an Antigravity project registered for the checkout was never
   found: reading its `file:///home/...` folder URI dropped the leading slash.
   Windows `file:///C%3A/...` URIs read as before. macOS and Linux remain

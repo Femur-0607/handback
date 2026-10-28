@@ -297,6 +297,15 @@ class RequestTests(unittest.TestCase):
         self.assertFalse((self.state.path / "results" / (short["id"] + ".json")).exists())
         self.assertEqual(inbox.pending(self.state.path / "inbox", "claude:lead", short["id"])[0]["body"], "짧은 답")
 
+    def test_max_result_chars_also_cuts_a_printed_failure(self):
+        self.adapter.result = {"outcome": "failed", "error": "e" * 400}
+        code, _, err = self.invoke("send", "--thread", "a", "--text", "work", "--max-result-chars", "20")
+        self.assertEqual(code, 2)
+        mail = inbox.pending(self.state.path / "inbox", "claude:lead")[0]
+        self.assertTrue(mail["body"].startswith("e" * 20 + "\n\n[handback: cut to 20 of 400"))
+        self.assertIn(mail["body"], err)
+        self.assertNotIn("e" * 21, err)
+
     def test_max_result_chars_sync_json_and_rejects_nonpositive(self):
         self.adapter.result = {"outcome": "completed", "text": "x" * 50}
         code, raw, err = self.invoke_new("--text", "task", "--max-result-chars", "10")

@@ -47,6 +47,14 @@ class RouterTests(unittest.TestCase):
     def route(self, mail, **kwargs):
         return router.route(self.state, mail, adapter_for=self.factory, **kwargs)
 
+    def test_one_bad_mail_does_not_block_later_routing(self):
+        bad, good = self.mail("codex:lead", "first"), self.mail("codex:thread", "second")
+        with self.assertRaises(ValueError):
+            router.route_pending(self.state, adapter_for=self.factory)
+        self.assertEqual(self.adapter.deliver_to_lead.call_count, 1)
+        self.assertEqual(router.record(self.state, good["id"])["status"], "delivered")
+        self.assertEqual(router.record(self.state, bad["id"]), {})
+
     def test_concurrent_three_paths_attempt_once(self):
         mail = self.mail()
         started, release = threading.Event(), threading.Event()

@@ -98,9 +98,18 @@ def route(state, mail, *, explicit=False, adapter_for=None):
 
 
 def route_pending(state, recipient=None, adapter_for=None):
-    return [route(state, mail, adapter_for=adapter_for)
-            for mail in inbox.pending(state.path / "inbox", recipient)
-            if mail["kind"] in ("result", "error")]
+    """Route every pending result; one bad message is raised only after the rest had their turn."""
+    routed, failure = [], None
+    for mail in inbox.pending(state.path / "inbox", recipient):
+        if mail["kind"] not in ("result", "error"):
+            continue
+        try:
+            routed.append(route(state, mail, adapter_for=adapter_for))
+        except Exception as error:
+            failure = failure or error
+    if failure is not None:
+        raise failure
+    return routed
 
 
 def redeliver(state, message_id, recipient=None):

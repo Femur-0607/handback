@@ -36,12 +36,21 @@ def utcnow():
     return datetime.now(timezone.utc).isoformat()
 
 
+def result_path(state, request_id):
+    """Where a large or cut result is kept in full."""
+    return state.path / "results" / (request_id + ".json")
+
+
+def result_text(result):
+    return result.get("text") or result.get("error") or "(empty response)"
+
+
 def limit_text(state, request, text):
-    """What the Lead reads: at most the request's max_result_chars, then where the rest is."""
+    """What the Lead reads: the request's first max_result_chars, then where the rest is."""
     limit = request.get("max_result_chars")
     if not limit or len(text) <= limit:
         return text
-    report = state.path / "results" / (request["id"] + ".json")
+    report = result_path(state, request["id"])
     return (text[:limit] + f"\n\n[handback: cut to {limit} of {len(text)} characters by --max-result-chars. "
             f"Complete result: {report}]")
 
@@ -65,11 +74,11 @@ def _finish_request(state, request, result):
         current = state.load_request(request["id"])
         if current.get("status") in {"completed", "failed"}:
             return current
-        full = result.get("text") or result.get("error") or "(empty response)"
+        full = result_text(result)
         text = limit_text(state, current, full)
         large = len(json.dumps(text, ensure_ascii=False).encode("utf-8")) > 48 * 1024
         if large or text != full:
-            report = state.path / "results" / (current["id"] + ".json")
+            report = result_path(state, current["id"])
             atomic_json(report, result)
             if large:
                 text = "Large worker response. Read the complete result at: " + str(report)

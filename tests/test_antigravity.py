@@ -129,8 +129,11 @@ class ProjectAndHookConfigTests(Base):
             agy.resolve_project(self.root, self.gemini)
 
     def test_folder_uri_keeps_a_posix_root(self):
-        self.assertEqual(agy._uri_path("file:///C%3A/Users/me/x"), "C:/Users/me/x")
         self.assertEqual(agy._uri_path("file:///home/me/x"), "/home/me/x")
+        with patch.object(agy.os, "name", "nt"):
+            self.assertEqual(agy._uri_path("file:///C%3A/Users/me/x"), "C:/Users/me/x")
+        with patch.object(agy.os, "name", "posix"):
+            self.assertEqual(agy._uri_path("file:///a%3Awork/x"), "/a:work/x")
 
     def test_sidecar_managed_project_is_not_a_registration(self):
         # Antigravity 2.23 copies the target project for each sidecar (issue #4).

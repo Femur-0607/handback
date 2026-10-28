@@ -11,7 +11,7 @@ import sys
 import uuid
 
 from . import __version__, inbox
-from .collector import OPEN_STATES
+from .collector import OPEN_STATES, result_path
 from .envelope import ID_PATTERN
 from .invocation import command_text
 
@@ -75,7 +75,7 @@ def collect(state, resolved, source, now=None):
     for message in inbox.pending(folder):
         if message["kind"] not in RESULT_KINDS:
             continue
-        report = state.path / "results" / (message["request_id"] + ".json")
+        report = result_path(state, message["request_id"])
         body = message["body"]
         results.append({"id": message["id"], "request_id": message["request_id"],
                         "sender": message["sender"], "recipient": message["recipient"],

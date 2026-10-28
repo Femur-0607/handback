@@ -119,7 +119,7 @@ def _norm(path):
 def _uri_path(uri):
     # file:///C%3A/x -> C:/x on Windows; file:///home/x keeps its leading slash.
     path = unquote(urlparse(uri).path)
-    return path[1:] if re.match(r"/[A-Za-z]:", path) else path
+    return path[1:] if os.name == "nt" and re.match(r"/[A-Za-z]:", path) else path
 
 
 def _project_roots(project):
