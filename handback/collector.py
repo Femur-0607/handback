@@ -42,7 +42,14 @@ def result_path(state, request_id):
 
 
 def result_text(result):
-    return result.get("text") or result.get("error") or "(empty response)"
+    text = result.get("text") or result.get("error") or ""
+    return text if text.strip() else "(empty response)"
+
+
+def _utf8(result):
+    """Replace lone surrogates, which UTF-8 state and mail files cannot hold."""
+    return {key: value.encode("utf-8", "replace").decode("utf-8") if isinstance(value, str) else value
+            for key, value in result.items()}
 
 
 def limit_text(state, request, text):
@@ -70,6 +77,7 @@ def _finish_request(state, request, result):
         return request
     if result["outcome"] not in {"completed", "failed"}:
         raise ValueError("unknown collection outcome")
+    result = _utf8(result)
     with state.lock():
         current = state.load_request(request["id"])
         if current.get("status") in {"completed", "failed"}:

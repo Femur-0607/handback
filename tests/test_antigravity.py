@@ -573,6 +573,24 @@ class DeliveryTests(Base):
         self.assertNotIn("unknown", delivery)
         self.assertIn("agentapi is not available", delivery["stderr"])
 
+    def test_unregistered_checkout_is_send_failed_before_any_sidecar(self):
+        other = self.root.parent / "worktree"
+        other.mkdir()
+        adapter = agy.AntigravityAdapter(delivery_timeout=10, gemini=self.gemini)
+        delivery = adapter.deliver(CONVERSATION, {"body": "x"}, state=self.state,
+                                   request={**self.request, "root": str(other)})
+        self.assertFalse(delivery["accepted"])
+        self.assertNotIn("unknown", delivery)
+        self.assertIn("found 0", delivery["stderr"])
+        self.assertNotIn(agy.SIDECAR_PREFIX, self.config.read_text(encoding="utf-8"))
+
+    def test_busy_lead_lock_is_pending_not_unknown(self):
+        adapter = agy.AntigravityAdapter(gemini=self.gemini)
+        with patch.object(self.state, "lock", side_effect=TimeoutError("busy")), \
+                patch.object(adapter, "deliver", side_effect=AssertionError("must not send")):
+            self.assertEqual(adapter.deliver_to_lead("lead-conv", "text", state=self.state),
+                             {"accepted": False, "pending": True})
+
     def test_unrun_sidecar_is_unknown_and_disabled(self):
         adapter = agy.AntigravityAdapter(delivery_timeout=0.3, gemini=self.gemini)
         delivery = adapter.deliver(CONVERSATION, {"body": "x"}, state=self.state, request=self.request)

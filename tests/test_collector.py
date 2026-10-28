@@ -67,6 +67,17 @@ class Base(unittest.TestCase):
         return request
 
 
+class UnpublishableResultTests(Base):
+    def test_blank_or_unencodable_answer_still_closes_the_request(self):
+        for text, body in (("\n ", "(empty response)"), ("ok \ud83d", "ok ?")):
+            with self.subTest(text=text):
+                request = self.accepted()
+                collector.finish_request(self.state, request, {"outcome": "completed", "text": text})
+                self.assertEqual(self.state.load_request(request["id"])["status"], "completed")
+                mail = inbox.pending(self.state.path / "inbox", "claude:lead", request["id"])
+                self.assertEqual([m["body"] for m in mail], [body])
+
+
 class IncrementalRolloutTests(Base):
     def test_poll_reads_only_appended_records_and_waits_for_task_complete(self):
         request = self.accepted()

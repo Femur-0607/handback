@@ -15,6 +15,7 @@ guarantee except agentapi, sidecars and hooks themselves:
   or after the longest other Stop hook timeout passes without a continuation
   (completion contract approved 2026-10-07).
 """
+import contextlib
 from datetime import datetime, timezone
 import json
 import os
@@ -758,22 +759,26 @@ class AntigravityAdapter(BaseAdapter):
         if state is None or request is None:
             raise AdapterError("Antigravity delivery needs the request state")
         root = request.get("root") or state.root
-        project_id = resolve_project(root, self.gemini)
         folder = state.path / "antigravity" / request["id"]
         if thread.startswith("pending-"):
             args = ["new-conversation", f"--title={title or 'handback'}", f"--model={self.model}", envelope["body"]]
         else:
             args = ["send-message", thread, envelope["body"]]
-        registered = project_name(project_id, self.gemini)
-        sidecar = sidecar_name(request["id"], registered)
-        job = {"request_id": request["id"], "project_id": project_id, "args": args, "created": utcnow(),
-               "sidecar": sidecar, "root": str(root), "gemini": str(self.gemini)}
-        _write_json(folder / "job.json", job)
-        sidecar_dir = self.gemini / "config" / "sidecars" / sidecar
-        _write_json(sidecar_dir / "sidecar.json", {
-            "command": self_argv(ENTRY_SCRIPT)[0], "args": [*entry_args(ENTRY_SCRIPT), "antigravity-sidecar", "--job", str(folder / "job.json")],
-            "restart_policy": "never", "display_name": "handback " + request["id"][:8],
-            "description": "handback: one agentapi call for one request, then exits."})
+        try:
+            project_id = resolve_project(root, self.gemini)
+            registered = project_name(project_id, self.gemini)
+            sidecar = sidecar_name(request["id"], registered)
+            job = {"request_id": request["id"], "project_id": project_id, "args": args, "created": utcnow(),
+                   "sidecar": sidecar, "root": str(root), "gemini": str(self.gemini)}
+            _write_json(folder / "job.json", job)
+            sidecar_dir = self.gemini / "config" / "sidecars" / sidecar
+            _write_json(sidecar_dir / "sidecar.json", {
+                "command": self_argv(ENTRY_SCRIPT)[0], "args": [*entry_args(ENTRY_SCRIPT), "antigravity-sidecar", "--job", str(folder / "job.json")],
+                "restart_policy": "never", "display_name": "handback " + request["id"][:8],
+                "description": "handback: one agentapi call for one request, then exits."})
+        except (AdapterUnavailable, OSError, RuntimeError) as error:
+            # The sidecar is not enabled yet, so nothing can have been sent.
+            return {"accepted": False, "stderr": str(error), "classification": self.classify_error(str(error))}
         backups = state.home / "antigravity" / "backups"
         config = self.gemini / "config" / "config.json"
 
@@ -843,7 +848,11 @@ class AntigravityAdapter(BaseAdapter):
     def deliver_to_lead(self, thread, text, state=None):
         if state is None:
             return {"accepted": False, "pending": True}
-        with state.lock("lead:" + thread):
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(state.lock("lead:" + thread))
+            except TimeoutError:
+                return {"accepted": False, "pending": True}  # another delivery holds this Lead; nothing sent
             if not lead_idle(state.home, thread):
                 return {"accepted": False, "pending": True}
             # Reserve idle BEFORE submission, so fast real Stop hooks win over
