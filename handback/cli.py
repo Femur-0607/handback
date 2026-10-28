@@ -129,7 +129,7 @@ def _save_thread_execution(state, request, settings):
                                "execution_request": request["id"]})
 
 
-def submit(state, resolved, target, body, label, execution=None, return_to=None):
+def submit(state, resolved, target, body, label, execution=None, return_to=None, max_result_chars=None):
     target, agent, native_id = handle(target)
     # A provisional handle (Antigravity creates the conversation on first send)
     # resolves to its conversation once that first send has bound it.
@@ -154,12 +154,17 @@ def submit(state, resolved, target, body, label, execution=None, return_to=None)
     if target == return_to:
         raise ValueError("Lead and worker must not have the same handle")
     text = f"{marker} From {label} through handback.\n{body}"
+    if max_result_chars:
+        text += (f"\nKeep your final answer within {max_result_chars} characters: start with a short summary, "
+                 "and write longer details to a file and give its path.")
     outgoing = envelope.make(request_id, return_to, target, text, kind="request")
     request = {"schema": 1, "id": request_id, "marker": marker, "thread": native_id,
                "handle": target, "agent": agent, "return_to": return_to,
                "outgoing_id": outgoing["id"], "created_utc": utcnow(),
                "status": "prepared", "hop": 0, "root": str(state.root),
                "execution": selected}
+    if max_result_chars:
+        request["max_result_chars"] = max_result_chars
     with state.lock():
         if any(item.get("handle") == target and item.get("status") in OPEN_STATES
                for item in state.requests()):
@@ -215,16 +220,18 @@ def submit(state, resolved, target, body, label, execution=None, return_to=None)
     return request, 0 if delivery.get("accepted") else 4
 
 
-def emit_result(result, return_file=None, summary=None):
+def emit_result(result, return_file=None, summary=None, shown=None):
+    """``shown`` replaces the text printed for the Lead; --return-file keeps the complete text."""
     outcome = result["outcome"]
     if outcome == "completed":
         text = result.get("text") or ""
         if return_file:
             Path(return_file).write_text(text, encoding="utf-8")
         if summary is None:
-            print(text)
+            print(text if shown is None else shown)
         else:
-            output({**summary, "status": "completed", "result": result})
+            output({**summary, "status": "completed",
+                    "result": result if shown is None else {**result, "text": shown}})
         return 0
     if outcome == "timeout":
         if summary is not None:
@@ -248,7 +255,7 @@ def collect(state, request, timeout, return_file, values, summary=None):
     if request.get("status") in {"completed", "failed"}:
         request = finish_request(state, request, request["result"])
         summary = result_identity(request, summary)
-        return emit_result(request["result"], return_file, summary)
+        return emit_result(request["result"], return_file, summary, shown_text(state, request))
     if request.get("status") == "send_failed":
         if summary is not None:
             output({**summary, "status": "send_failed"})
@@ -258,7 +265,14 @@ def collect(state, request, timeout, return_file, values, summary=None):
     result = adapter.fallback_collect(request, timeout=timeout)
     completed = finish_request(state, request, result)
     summary = result_identity(completed, summary)
-    return emit_result(completed.get("result", result), return_file, summary)
+    return emit_result(completed.get("result", result), return_file, summary, shown_text(state, completed))
+
+
+def shown_text(state, request):
+    """The limited text when --max-result-chars cut a completed result, else None."""
+    text = (request.get("result") or {}).get("text") or ""
+    shown = collector.limit_text(state, request, text)
+    return None if shown == text else shown
 
 
 def result_identity(request, summary):
@@ -375,7 +389,8 @@ def cmd_send(args, created=None):
     return_to = resolve_return_to(resolved, args.root, getattr(args, "return_to", None))
     state = ProjectState(args.root)
     request, code = submit(state, resolved, args.to or args.thread, body, args.label,
-                           execution=execution_overrides(args), return_to=return_to)
+                           execution=execution_overrides(args), return_to=return_to,
+                           max_result_chars=getattr(args, "max_result_chars", None))
     if getattr(args, "on_request", None):
         args.on_request(request)
     for warning in (request.get("delivery") or {}).get("warnings", []):
@@ -585,6 +600,16 @@ def warn_active_lead(root, previous, lead):
           "over can send with --return-to <its agent:id> instead of use.", file=sys.stderr)
 
 
+def positive_int(value):
+    try:
+        number = int(value)
+    except ValueError:
+        number = 0
+    if number <= 0:
+        raise argparse.ArgumentTypeError("expected a positive integer")
+    return number
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="handback", description="handback: durable local agent relay")
     from . import __version__
@@ -621,6 +646,9 @@ def build_parser():
     new.add_argument("--return-file")
     new.add_argument("--label", default=os.environ.get("HANDBACK_LABEL", "the Lead"))
     new.add_argument("--return-to", help="agent:id that receives the result instead of the configured Lead")
+    new.add_argument("--max-result-chars", type=positive_int, metavar="N",
+                     help="ask for an answer within N characters and show the Lead at most N; "
+                          "the complete result stays in a file")
     send = sub.add_parser("send")
     send.add_argument("--model", help="override this thread's saved model after accepted delivery")
     send.add_argument("--reasoning-effort", choices=config.REASONING_EFFORTS,
@@ -633,6 +661,9 @@ def build_parser():
     source.add_argument("--file")
     send.add_argument("--label", default=os.environ.get("HANDBACK_LABEL", "the Lead"))
     send.add_argument("--return-to", help="agent:id that receives the result instead of the configured Lead")
+    send.add_argument("--max-result-chars", type=positive_int, metavar="N",
+                      help="ask for an answer within N characters and show the Lead at most N; "
+                           "the complete result stays in a file")
     mode = send.add_mutually_exclusive_group()
     mode.add_argument("--wait", action="store_true")
     mode.add_argument("--no-wait", action="store_true")

@@ -18,7 +18,7 @@ Run `{{HANDBACK}} <command>`. Use absolute checkout and brief paths. Project rul
 
 ## Shared delegation and results
 
-- Send a brief: `send --root <checkout> --to <agent:id> --file <absolute-brief> --no-wait`. Short instructions use `--text`. Save the JSON request ID and marker. A detached collector writes confirmed results even after the Lead closes.
+- Send a brief: `send --root <checkout> --to <agent:id> --file <absolute-brief> --no-wait`. Short instructions use `--text`. Save the JSON request ID and marker. A detached collector writes confirmed results even after the Lead closes. To keep a long answer out of the Lead conversation, add `--max-result-chars N`: the Lead reads the first N characters and the path of the complete result.
 - All Leads: read `inbox list --root <checkout> --for <lead-address>`, or recover `wait --root <checkout> --request <request-id> --timeout 300`. Waiting never sends again.
 - After handling a result: `inbox ack --root <checkout> --for <lead-address> --request <request-id>`. Use exactly one of `--request` or the existing `--id <message-id>`. `inbox list --request <request-id>` filters pending mail. Reading does not ACK; unacknowledged messages replay on the next watch. Large answers point to a complete result file.
 - Synchronous `send` waits by default. Exit 0 is completion (with `--no-wait`, acceptance only); 2 worker failure; 3 collection timeout with request still open; 4 delivery failure/unknown; 5 configuration or command error. Never resend an uncertain request. Inspect `status`, then recover with `wait`.

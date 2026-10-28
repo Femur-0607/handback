@@ -14,6 +14,11 @@ All notable changes to this project are documented here. This file follows the
   interrupted run can be repeated without duplicating mail. `--request` limits
   it to one request; `--dry-run` only lists what would move. The `handoff`
   note shows the command when anything is still addressed to the old Lead.
+- `new`/`send --max-result-chars N` keeps a long answer out of the Lead
+  conversation. The brief asks the worker for an answer within N characters,
+  summary first; the inbox mail and synchronous output then hold at most the
+  first N characters and the path of the complete result file, while
+  `--return-file` still receives everything.
 
 ### Fixed
 
