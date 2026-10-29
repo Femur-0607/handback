@@ -224,6 +224,57 @@ class LeadHandoffTests(unittest.TestCase):
             self.assertNotEqual(code, 0, (source, target))
         self.assertTrue(all(r["return_to"] == "claude:old" for r in self.state.requests()))
 
+    def test_reassign_refuses_a_worker_as_the_new_address(self):
+        from handback.reassign import reassign
+        self.switch("old")
+        old = self.send("first")
+        with self.assertRaisesRegex(ValueError, "worker"):
+            reassign(self.state, "claude:old", "codex:first")
+        self.run_cli("wait", "--request", old, "--timeout", "1")
+        with self.assertRaisesRegex(ValueError, "worker"):
+            reassign(self.state, "claude:old", "codex:first")  # the reply's sender
+        self.assertEqual(self.state.load_request(old)["return_to"], "claude:old")
+        self.assertEqual(len(self.mail("old", old)), 1)
+
+    def test_reassign_unknown_or_foreign_request_is_an_error(self):
+        self.switch("old")
+        old = self.send("first")
+        for request in ("f" * 32, old):
+            source = "claude:other" if request == old else "claude:old"
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                code = cli.main(["inbox", "reassign", "--from", source, "--to", "claude:new",
+                                 "--request", request, "--root", str(self.root)])
+            self.assertNotEqual(code, 0, request)
+            self.assertIn("Nothing was moved", err.getvalue())
+
+    def test_reassign_finishes_a_request_whose_reply_was_published_but_not_saved(self):
+        self.switch("old")
+        old = self.send("first")
+        real_save = cli.ProjectState.save_request
+
+        def stop_before_saving_completion(state, request):
+            if request.get("status") == "completed":
+                raise OSError("collector stopped")
+            return real_save(state, request)
+
+        with patch.object(cli.ProjectState, "save_request", stop_before_saving_completion), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertNotEqual(cli.main(["wait", "--request", old, "--timeout", "1", "--root", str(self.root)]), 0)
+        self.assertEqual(self.state.load_request(old)["status"], "accepted")
+        self.assertEqual(len(self.mail("old", old)), 1)
+        self.switch("new")
+        moved = self.reassign()
+        self.assertEqual([r["id"] for r in moved["finished"]], [old])
+        self.assertEqual(moved["requests"], [])
+        request = self.state.load_request(old)
+        copy = self.mail("new", old)[0]
+        self.assertEqual((request["status"], request["reply_id"], request["return_to"]),
+                         ("completed", copy["id"], "claude:new"))
+        self.assertEqual(self.mail("old", old), [])
+        # A later collection finds the request complete instead of colliding on the reply ID.
+        self.assertEqual(self.run_cli("wait", "--request", old, "--timeout", "1").strip(), "한글 답")
+
 
 class CallerIdentityTests(LeadHandoffTests):
     """Issue #3: a second Claude session in the same root must not receive another session's result."""

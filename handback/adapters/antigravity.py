@@ -776,7 +776,7 @@ class AntigravityAdapter(BaseAdapter):
                 "command": self_argv(ENTRY_SCRIPT)[0], "args": [*entry_args(ENTRY_SCRIPT), "antigravity-sidecar", "--job", str(folder / "job.json")],
                 "restart_policy": "never", "display_name": "handback " + request["id"][:8],
                 "description": "handback: one agentapi call for one request, then exits."})
-        except (AdapterUnavailable, OSError, RuntimeError) as error:
+        except (OSError, RuntimeError) as error:  # AdapterError, and self_argv in a frozen build
             # The sidecar is not enabled yet, so nothing can have been sent.
             return {"accepted": False, "stderr": str(error), "classification": self.classify_error(str(error))}
         backups = state.home / "antigravity" / "backups"
@@ -787,15 +787,9 @@ class AntigravityAdapter(BaseAdapter):
 
         settled = False
         drop_copy = False
-        # The dict being returned once the sidecar ran; cleanup failures are noted
-        # on it instead of replacing that outcome with an exception.
-        returned = {}
 
-        def outcome(value):
-            returned.update(value=value)
-            return value
-
-        try:
+        def submit():
+            nonlocal settled, drop_copy
             if not thread.startswith("pending-"):
                 # A known conversation can stop before agentapi returns too.
                 observe_lead(state.home, thread)
@@ -811,15 +805,15 @@ class AntigravityAdapter(BaseAdapter):
             settled = True
             if result.get("exit") is None and result.get("invoked") is False and result.get("error"):
                 # The sidecar stopped before calling agentapi: nothing was sent.
-                return outcome({"accepted": False, "stderr": result["error"],
-                                "classification": self.classify_error(result["error"])})
+                return {"accepted": False, "stderr": result["error"],
+                        "classification": self.classify_error(result["error"])}
             if result.get("exit") is None:
-                return outcome({"accepted": False, "unknown": True,
-                                "stderr": result.get("error") or "sidecar outcome is unknown"})
+                return {"accepted": False, "unknown": True,
+                        "stderr": result.get("error") or "sidecar outcome is unknown"}
             if result.get("exit") != 0:
-                return outcome({"accepted": False, "returncode": result.get("exit"),
-                                "stderr": result.get("stderr") or result.get("error") or "agentapi failed",
-                                "classification": self.classify_error(result.get("stderr") or result.get("error") or "")})
+                return {"accepted": False, "returncode": result.get("exit"),
+                        "stderr": result.get("stderr") or result.get("error") or "agentapi failed",
+                        "classification": self.classify_error(result.get("stderr") or result.get("error") or "")}
             delivery = {"accepted": True, "returncode": 0}
             if thread.startswith("pending-"):
                 try:
@@ -837,16 +831,21 @@ class AntigravityAdapter(BaseAdapter):
                 drop_copy = True  # an existing conversation stays where it is
             # Open the spool so the relay hook records observations for this conversation.
             observe_lead(state.home, delivery.get("thread") or thread)
-            return outcome(delivery)
+            return delivery
+
+        def settle(value):
+            entry = value.get("sidecars", {}).get(sidecar)
+            if entry is None:
+                return False
+            if settled:
+                value["sidecars"].pop(sidecar)  # relay-owned; nothing else references it
+            else:
+                entry["enabled"] = False  # keep for diagnosis when the outcome is unknown
+
+        delivery = None
+        try:
+            delivery = submit()
         finally:
-            def settle(value):
-                entry = value.get("sidecars", {}).get(sidecar)
-                if entry is None:
-                    return False
-                if settled:
-                    value["sidecars"].pop(sidecar)  # relay-owned; nothing else references it
-                else:
-                    entry["enabled"] = False  # keep for diagnosis when the outcome is unknown
             try:
                 update_user_json(config, settle, backups)
                 if settled:
@@ -854,12 +853,13 @@ class AntigravityAdapter(BaseAdapter):
                 if drop_copy:
                     _remove_sidecar_copy(self.gemini, sidecar, root, backups)
             except Exception as error:
-                if "value" not in returned:
+                if delivery is None or not settled:
                     raise
-                # The sidecar already ran once (it never reruns), so the outcome stands.
-                returned["value"].setdefault("warnings", []).append(
+                # The sidecar already ran once (it never reruns), so its outcome stands.
+                delivery.setdefault("warnings", []).append(
                     f"Sidecar {sidecar} was not cleaned up ({type(error).__name__}: {error}); "
                     "run cleanup-sidecars later")
+        return delivery
 
     def deliver_to_lead(self, thread, text, state=None):
         if state is None:

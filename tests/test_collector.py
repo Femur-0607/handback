@@ -77,6 +77,12 @@ class UnpublishableResultTests(Base):
                 mail = inbox.pending(self.state.path / "inbox", "claude:lead", request["id"])
                 self.assertEqual([m["body"] for m in mail], [body])
 
+    def test_blank_text_does_not_hide_the_error(self):
+        request = self.accepted()
+        collector.finish_request(self.state, request, {"outcome": "failed", "text": "\n", "error": "quota exceeded"})
+        mail = inbox.pending(self.state.path / "inbox", "claude:lead", request["id"])
+        self.assertEqual([(m["kind"], m["body"]) for m in mail], [("error", "quota exceeded")])
+
 
 class IncrementalRolloutTests(Base):
     def test_poll_reads_only_appended_records_and_waits_for_task_complete(self):

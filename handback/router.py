@@ -152,58 +152,77 @@ def spawn_external(state, conversation):
     raise OSError("Cannot start external relay router")
 
 
-def _take_wakeups(folder):
-    """Conversations whose router run found the lock busy; consumed once read."""
-    conversations = set()
+def _wakeups(folder, skip=()):
+    """{path: conversation} for runs that found the lock busy, except paths in ``skip``."""
+    found = {}
     for path in sorted(folder.glob("*.json")):
+        if path in skip:
+            continue
         try:
             value = inbox._read_json(path)
         except (OSError, ValueError, UnicodeError):
             value = None
-        if isinstance(value, dict) and isinstance(value.get("conversation"), str):
-            conversations.add(value["conversation"])
-        path.unlink(missing_ok=True)
-    return conversations
+        # An unreadable wakeup names no conversation; it is dropped as handled.
+        found[path] = value.get("conversation") if isinstance(value, dict) else None
+    return found
 
 
 def external_run(state, conversation=None):
     """Start missing Antigravity collectors for idle conversations, then route pending mail.
 
     One run at a time. A run that finds another one active leaves its
-    conversation in ``external-router/`` first; the active run takes it before
-    releasing and looks again afterwards, so no idle conversation is dropped.
+    conversation in ``external-router/`` first; the active run handles it
+    before releasing and looks again afterwards, so no idle conversation is
+    dropped. A wakeup file is deleted only once its conversation was handled;
+    one that failed stays for the next run, and errors are raised at the end.
     """
     from . import collector
     from .migration import pid_alive
     wakeups = state.path / "external-router"
     if conversation is not None:
         atomic_json(wakeups / (uuid.uuid4().hex + ".json"), {"conversation": conversation})
+    failed, error = set(), None
     while True:
         try:
             with state.lock("external-router", timeout=0):
                 while True:
-                    conversations = _take_wakeups(wakeups)
-                    if not conversations:
+                    taken = _wakeups(wakeups, failed)
+                    if not taken:
                         break
+                    broken = set()
                     for request in state.requests():
                         if (request.get("agent") != "antigravity" or
-                                request.get("thread") not in conversations or
+                                request.get("thread") not in taken.values() or
                                 request.get("status") not in collector.COLLECTABLE):
                             continue
-                        with state.lock():
-                            current = state.load_request(request["id"])
-                            info = current.get("collector", {})
-                            try:
-                                if info.get("starting") and (not info.get("starter_pid") or pid_alive(info["starter_pid"])):
-                                    continue  # Publication may still be in progress.
-                                if info.get("pid") and pid_alive(info["pid"]):
-                                    continue
-                            except ValueError:
-                                continue  # Unknown liveness does not prevent other mail routing.
-                            collector.spawn(state, current)
-                route_pending(state)
+                        try:
+                            with state.lock():
+                                current = state.load_request(request["id"])
+                                info = current.get("collector", {})
+                                try:
+                                    if info.get("starting") and (not info.get("starter_pid") or pid_alive(info["starter_pid"])):
+                                        continue  # Publication may still be in progress.
+                                    if info.get("pid") and pid_alive(info["pid"]):
+                                        continue
+                                except ValueError:
+                                    continue  # Unknown liveness does not prevent other mail routing.
+                                collector.spawn(state, current)
+                        except Exception as caught:
+                            error = error or caught
+                            broken.add(request.get("thread"))
+                    for path, name in taken.items():
+                        if name in broken:
+                            failed.add(path)  # kept on disk for the next run
+                        else:
+                            path.unlink(missing_ok=True)
+                try:
+                    route_pending(state)
+                except Exception as caught:
+                    error = error or caught
         except TimeoutError:
-            return  # the active run takes our wakeup
+            break  # the active run takes our wakeup
         # A run that failed to get the lock just now left its wakeup for us.
-        if not any(wakeups.glob("*.json")):
-            return
+        if not _wakeups(wakeups, failed):
+            break
+    if error is not None:
+        raise error

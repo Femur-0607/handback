@@ -13,7 +13,8 @@ All notable changes to this project are documented here. This file follows the
   The original mail stays on disk, nothing is resent to a worker, and an
   interrupted run can be repeated without duplicating mail. `--request` limits
   it to one request; `--dry-run` only lists what would move. It refuses while
-  the old address still has a live inbox watcher unless `--force` is given.
+  the old address still has a live inbox watcher unless `--force` is given,
+  and always refuses a worker's own address or an unknown `--request`.
   The `handoff` note shows the command when anything is still addressed to
   the old Lead.
 - `new`/`send --max-result-chars N` keeps a long answer out of the Lead

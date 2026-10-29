@@ -41,9 +41,20 @@ def result_path(state, request_id):
     return state.path / "results" / (request_id + ".json")
 
 
+def reply_id(request_id):
+    """The one message ID a request's result or error is published under."""
+    return uuid.uuid5(uuid.NAMESPACE_URL, "agent-relay:" + request_id).hex
+
+
+def result_field(result):
+    """"text" or "error", whichever the Lead reads; a blank text must not hide the error."""
+    return next((key for key in ("text", "error")
+                 if isinstance(result.get(key), str) and result[key].strip()), None)
+
+
 def result_text(result):
-    text = result.get("text") or result.get("error") or ""
-    return text if text.strip() else "(empty response)"
+    field = result_field(result)
+    return result[field] if field else "(empty response)"
 
 
 def _utf8(result):
@@ -93,7 +104,7 @@ def _finish_request(state, request, result):
         mail = envelope.make(current["id"], current["handle"], current["return_to"], text,
                              kind="result" if result["outcome"] == "completed" else "error",
                              hop=current.get("hop", 0) + 1,
-                             message_id=uuid.uuid5(uuid.NAMESPACE_URL, "agent-relay:" + current["id"]).hex)
+                             message_id=reply_id(current["id"]))
         # Repeating collection after a crash must publish byte-identical mail.
         mail["created_utc"] = current["created_utc"]
         inbox.put(state.path / "inbox", mail)

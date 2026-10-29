@@ -342,6 +342,37 @@ with open(sys.argv[1], 'a+b') as stream:
             router.external_run(self.state, "worker")
             self.assertEqual(spawn.call_count, 1)
 
+    def test_router_errors_keep_unhandled_wakeups_and_still_take_late_ones(self):
+        for conversation, request_id in (("conv-a", "a" * 32), ("conv-b", "b" * 32), ("conv-c", "c" * 32)):
+            self.state.save_request({"id": request_id, "agent": "antigravity", "thread": conversation,
+                                     "handle": "antigravity:" + conversation, "status": "accepted",
+                                     "root": str(self.root)})
+        router.atomic_json(self.state.path / "external-router" / "earlier.json", {"conversation": "conv-b"})
+        started, routes = [], []
+
+        def spawn(state, request):
+            if request["thread"] == "conv-b":
+                raise OSError("cannot start collector")
+            started.append(request["thread"])
+
+        def failing_route(state, *args, **kwargs):
+            routes.append(1)
+            if len(routes) == 1:
+                # conv-c goes idle while this run holds the lock, then routing fails.
+                worker = threading.Thread(target=router.external_run, args=(self.state, "conv-c"))
+                worker.start()
+                worker.join(5)
+                raise ValueError("bad delivery record")
+
+        with patch.object(collector, "spawn", side_effect=spawn), \
+                patch.object(router, "route_pending", side_effect=failing_route), \
+                self.assertRaises(OSError):
+            router.external_run(self.state, "conv-a")
+        self.assertEqual(started, ["conv-a", "conv-c"])
+        left = [router.inbox._read_json(path)["conversation"]
+                for path in (self.state.path / "external-router").glob("*.json")]
+        self.assertEqual(left, ["conv-b"])
+
     def test_busy_router_hands_its_idle_conversation_to_the_active_run(self):
         for conversation, request_id in (("conv-a", "a" * 32), ("conv-b", "b" * 32)):
             self.state.save_request({"id": request_id, "agent": "antigravity", "thread": conversation,

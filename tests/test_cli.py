@@ -306,6 +306,14 @@ class RequestTests(unittest.TestCase):
         self.assertIn(mail["body"], err)
         self.assertNotIn("e" * 21, err)
 
+    def test_max_result_chars_cuts_a_failure_in_json_output(self):
+        self.adapter.result = {"outcome": "failed", "text": "", "error": "e" * 400}
+        code, raw, _ = self.invoke_new("--text", "task", "--max-result-chars", "10")
+        self.assertEqual(code, 2)
+        data = json.loads(raw)
+        self.assertTrue(data["result"]["error"].startswith("e" * 10 + "\n\n[handback: cut to 10 of 400"))
+        self.assertNotIn("e" * 11, raw)
+
     def test_max_result_chars_sync_json_and_rejects_nonpositive(self):
         self.adapter.result = {"outcome": "completed", "text": "x" * 50}
         code, raw, err = self.invoke_new("--text", "task", "--max-result-chars", "10")
