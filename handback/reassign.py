@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 import uuid
 
 from . import inbox
-from .collector import OPEN_STATES
+from .collector import OPEN_STATES, reply_id
 from .handoff import RESULT_KINDS
 
 
@@ -34,19 +34,23 @@ def reassign(state, source, target, request_id=None, dry_run=False):
     now = datetime.now(timezone.utc).isoformat()
     moved = {"from": source, "to": target, "dry_run": dry_run, "requests": [], "mail": []}
     with state.lock():
-        for request in state.requests():
-            if request.get("return_to") != source or request.get("status") not in OPEN_STATES:
-                continue
-            if request_id is not None and request["id"] != request_id:
-                continue
+        requests = {request["id"]: request for request in state.requests()}
+        mails = [mail for mail in inbox.pending(path, source, request_id) if mail["kind"] in RESULT_KINDS]
+        opened = [request for request in requests.values()
+                  if request.get("return_to") == source and request.get("status") in OPEN_STATES
+                  and (request_id is None or request["id"] == request_id)]
+        workers = {request.get("handle") for request in opened}
+        workers.update(requests[mail["request_id"]].get("handle") for mail in mails if mail["request_id"] in requests)
+        if target in workers:
+            raise ValueError(f"{target} is the worker of a request being moved; a Lead and its worker "
+                             "must not have the same handle. Nothing was moved.")
+        for request in opened:
             moved["requests"].append({"id": request["id"], "status": request["status"]})
             if not dry_run:
                 request["return_to"] = target
                 _note(request, source, target, now)
                 state.save_request(request)
-        for mail in inbox.pending(path, source, request_id):
-            if mail["kind"] not in RESULT_KINDS:
-                continue
+        for mail in mails:
             copy = {**mail, "id": copy_id(mail["id"], target), "recipient": target}
             moved["mail"].append({"id": mail["id"], "request_id": mail["request_id"], "copy_id": copy["id"]})
             if dry_run:
@@ -56,7 +60,11 @@ def reassign(state, source, target, request_id=None, dry_run=False):
                 request = state.load_request(mail["request_id"])
             except ValueError:
                 request = None  # legacy task id or damaged record: move the mail alone
-            if request is not None and request.get("reply_id") == mail["id"]:
+            if request is not None and (request.get("reply_id") == mail["id"] or (
+                    # A collection that published its reply and stopped before saving
+                    # the request; its retry finishes with this reply_id.
+                    not request.get("reply_id") and request.get("status") in OPEN_STATES
+                    and mail["id"] == reply_id(request["id"]))):
                 # Keep explain/try consistent: the live result is now the copy.
                 request.update(return_to=target, reply_id=copy["id"])
                 _note(request, source, target, now, reply_id=mail["id"])

@@ -239,7 +239,10 @@ def emit_result(result, return_file=None, summary=None, shown=None):
         print("Timed out; the request stays open. Use wait; do not resend.", file=sys.stderr)
         return 3
     if summary is not None:
-        output({**summary, "status": "failed", "result": result})
+        # The field collector.result_text read, so the JSON holds what the mail does.
+        field = "text" if result.get("text") else "error"
+        output({**summary, "status": "failed",
+                "result": result if shown is None else {**result, field: shown}})
     print(shown or result.get("error") or result.get("text") or "Worker turn failed", file=sys.stderr)
     return 2
 

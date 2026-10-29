@@ -170,6 +170,36 @@ class LeadHandoffTests(unittest.TestCase):
         self.assertEqual([m["id"] for m in self.mail("new", old)], [copy])
         self.assertEqual(len(self.state.load_request(old)["reassigned"]), 1)
 
+    def test_reassign_after_a_collection_stopped_before_saving_finishes_on_the_copy(self):
+        from handback import collector
+        self.switch("old")
+        old = self.send("first")
+        self.switch("new")
+        result = {"outcome": "completed", "text": "done"}
+        # The reply is published, then the collector stops before saving the request.
+        with patch.object(cli.inbox, "acknowledge", side_effect=OSError("crash")), self.assertRaises(OSError):
+            collector.finish_request(self.state, self.state.load_request(old), result)
+        self.assertEqual(self.state.load_request(old)["status"], "accepted")
+        moved = self.reassign()
+        self.assertEqual([r["id"] for r in moved["requests"]], [old])
+        copy = moved["mail"][0]["copy_id"]
+        self.assertEqual(self.state.load_request(old)["reply_id"], copy)
+        # The retried collection finishes on the copy instead of failing on the published ID.
+        finished = collector.finish_request(self.state, self.state.load_request(old), result)
+        self.assertEqual((finished["status"], finished["reply_id"], finished["return_to"]),
+                         ("completed", copy, "claude:new"))
+        self.assertEqual([m["id"] for m in self.mail("new", old)], [copy])
+        self.assertEqual(self.mail("old", old), [])
+
+    def test_reassign_refuses_the_worker_of_a_moved_request(self):
+        from handback.reassign import reassign
+        self.switch("old")
+        old = self.send("first")
+        worker = self.state.load_request(old)["handle"]
+        with self.assertRaisesRegex(ValueError, "worker of a request being moved"):
+            reassign(self.state, "claude:old", worker)
+        self.assertEqual(self.state.load_request(old)["return_to"], "claude:old")
+
     def test_reassign_moves_mail_without_a_readable_request(self):
         self.switch("old")
         legacy = cli.inbox.send(self.state.path / "inbox", "legacy-task", "codex:w", "result", "old style",

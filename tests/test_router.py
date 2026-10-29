@@ -364,6 +364,37 @@ with open(sys.argv[1], 'a+b') as stream:
         self.assertEqual(started, ["conv-a", "conv-b"])
         self.assertEqual(list((self.state.path / "external-router").glob("*.json")), [])
 
+    def test_a_failing_spawn_or_route_still_starts_every_taken_conversation(self):
+        for conversation, request_id in (("conv-a", "a" * 32), ("conv-b", "b" * 32), ("conv-c", "c" * 32)):
+            self.state.save_request({"id": request_id, "agent": "antigravity", "thread": conversation,
+                                     "handle": "antigravity:" + conversation, "status": "accepted",
+                                     "root": str(self.root)})
+        # Left by an earlier run that found the lock busy.
+        atomic_json(self.state.path / "external-router" / "earlier.json", {"conversation": "conv-c"})
+        started, routed = [], []
+
+        def spawn(state, request):
+            if request["thread"] == "conv-a":
+                raise OSError("collector did not start")
+            started.append(request["thread"])
+
+        def failing_route(state, *args, **kwargs):
+            routed.append(True)
+            if len(routed) == 1:
+                # Conversation B goes idle while this run still holds the router lock.
+                worker = threading.Thread(target=router.external_run, args=(self.state, "conv-b"))
+                worker.start()
+                worker.join(5)
+                raise RuntimeError("Lead delivery failed")
+
+        with patch.object(collector, "spawn", side_effect=spawn), \
+                patch.object(router, "route_pending", side_effect=failing_route), \
+                self.assertRaisesRegex(OSError, "collector did not start"):
+            router.external_run(self.state, "conv-a")
+        self.assertEqual(started, ["conv-c", "conv-b"])
+        self.assertEqual(len(routed), 2)
+        self.assertEqual(list((self.state.path / "external-router").glob("*.json")), [])
+
     def test_hook_child_delivers_pending_once(self):
         config.use_topology(self.root, "antigravity:lead-id", ["codex"], home=self.home)
         mail = self.mail()

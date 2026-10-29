@@ -41,6 +41,11 @@ def result_path(state, request_id):
     return state.path / "results" / (request_id + ".json")
 
 
+def reply_id(request_id):
+    """The deterministic ID of a request's result/error mail."""
+    return uuid.uuid5(uuid.NAMESPACE_URL, "agent-relay:" + request_id).hex
+
+
 def result_text(result):
     text = result.get("text") or result.get("error") or ""
     return text if text.strip() else "(empty response)"
@@ -90,13 +95,19 @@ def _finish_request(state, request, result):
             atomic_json(report, result)
             if large:
                 text = "Large worker response. Read the complete result at: " + str(report)
-        mail = envelope.make(current["id"], current["handle"], current["return_to"], text,
-                             kind="result" if result["outcome"] == "completed" else "error",
-                             hop=current.get("hop", 0) + 1,
-                             message_id=uuid.uuid5(uuid.NAMESPACE_URL, "agent-relay:" + current["id"]).hex)
-        # Repeating collection after a crash must publish byte-identical mail.
-        mail["created_utc"] = current["created_utc"]
-        inbox.put(state.path / "inbox", mail)
+        message_id = reply_id(current["id"])
+        if (state.path / "inbox" / (message_id + ".json")).exists():
+            # Published before a crash. inbox reassign may have moved it to a copy
+            # since and pointed reply_id there; rebuilding it for the new
+            # return_to would conflict with the published ID.
+            message_id = current.get("reply_id") or message_id
+        else:
+            mail = envelope.make(current["id"], current["handle"], current["return_to"], text,
+                                 kind="result" if result["outcome"] == "completed" else "error",
+                                 hop=current.get("hop", 0) + 1, message_id=message_id)
+            # Repeating collection after a crash must publish byte-identical mail.
+            mail["created_utc"] = current["created_utc"]
+            inbox.put(state.path / "inbox", mail)
         # The outgoing envelope keeps the address it was sent to; a first send may
         # have rebound the request since (Antigravity provisional handle).
         sent_to = current.get("provisional_handle") or current["handle"]
@@ -113,7 +124,7 @@ def _finish_request(state, request, result):
                                    "root": str(state.root), **thread,
                                    "handle": current["handle"], "execution": settings,
                                    "execution_request": current["id"]})
-        current.update(status=result["outcome"], result=result, reply_id=mail["id"],
+        current.update(status=result["outcome"], result=result, reply_id=message_id,
                        completed_utc=utcnow())
         state.save_request(current)
         return current
