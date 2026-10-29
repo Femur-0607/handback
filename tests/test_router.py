@@ -342,6 +342,28 @@ with open(sys.argv[1], 'a+b') as stream:
             router.external_run(self.state, "worker")
             self.assertEqual(spawn.call_count, 1)
 
+    def test_busy_router_hands_its_idle_conversation_to_the_active_run(self):
+        for conversation, request_id in (("conv-a", "a" * 32), ("conv-b", "b" * 32)):
+            self.state.save_request({"id": request_id, "agent": "antigravity", "thread": conversation,
+                                     "handle": "antigravity:" + conversation, "status": "accepted",
+                                     "root": str(self.root)})
+        started, real_route = [], router.route_pending
+
+        def second_stop_while_a_routes(state, *args, **kwargs):
+            if len(started) == 1:
+                # Conversation B goes idle while A's run still holds the router lock.
+                worker = threading.Thread(target=router.external_run, args=(self.state, "conv-b"))
+                worker.start()
+                worker.join(5)
+                self.assertEqual(started, ["conv-a"])
+            return real_route(state, *args, **kwargs)
+
+        with patch.object(collector, "spawn", side_effect=lambda state, request: started.append(request["thread"])), \
+                patch.object(router, "route_pending", side_effect=second_stop_while_a_routes):
+            router.external_run(self.state, "conv-a")
+        self.assertEqual(started, ["conv-a", "conv-b"])
+        self.assertEqual(list((self.state.path / "external-router").glob("*.json")), [])
+
     def test_hook_child_delivers_pending_once(self):
         config.use_topology(self.root, "antigravity:lead-id", ["codex"], home=self.home)
         mail = self.mail()

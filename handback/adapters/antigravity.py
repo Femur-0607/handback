@@ -787,6 +787,14 @@ class AntigravityAdapter(BaseAdapter):
 
         settled = False
         drop_copy = False
+        # The dict being returned once the sidecar ran; cleanup failures are noted
+        # on it instead of replacing that outcome with an exception.
+        returned = {}
+
+        def outcome(value):
+            returned.update(value=value)
+            return value
+
         try:
             if not thread.startswith("pending-"):
                 # A known conversation can stop before agentapi returns too.
@@ -803,15 +811,15 @@ class AntigravityAdapter(BaseAdapter):
             settled = True
             if result.get("exit") is None and result.get("invoked") is False and result.get("error"):
                 # The sidecar stopped before calling agentapi: nothing was sent.
-                return {"accepted": False, "stderr": result["error"],
-                        "classification": self.classify_error(result["error"])}
+                return outcome({"accepted": False, "stderr": result["error"],
+                                "classification": self.classify_error(result["error"])})
             if result.get("exit") is None:
-                return {"accepted": False, "unknown": True,
-                        "stderr": result.get("error") or "sidecar outcome is unknown"}
+                return outcome({"accepted": False, "unknown": True,
+                                "stderr": result.get("error") or "sidecar outcome is unknown"})
             if result.get("exit") != 0:
-                return {"accepted": False, "returncode": result.get("exit"),
-                        "stderr": result.get("stderr") or result.get("error") or "agentapi failed",
-                        "classification": self.classify_error(result.get("stderr") or result.get("error") or "")}
+                return outcome({"accepted": False, "returncode": result.get("exit"),
+                                "stderr": result.get("stderr") or result.get("error") or "agentapi failed",
+                                "classification": self.classify_error(result.get("stderr") or result.get("error") or "")})
             delivery = {"accepted": True, "returncode": 0}
             if thread.startswith("pending-"):
                 try:
@@ -829,7 +837,7 @@ class AntigravityAdapter(BaseAdapter):
                 drop_copy = True  # an existing conversation stays where it is
             # Open the spool so the relay hook records observations for this conversation.
             observe_lead(state.home, delivery.get("thread") or thread)
-            return delivery
+            return outcome(delivery)
         finally:
             def settle(value):
                 entry = value.get("sidecars", {}).get(sidecar)
@@ -839,11 +847,19 @@ class AntigravityAdapter(BaseAdapter):
                     value["sidecars"].pop(sidecar)  # relay-owned; nothing else references it
                 else:
                     entry["enabled"] = False  # keep for diagnosis when the outcome is unknown
-            update_user_json(config, settle, backups)
-            if settled:
-                shutil.rmtree(sidecar_dir, ignore_errors=True)
-            if drop_copy:
-                _remove_sidecar_copy(self.gemini, sidecar, root, backups)
+            try:
+                update_user_json(config, settle, backups)
+                if settled:
+                    shutil.rmtree(sidecar_dir, ignore_errors=True)
+                if drop_copy:
+                    _remove_sidecar_copy(self.gemini, sidecar, root, backups)
+            except Exception as error:
+                if "value" not in returned:
+                    raise
+                # The sidecar already ran once (it never reruns), so the outcome stands.
+                returned["value"].setdefault("warnings", []).append(
+                    f"Sidecar {sidecar} was not cleaned up ({type(error).__name__}: {error}); "
+                    "run cleanup-sidecars later")
 
     def deliver_to_lead(self, thread, text, state=None):
         if state is None:

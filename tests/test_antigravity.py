@@ -513,6 +513,38 @@ class DeliveryTests(Base):
         self.assertTrue((agy.observation_dir(self.state.home) / (CONVERSATION + ".jsonl")).exists())
         self.assertTrue(any((self.state.home / "antigravity" / "backups").iterdir()))
 
+    def test_cleanup_failure_after_the_sidecar_ran_keeps_the_new_conversation(self):
+        self.fake_app(json.dumps({"response": {"newConversation": {"conversationId": CONVERSATION}}}))
+        adapter = agy.AntigravityAdapter(delivery_timeout=10, gemini=self.gemini)
+        real, calls = agy.update_user_json, []
+
+        def settle_fails(*args):
+            calls.append(args)
+            if len(calls) == 2:  # enable succeeds; the app holds config.json during cleanup
+                raise PermissionError("config.json is in use")
+            return real(*args)
+
+        with patch.object(agy, "update_user_json", side_effect=settle_fails):
+            delivery = adapter.deliver("pending-x", {"body": "[relay abababab] hi"}, state=self.state,
+                                       request=self.request, title="My task")
+        self.assertTrue(delivery["accepted"])
+        self.assertEqual(delivery["thread"], CONVERSATION)
+        self.assertIn("cleanup-sidecars", delivery["warnings"][0])
+        self.assertIn("PermissionError", delivery["warnings"][0])
+
+    def test_cleanup_failure_before_the_sidecar_ran_still_raises(self):
+        adapter = agy.AntigravityAdapter(delivery_timeout=0.1, gemini=self.gemini)
+        real, calls = agy.update_user_json, []
+
+        def settle_fails(*args):
+            calls.append(args)
+            if len(calls) == 2:
+                raise PermissionError("config.json is in use")
+            return real(*args)
+
+        with patch.object(agy, "update_user_json", side_effect=settle_fails), self.assertRaises(PermissionError):
+            adapter.deliver(CONVERSATION, {"body": "x"}, state=self.state, request=self.request)
+
     def test_known_conversation_is_observed_before_sidecar_acceptance(self):
         def early_reply():
             self.transcript(message(0, self.request["marker"]), step(1, "PLANNER_RESPONSE", "RELAY_OK"))

@@ -24,6 +24,15 @@ All notable changes to this project are documented here. This file follows the
 
 ### Fixed
 
+- With a Codex Lead and several Antigravity workers, a worker that went idle
+  while the router was busy with another worker had its trigger dropped, so
+  its result was never collected without a manual `wait`. The busy run now
+  leaves the conversation for the active run, which takes it before it
+  finishes.
+- A first Antigravity send that succeeded but could not clean up its sidecar
+  afterwards (for example while the app held `config.json`) was recorded as
+  `delivery_unknown` and lost the new conversation, so its result was never
+  collected. The send now stands with a warning to run `cleanup-sidecars`.
 - An Antigravity send that failed before its sidecar was enabled (for
   example from a checkout or worktree not registered in Antigravity) was
   recorded as `delivery_unknown`, which kept the worker blocked by an open

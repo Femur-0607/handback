@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import uuid
 
 from . import envelope, inbox
 from .invocation import self_argv, command_text
@@ -151,27 +152,58 @@ def spawn_external(state, conversation):
     raise OSError("Cannot start external relay router")
 
 
+def _take_wakeups(folder):
+    """Conversations whose router run found the lock busy; consumed once read."""
+    conversations = set()
+    for path in sorted(folder.glob("*.json")):
+        try:
+            value = inbox._read_json(path)
+        except (OSError, ValueError, UnicodeError):
+            value = None
+        if isinstance(value, dict) and isinstance(value.get("conversation"), str):
+            conversations.add(value["conversation"])
+        path.unlink(missing_ok=True)
+    return conversations
+
+
 def external_run(state, conversation=None):
+    """Start missing Antigravity collectors for idle conversations, then route pending mail.
+
+    One run at a time. A run that finds another one active leaves its
+    conversation in ``external-router/`` first; the active run takes it before
+    releasing and looks again afterwards, so no idle conversation is dropped.
+    """
     from . import collector
     from .migration import pid_alive
-    try:
-        with state.lock("external-router", timeout=0):
-            for request in state.requests():
-                if (request.get("agent") != "antigravity" or
-                        request.get("thread") != conversation or
-                        request.get("status") not in collector.COLLECTABLE):
-                    continue
-                with state.lock():
-                    current = state.load_request(request["id"])
-                    info = current.get("collector", {})
-                    try:
-                        if info.get("starting") and (not info.get("starter_pid") or pid_alive(info["starter_pid"])):
-                            continue  # Publication may still be in progress.
-                        if info.get("pid") and pid_alive(info["pid"]):
+    wakeups = state.path / "external-router"
+    if conversation is not None:
+        atomic_json(wakeups / (uuid.uuid4().hex + ".json"), {"conversation": conversation})
+    while True:
+        try:
+            with state.lock("external-router", timeout=0):
+                while True:
+                    conversations = _take_wakeups(wakeups)
+                    if not conversations:
+                        break
+                    for request in state.requests():
+                        if (request.get("agent") != "antigravity" or
+                                request.get("thread") not in conversations or
+                                request.get("status") not in collector.COLLECTABLE):
                             continue
-                    except ValueError:
-                        continue  # Unknown liveness does not prevent other mail routing.
-                    collector.spawn(state, current)
-            route_pending(state)
-    except TimeoutError:
-        return
+                        with state.lock():
+                            current = state.load_request(request["id"])
+                            info = current.get("collector", {})
+                            try:
+                                if info.get("starting") and (not info.get("starter_pid") or pid_alive(info["starter_pid"])):
+                                    continue  # Publication may still be in progress.
+                                if info.get("pid") and pid_alive(info["pid"]):
+                                    continue
+                            except ValueError:
+                                continue  # Unknown liveness does not prevent other mail routing.
+                            collector.spawn(state, current)
+                route_pending(state)
+        except TimeoutError:
+            return  # the active run takes our wakeup
+        # A run that failed to get the lock just now left its wakeup for us.
+        if not any(wakeups.glob("*.json")):
+            return
