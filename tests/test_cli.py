@@ -273,6 +273,58 @@ class RequestTests(unittest.TestCase):
         report = self.state.path / "results" / (request["id"] + ".json")
         self.assertEqual(json.loads(report.read_text(encoding="utf-8")), self.adapter.result)
 
+    def test_max_result_chars_asks_the_worker_and_cuts_what_the_lead_reads(self):
+        self.adapter.result = {"outcome": "completed", "text": "요약\n" + "가" * 500}
+        destination = self.root / "answer.txt"
+        code, text, error = self.invoke("send", "--thread", "a", "--text", "work", "--max-result-chars", "100",
+                                        "--return-file", str(destination))
+        self.assertEqual(code, 0, error)
+        self.assertIn("within 100 characters", self.adapter.deliveries[0][1]["body"])
+        request = self.state.requests()[0]
+        report = self.state.path / "results" / (request["id"] + ".json")
+        self.assertEqual(request["max_result_chars"], 100)
+        mail = inbox.pending(self.state.path / "inbox", "claude:lead")[0]
+        self.assertTrue(mail["body"].startswith(self.adapter.result["text"][:100] + "\n\n[handback: cut to 100 of 503"))
+        self.assertIn(str(report), mail["body"])
+        self.assertEqual(text.strip(), mail["body"])
+        self.assertEqual(destination.read_text(encoding="utf-8"), self.adapter.result["text"])
+        self.assertEqual(json.loads(report.read_text(encoding="utf-8")), self.adapter.result)
+        # A rerun publishes the same mail; a short answer is untouched.
+        self.assertEqual(self.invoke("wait", "--request", request["id"])[1].strip(), mail["body"])
+        self.adapter.result = {"outcome": "completed", "text": "짧은 답"}
+        self.invoke("send", "--thread", "b", "--text", "work", "--max-result-chars", "100")
+        short = next(r for r in self.state.requests() if r["thread"] == "b")
+        self.assertFalse((self.state.path / "results" / (short["id"] + ".json")).exists())
+        self.assertEqual(inbox.pending(self.state.path / "inbox", "claude:lead", short["id"])[0]["body"], "짧은 답")
+
+    def test_max_result_chars_also_cuts_a_printed_failure(self):
+        self.adapter.result = {"outcome": "failed", "error": "e" * 400}
+        code, _, err = self.invoke("send", "--thread", "a", "--text", "work", "--max-result-chars", "20")
+        self.assertEqual(code, 2)
+        mail = inbox.pending(self.state.path / "inbox", "claude:lead")[0]
+        self.assertTrue(mail["body"].startswith("e" * 20 + "\n\n[handback: cut to 20 of 400"))
+        self.assertIn(mail["body"], err)
+        self.assertNotIn("e" * 21, err)
+
+    def test_max_result_chars_cuts_a_failure_in_json_output(self):
+        self.adapter.result = {"outcome": "failed", "text": "", "error": "e" * 400}
+        code, raw, _ = self.invoke_new("--text", "task", "--max-result-chars", "10")
+        self.assertEqual(code, 2)
+        data = json.loads(raw)
+        self.assertTrue(data["result"]["error"].startswith("e" * 10 + "\n\n[handback: cut to 10 of 400"))
+        self.assertNotIn("e" * 11, raw)
+
+    def test_max_result_chars_sync_json_and_rejects_nonpositive(self):
+        self.adapter.result = {"outcome": "completed", "text": "x" * 50}
+        code, raw, err = self.invoke_new("--text", "task", "--max-result-chars", "10")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(json.loads(raw)["result"]["text"].startswith("x" * 10 + "\n\n[handback: cut to 10 of 50"))
+        for value in ("0", "-3", "ten"):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                cli.main(["send", "--thread", "a", "--text", "work", "--max-result-chars", value])
+        self.assertNotIn("within", self.invoke("send", "--thread", "c", "--text", "w", "--no-wait")[1])
+        self.assertNotIn("within", self.adapter.deliveries[-1][1]["body"])
+
     def test_json_escaping_is_counted_for_large_reply(self):
         self.adapter.result = {"outcome": "completed", "text": '"' * 40000}
         code, text, error = self.invoke("send", "--thread", "a", "--text", "work")

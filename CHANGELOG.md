@@ -5,6 +5,55 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Added
+
+- `inbox reassign --from <old> --to <new>` hands a replaced Lead's work to the
+  new one: open requests get the new return address, and each unacknowledged
+  result is copied to the new address and then acknowledged for the old one.
+  The original mail stays on disk, nothing is resent to a worker, and an
+  interrupted run can be repeated without duplicating mail. `--request` limits
+  it to one request; `--dry-run` only lists what would move. It refuses while
+  the old address still has a live inbox watcher unless `--force` is given,
+  and always refuses a worker's own address or an unknown `--request`.
+  The `handoff` note shows the command when anything is still addressed to
+  the old Lead.
+- `new`/`send --max-result-chars N` keeps a long answer out of the Lead
+  conversation. The brief asks the worker for an answer within N characters,
+  summary first; the inbox mail and synchronous output, failures included,
+  then hold the first N characters and a note with the path of the complete
+  result file, while `--return-file` still receives everything.
+
+### Fixed
+
+- With a Codex Lead and several Antigravity workers, a worker that went idle
+  while the router was busy with another worker had its trigger dropped, so
+  its result was never collected without a manual `wait`. The busy run now
+  leaves the conversation for the active run, which takes it before it
+  finishes.
+- A first Antigravity send that succeeded but could not clean up its sidecar
+  afterwards (for example while the app held `config.json`) was recorded as
+  `delivery_unknown` and lost the new conversation, so its result was never
+  collected. The send now stands with a warning to run `cleanup-sidecars`.
+- An Antigravity send that failed before its sidecar was enabled (for
+  example from a checkout or worktree not registered in Antigravity) was
+  recorded as `delivery_unknown`, which kept the worker blocked by an open
+  request. Nothing was sent, so it is now `send_failed`.
+- A blank (whitespace-only) worker answer, or one with an unpaired surrogate,
+  could not be stored as mail, so the request stayed open and the Lead never
+  heard back. It is now published as `(empty response)` or with the
+  character replaced.
+- An Antigravity Lead delivery that timed out waiting for another delivery to
+  the same Lead was recorded as `delivery_unknown` although nothing was sent;
+  it now stays pending and is retried.
+- One result whose Lead delivery raised (a damaged delivery record, or a
+  placeholder recipient such as `codex:lead`) stopped every newer result from
+  being delivered to a Codex or Antigravity Lead on each scan. The others are
+  now routed first, and the error is still logged.
+- Off Windows, an Antigravity project registered for the checkout was never
+  found: reading its `file:///home/...` folder URI dropped the leading slash.
+  Windows `file:///C%3A/...` URIs read as before. macOS and Linux remain
+  unverified with the live app.
+
 ## [0.5.5] - 2026-10-28
 
 ### Changed

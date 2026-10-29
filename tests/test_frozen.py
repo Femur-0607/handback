@@ -15,7 +15,7 @@ from handback import cli, collector, dashboard, diagnostics, hook_install, invoc
 from handback.adapters import antigravity as agy
 from handback.state import ProjectState
 
-EXE = "C:\\x\\handback.exe"
+EXE = str(Path("C:/x/handback.exe"))  # native separators, so .name is handback.exe off Windows too
 
 
 class FrozenCase(unittest.TestCase):

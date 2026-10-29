@@ -11,7 +11,7 @@ import sys
 import uuid
 
 from . import __version__, inbox
-from .collector import OPEN_STATES
+from .collector import OPEN_STATES, result_path
 from .envelope import ID_PATTERN
 from .invocation import command_text
 
@@ -75,7 +75,7 @@ def collect(state, resolved, source, now=None):
     for message in inbox.pending(folder):
         if message["kind"] not in RESULT_KINDS:
             continue
-        report = state.path / "results" / (message["request_id"] + ".json")
+        report = result_path(state, message["request_id"])
         body = message["body"]
         results.append({"id": message["id"], "request_id": message["request_id"],
                         "sender": message["sender"], "recipient": message["recipient"],
@@ -150,6 +150,12 @@ def render_markdown(data, command=command_text):
               "Make this session the Lead (replace the placeholder with its own address):", "",
               *_code([command("use", "--root", root, "--lead", f"{agent}:<new-session-id>",
                               "--workers", ",".join(workers) or "codex")])]
+    if (any(item["return_to"] == source for item in data["open_requests"])
+            or any(item["recipient"] == source for item in data["unacknowledged"])):
+        lines += ["", f"To have the new Lead receive what is still addressed to `{source}`, move it there "
+                  "instead of using the old-address commands below:", "",
+                  *_code([command("inbox", "reassign", "--root", root, "--from", source,
+                                  "--to", f"{agent}:<new-session-id>")])]
     if any(item["return_to"] == source for item in data["open_requests"]):
         lines += ["", f"Open requests keep returning to `{source}`. Collect and read them there:", "",
                   *_code([command("inbox", "watch", "--root", root, "--for", source, "--timeout", "60")])]
