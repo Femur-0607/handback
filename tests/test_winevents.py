@@ -67,13 +67,21 @@ class RaiseAboveTaskbarTests(unittest.TestCase):
         watcher._api.SetWindowPos.assert_not_called()
 
 
-class FakeScreen:
-    """Just enough user32 for foreground_covers: one foreground window, two monitors."""
+PRIMARY, SECONDARY = (0, 0, 1920, 1080), (1920, 0, 3840, 1080)
+GAME = dict(rect=PRIMARY, cls="UnityWndClass")
 
-    def __init__(self, rect, monitor=(0, 0, 1920, 1080), same_monitor=True, cls="Chrome",
-                 pid=1234, visible=True, iconic=False):
-        self.rect, self.monitor, self.same, self.cls = rect, monitor, same_monitor, cls
-        self.pid, self.visible, self.iconic = pid, visible, iconic
+
+class FakeScreen:
+    """Just enough user32 for foreground_covers: top-level windows in z-order, two monitors.
+
+    Each window is a dict of rect, cls, pid, visible, iconic, cloaked and exstyle;
+    the first one is the top of the z-order. The widget sits on the primary monitor.
+    """
+
+    def __init__(self, *windows, widget_monitor=1):
+        self.windows = [dict(dict(cls="Chrome", pid=1234, visible=True, iconic=False,
+                                  cloaked=False, exstyle=0), **w) for w in windows]
+        self.widget_monitor = widget_monitor
         from ctypes import wintypes
         import ctypes
 
@@ -82,53 +90,101 @@ class FakeScreen:
                         ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
         self.MonitorInfo = MonitorInfo
 
-    def GetForegroundWindow(self):
-        return 50
+    def _window(self, hwnd):
+        return self.windows[hwnd - 100]
+
+    def GetTopWindow(self, parent):
+        return 100 if self.windows else None
+
+    def GetWindow(self, hwnd, relation):
+        assert relation == winevents.GW_HWNDNEXT
+        return hwnd + 1 if hwnd - 99 < len(self.windows) else None
 
     def IsWindowVisible(self, hwnd):
-        return self.visible
+        return self._window(hwnd)["visible"]
 
     def IsIconic(self, hwnd):
-        return self.iconic
+        return self._window(hwnd)["iconic"]
+
+    def DwmGetWindowAttribute(self, hwnd, attribute, value, size):
+        assert attribute == winevents.DWMWA_CLOAKED
+        value._obj.value = self._window(hwnd)["cloaked"]
+        return 0
 
     def MonitorFromWindow(self, hwnd, flags):
-        return 1 if hwnd == 50 or self.same else 2
+        if hwnd < 100:
+            return self.widget_monitor
+        left, _, right, _ = self._window(hwnd)["rect"]
+        return 1 if (left + right) / 2 < 1920 else 2  # the monitor it mostly lies on
 
     def MonitorFromPoint(self, point, flags):
-        return 1 if self.same else 2
+        return 1 if point.x < 1920 else 2
 
     def GetWindowThreadProcessId(self, hwnd, pid):
-        pid._obj.value = self.pid
+        pid._obj.value = self._window(hwnd)["pid"]
         return 1
 
     def GetClassNameW(self, hwnd, buffer, size):
-        buffer.value = self.cls
-        return len(self.cls)
+        buffer.value = self._window(hwnd)["cls"]
+        return len(buffer.value)
+
+    def GetWindowLongW(self, hwnd, index):
+        assert index == winevents.GWL_EXSTYLE
+        return self._window(hwnd)["exstyle"]
 
     def GetWindowRect(self, hwnd, rect):
         r = rect._obj
-        r.left, r.top, r.right, r.bottom = self.rect
+        r.left, r.top, r.right, r.bottom = self._window(hwnd)["rect"]
         return 1
 
     def GetMonitorInfoW(self, monitor, info):
         r = info._obj.rcMonitor
-        r.left, r.top, r.right, r.bottom = self.monitor
+        r.left, r.top, r.right, r.bottom = PRIMARY if monitor == 1 else SECONDARY
         return 1
 
 
 class ForegroundCoversTests(unittest.TestCase):
     def test_full_screen_on_the_widget_monitor_only(self):
         covers = winevents.foreground_covers
-        self.assertTrue(covers(FakeScreen((0, 0, 1920, 1080)), 7))
-        self.assertTrue(covers(FakeScreen((0, 0, 1920, 1080)), 7, point=(10, 1050)))
-        self.assertFalse(covers(FakeScreen((0, 0, 1920, 1032)), 7))  # maximized above the taskbar
-        self.assertFalse(covers(FakeScreen((0, 0, 1920, 1080), same_monitor=False), 7))
-        self.assertFalse(covers(FakeScreen((0, 0, 1920, 1080), cls="WorkerW"), 7))
-        self.assertFalse(covers(FakeScreen((0, 0, 1920, 1080), pid=winevents.os.getpid()), 7))
-        self.assertFalse(covers(FakeScreen((0, 0, 1920, 1080), visible=False), 7))
-        self.assertFalse(covers(FakeScreen((0, 0, 1920, 1080), iconic=True), 7))
-        self.assertFalse(covers(FakeScreen((0, 0, 1920, 1080)), None))
-        self.assertFalse(covers(Mock(GetForegroundWindow=Mock(side_effect=OSError)), 7))
+        self.assertTrue(covers(FakeScreen(GAME), 7))
+        self.assertTrue(covers(FakeScreen(GAME), 7, point=(10, 1050)))
+        self.assertFalse(covers(FakeScreen(GAME), 7, point=(2000, 1050)))  # moving to the other monitor
+        self.assertFalse(covers(FakeScreen(GAME, widget_monitor=2), 7))
+        self.assertFalse(covers(FakeScreen(dict(rect=(0, 0, 1920, 1032))), 7))  # maximized above the taskbar
+        self.assertFalse(covers(FakeScreen(dict(GAME, cls="WorkerW")), 7))
+        self.assertFalse(covers(FakeScreen(dict(GAME, pid=winevents.os.getpid())), 7))
+        self.assertFalse(covers(FakeScreen(dict(GAME, visible=False)), 7))
+        self.assertFalse(covers(FakeScreen(dict(GAME, iconic=True)), 7))
+        self.assertFalse(covers(FakeScreen(GAME), None))
+        self.assertFalse(covers(FakeScreen(), 7))
+        self.assertFalse(covers(Mock(MonitorFromWindow=Mock(side_effect=OSError)), 7))
+
+    def test_game_stays_on_top_when_focus_moves_to_another_monitor(self):
+        browser = dict(rect=(1920, 0, 3840, 1032))  # focused, on the secondary monitor
+        self.assertTrue(winevents.foreground_covers(FakeScreen(browser, GAME), 7))
+        # Maximized there, its invisible frame reaches 8 px into the game's monitor.
+        maximized = dict(rect=(1912, -8, 3848, 1040))
+        self.assertTrue(winevents.foreground_covers(FakeScreen(maximized, GAME), 7))
+        # Our own widget and shield sit above the game; they never count.
+        own = dict(rect=(10, 1040, 300, 1080), pid=winevents.os.getpid(),
+                   exstyle=winevents.WS_EX_TOPMOST)
+        self.assertTrue(winevents.foreground_covers(FakeScreen(own, browser, GAME), 7))
+
+    def test_windows_floating_over_the_game_do_not_reveal_the_widget(self):
+        switcher = dict(rect=(400, 300, 1520, 780), exstyle=winevents.WS_EX_TOPMOST)  # Alt+Tab
+        taskbar = dict(rect=(0, 1032, 1920, 1080), cls="Shell_TrayWnd",
+                       exstyle=winevents.WS_EX_TOPMOST)
+        overlay = dict(rect=PRIMARY, exstyle=winevents.WS_EX_TOPMOST | winevents.WS_EX_TRANSPARENT)
+        suspended = dict(rect=(100, 100, 900, 700), cls="ApplicationFrameWindow", cloaked=True)
+        empty = dict(rect=(0, 0, 0, 0))  # visible helper windows with no area
+        self.assertTrue(winevents.foreground_covers(
+            FakeScreen(switcher, taskbar, overlay, suspended, empty, GAME), 7))
+
+    def test_an_ordinary_window_above_the_game_reveals_the_widget(self):
+        notes = dict(rect=(200, 200, 1000, 800))  # Alt+Tab into a windowed app on the same monitor
+        self.assertFalse(winevents.foreground_covers(FakeScreen(notes, GAME), 7))
+        overlay = dict(rect=PRIMARY, exstyle=winevents.WS_EX_TRANSPARENT)  # click-through, full size
+        self.assertFalse(winevents.foreground_covers(FakeScreen(overlay, notes, GAME), 7))
 
 
 @unittest.skipUnless(winevents.sys.platform == "win32", "Windows hooks")

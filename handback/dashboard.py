@@ -823,7 +823,7 @@ def taskbar_info(point=None):
 
 
 def widget_fullscreen_covered(widget, point=None):
-    """Compare foreground bounds with the full monitor, excluding our process."""
+    """Whether the top window on the widget's monitor fills it, excluding our process."""
     if sys.platform != "win32":
         return False
     try:

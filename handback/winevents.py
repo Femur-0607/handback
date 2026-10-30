@@ -22,7 +22,11 @@ EVENT_OBJECT_LOCATIONCHANGE = 0x800B
 OBJID_WINDOW = 0
 WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS = 0x0000, 0x0002
 WM_QUIT = 0x0012
-GW_HWNDPREV = 3
+GW_HWNDNEXT, GW_HWNDPREV = 2, 3
+GWL_EXSTYLE = -20
+WS_EX_TOPMOST, WS_EX_TRANSPARENT = 0x0008, 0x0020
+DWMWA_CLOAKED = 14
+ZORDER_WALK_LIMIT = 1024  # top-level windows, most of them hidden helpers
 GA_ROOT = 2
 MONITOR_DEFAULTTONEAREST = 2
 HWND_TOPMOST, HWND_BOTTOM = -1, 1
@@ -81,6 +85,15 @@ def native_user32():
         user.FindWindowW.restype = wintypes.HWND
         user.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
         user.GetWindow.restype = wintypes.HWND
+        user.GetTopWindow.argtypes = [wintypes.HWND]
+        user.GetTopWindow.restype = wintypes.HWND
+        user.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user.GetWindowLongW.restype = wintypes.LONG
+        dwm = ctypes.WinDLL("dwmapi")
+        dwm.DwmGetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p,
+                                              wintypes.DWORD]
+        dwm.DwmGetWindowAttribute.restype = ctypes.c_long  # HRESULT; 0 is S_OK
+        user.DwmGetWindowAttribute = dwm.DwmGetWindowAttribute
         user.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
                                       ctypes.c_int, ctypes.c_int, wintypes.UINT]
         _NATIVE = user
@@ -88,36 +101,75 @@ def native_user32():
 
 
 def foreground_covers(user, hwnd, point=None):
-    """True when another visible window fills the monitor that holds ``hwnd``.
+    """True when the topmost window on the monitor that holds ``hwnd`` fills it.
 
+    Walks the z-order instead of asking for the foreground window: a game keeps
+    its monitor covered after a click on another monitor or during Alt+Tab, when
+    the foreground window is elsewhere.
     ``point`` replaces the window's own monitor while the widget is about to move.
     """
     import ctypes
     from ctypes import wintypes
     try:
-        foreground = user.GetForegroundWindow()
-        if (not foreground or not hwnd or not user.IsWindowVisible(foreground)
-                or user.IsIconic(foreground)):
+        if not hwnd:
             return False
-        monitor = user.MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
-        own_monitor = (user.MonitorFromPoint(wintypes.POINT(*point), MONITOR_DEFAULTTONEAREST)
-                       if point is not None else user.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST))
-        if monitor != own_monitor:
-            return False
-        pid = wintypes.DWORD()
-        user.GetWindowThreadProcessId(foreground, ctypes.byref(pid))
-        name = ctypes.create_unicode_buffer(256)
-        user.GetClassNameW(foreground, name, len(name))
-        rect, info = wintypes.RECT(), user.MonitorInfo()
+        monitor = (user.MonitorFromPoint(wintypes.POINT(*point), MONITOR_DEFAULTTONEAREST)
+                   if point is not None else user.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST))
+        info = user.MonitorInfo()
         info.cbSize = ctypes.sizeof(info)
-        if (not user.GetWindowRect(foreground, ctypes.byref(rect))
-                or not user.GetMonitorInfoW(monitor, ctypes.byref(info))):
+        if not monitor or not user.GetMonitorInfoW(monitor, ctypes.byref(info)):
             return False
-        bounds = lambda r: (r.left, r.top, r.right, r.bottom)
-        return fullscreen_covers_widget(bounds(rect), bounds(info.rcMonitor), monitor, own_monitor,
-                                        name.value, pid.value == os.getpid())
+        screen = _bounds(info.rcMonitor)
+        candidate = user.GetTopWindow(None)
+        for _ in range(ZORDER_WALK_LIMIT):
+            if not candidate:
+                return False
+            verdict = _top_window_verdict(user, candidate, monitor, screen)
+            if verdict is not None:
+                return verdict
+            candidate = user.GetWindow(candidate, GW_HWNDNEXT)
+        return False
     except (AttributeError, OSError, TypeError):
         return False
+
+
+def _bounds(rect):
+    return rect.left, rect.top, rect.right, rect.bottom
+
+
+def _top_window_verdict(user, hwnd, monitor, screen):
+    """None skips ``hwnd``; otherwise whether it covers ``screen`` from the top."""
+    import ctypes
+    from ctypes import wintypes
+    if not user.IsWindowVisible(hwnd) or user.IsIconic(hwnd):
+        return None
+    cloaked = wintypes.DWORD()
+    if (not user.DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked),
+                                       ctypes.sizeof(cloaked)) and cloaked.value):
+        return None  # a suspended UWP frame keeps its place in the z-order
+    pid = wintypes.DWORD()
+    user.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if pid.value == os.getpid():
+        return None
+    name = ctypes.create_unicode_buffer(256)
+    user.GetClassNameW(hwnd, name, len(name))
+    style = user.GetWindowLongW(hwnd, GWL_EXSTYLE)
+    if name.value in SHELL_CLASSES or style & WS_EX_TRANSPARENT:
+        return None  # taskbars and click-through overlays never hide what is below
+    rect = wintypes.RECT()
+    if not user.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return None
+    left, top, right, bottom = _bounds(rect)
+    # A maximized window's invisible frame reaches 8 px into the next monitor, so
+    # the monitor it mostly lies on decides, not any overlap.
+    if (right <= left or bottom <= top
+            or user.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) != monitor):
+        return None  # empty, or on another monitor
+    if fullscreen_covers_widget((left, top, right, bottom), screen, monitor, monitor, name.value):
+        return True
+    # A small always-on-top window (a mini player, the Alt+Tab switcher) floats
+    # over whatever is below; an ordinary window decides that nothing covers.
+    return None if style & WS_EX_TOPMOST else False
 
 
 class ForegroundWatcher:

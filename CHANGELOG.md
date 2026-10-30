@@ -25,6 +25,13 @@ All notable changes to this project are documented here. This file follows the
 
 ### Fixed
 
+- The compact widget reappeared over a full-screen game as soon as the game
+  lost focus, after a click on another monitor or during Alt+Tab, because only
+  the foreground window was checked. It now stays hidden while the top window
+  on its own monitor fills that monitor; taskbars, click-through overlays,
+  small always-on-top windows such as the Alt+Tab switcher, and suspended UWP
+  frames are looked past. A windowed app brought over the game on the same
+  monitor still shows the widget.
 - With a Codex Lead and several Antigravity workers, a worker that went idle
   while the router was busy with another worker had its trigger dropped, so
   its result was never collected without a manual `wait`. The busy run now
