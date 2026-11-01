@@ -15,6 +15,7 @@ guarantee except agentapi, sidecars and hooks themselves:
   or after the longest other Stop hook timeout passes without a continuation
   (completion contract approved 2026-10-07).
 """
+import contextlib
 from datetime import datetime, timezone
 import json
 import os
@@ -116,13 +117,19 @@ def _norm(path):
     return os.path.normcase(os.path.realpath(path))
 
 
+def _uri_path(uri):
+    # file:///C%3A/x -> C:/x on Windows; file:///home/x keeps its leading slash.
+    path = unquote(urlparse(uri).path)
+    return path[1:] if os.name == "nt" and re.match(r"/[A-Za-z]:", path) else path
+
+
 def _project_roots(project):
     """Normalized git folders of one Antigravity project file."""
     roots = []
     for resource in ((project or {}).get("projectResources") or {}).get("resources") or []:
         uri = ((resource or {}).get("gitFolder") or {}).get("folderUri") or ""
         if uri:
-            roots.append(_norm(unquote(urlparse(uri).path).lstrip("/")))
+            roots.append(_norm(_uri_path(uri)))
     return roots
 
 
@@ -752,22 +759,26 @@ class AntigravityAdapter(BaseAdapter):
         if state is None or request is None:
             raise AdapterError("Antigravity delivery needs the request state")
         root = request.get("root") or state.root
-        project_id = resolve_project(root, self.gemini)
         folder = state.path / "antigravity" / request["id"]
         if thread.startswith("pending-"):
             args = ["new-conversation", f"--title={title or 'handback'}", f"--model={self.model}", envelope["body"]]
         else:
             args = ["send-message", thread, envelope["body"]]
-        registered = project_name(project_id, self.gemini)
-        sidecar = sidecar_name(request["id"], registered)
-        job = {"request_id": request["id"], "project_id": project_id, "args": args, "created": utcnow(),
-               "sidecar": sidecar, "root": str(root), "gemini": str(self.gemini)}
-        _write_json(folder / "job.json", job)
-        sidecar_dir = self.gemini / "config" / "sidecars" / sidecar
-        _write_json(sidecar_dir / "sidecar.json", {
-            "command": self_argv(ENTRY_SCRIPT)[0], "args": [*entry_args(ENTRY_SCRIPT), "antigravity-sidecar", "--job", str(folder / "job.json")],
-            "restart_policy": "never", "display_name": "handback " + request["id"][:8],
-            "description": "handback: one agentapi call for one request, then exits."})
+        try:
+            project_id = resolve_project(root, self.gemini)
+            registered = project_name(project_id, self.gemini)
+            sidecar = sidecar_name(request["id"], registered)
+            job = {"request_id": request["id"], "project_id": project_id, "args": args, "created": utcnow(),
+                   "sidecar": sidecar, "root": str(root), "gemini": str(self.gemini)}
+            _write_json(folder / "job.json", job)
+            sidecar_dir = self.gemini / "config" / "sidecars" / sidecar
+            _write_json(sidecar_dir / "sidecar.json", {
+                "command": self_argv(ENTRY_SCRIPT)[0], "args": [*entry_args(ENTRY_SCRIPT), "antigravity-sidecar", "--job", str(folder / "job.json")],
+                "restart_policy": "never", "display_name": "handback " + request["id"][:8],
+                "description": "handback: one agentapi call for one request, then exits."})
+        except (OSError, RuntimeError) as error:  # AdapterError, and self_argv in a frozen build
+            # The sidecar is not enabled yet, so nothing can have been sent.
+            return {"accepted": False, "stderr": str(error), "classification": self.classify_error(str(error))}
         backups = state.home / "antigravity" / "backups"
         config = self.gemini / "config" / "config.json"
 
@@ -776,7 +787,9 @@ class AntigravityAdapter(BaseAdapter):
 
         settled = False
         drop_copy = False
-        try:
+
+        def submit():
+            nonlocal settled, drop_copy
             if not thread.startswith("pending-"):
                 # A known conversation can stop before agentapi returns too.
                 observe_lead(state.home, thread)
@@ -819,25 +832,43 @@ class AntigravityAdapter(BaseAdapter):
             # Open the spool so the relay hook records observations for this conversation.
             observe_lead(state.home, delivery.get("thread") or thread)
             return delivery
-        finally:
-            def settle(value):
-                entry = value.get("sidecars", {}).get(sidecar)
-                if entry is None:
-                    return False
-                if settled:
-                    value["sidecars"].pop(sidecar)  # relay-owned; nothing else references it
-                else:
-                    entry["enabled"] = False  # keep for diagnosis when the outcome is unknown
-            update_user_json(config, settle, backups)
+
+        def settle(value):
+            entry = value.get("sidecars", {}).get(sidecar)
+            if entry is None:
+                return False
             if settled:
-                shutil.rmtree(sidecar_dir, ignore_errors=True)
-            if drop_copy:
-                _remove_sidecar_copy(self.gemini, sidecar, root, backups)
+                value["sidecars"].pop(sidecar)  # relay-owned; nothing else references it
+            else:
+                entry["enabled"] = False  # keep for diagnosis when the outcome is unknown
+
+        delivery = None
+        try:
+            delivery = submit()
+        finally:
+            try:
+                update_user_json(config, settle, backups)
+                if settled:
+                    shutil.rmtree(sidecar_dir, ignore_errors=True)
+                if drop_copy:
+                    _remove_sidecar_copy(self.gemini, sidecar, root, backups)
+            except Exception as error:
+                if delivery is None or not settled:
+                    raise
+                # The sidecar already ran once (it never reruns), so its outcome stands.
+                delivery.setdefault("warnings", []).append(
+                    f"Sidecar {sidecar} was not cleaned up ({type(error).__name__}: {error}); "
+                    "run cleanup-sidecars later")
+        return delivery
 
     def deliver_to_lead(self, thread, text, state=None):
         if state is None:
             return {"accepted": False, "pending": True}
-        with state.lock("lead:" + thread):
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(state.lock("lead:" + thread))
+            except TimeoutError:
+                return {"accepted": False, "pending": True}  # another delivery holds this Lead; nothing sent
             if not lead_idle(state.home, thread):
                 return {"accepted": False, "pending": True}
             # Reserve idle BEFORE submission, so fast real Stop hooks win over

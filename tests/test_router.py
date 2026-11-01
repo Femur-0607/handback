@@ -47,6 +47,14 @@ class RouterTests(unittest.TestCase):
     def route(self, mail, **kwargs):
         return router.route(self.state, mail, adapter_for=self.factory, **kwargs)
 
+    def test_one_bad_mail_does_not_block_later_routing(self):
+        bad, good = self.mail("codex:lead", "first"), self.mail("codex:thread", "second")
+        with self.assertRaises(ValueError):
+            router.route_pending(self.state, adapter_for=self.factory)
+        self.assertEqual(self.adapter.deliver_to_lead.call_count, 1)
+        self.assertEqual(router.record(self.state, good["id"])["status"], "delivered")
+        self.assertEqual(router.record(self.state, bad["id"]), {})
+
     def test_concurrent_three_paths_attempt_once(self):
         mail = self.mail()
         started, release = threading.Event(), threading.Event()
@@ -333,6 +341,59 @@ with open(sys.argv[1], 'a+b') as stream:
             self.state.save_request(request)
             router.external_run(self.state, "worker")
             self.assertEqual(spawn.call_count, 1)
+
+    def test_router_errors_keep_unhandled_wakeups_and_still_take_late_ones(self):
+        for conversation, request_id in (("conv-a", "a" * 32), ("conv-b", "b" * 32), ("conv-c", "c" * 32)):
+            self.state.save_request({"id": request_id, "agent": "antigravity", "thread": conversation,
+                                     "handle": "antigravity:" + conversation, "status": "accepted",
+                                     "root": str(self.root)})
+        router.atomic_json(self.state.path / "external-router" / "earlier.json", {"conversation": "conv-b"})
+        started, routes = [], []
+
+        def spawn(state, request):
+            if request["thread"] == "conv-b":
+                raise OSError("cannot start collector")
+            started.append(request["thread"])
+
+        def failing_route(state, *args, **kwargs):
+            routes.append(1)
+            if len(routes) == 1:
+                # conv-c goes idle while this run holds the lock, then routing fails.
+                worker = threading.Thread(target=router.external_run, args=(self.state, "conv-c"))
+                worker.start()
+                worker.join(5)
+                raise ValueError("bad delivery record")
+
+        with patch.object(collector, "spawn", side_effect=spawn), \
+                patch.object(router, "route_pending", side_effect=failing_route), \
+                self.assertRaises(OSError):
+            router.external_run(self.state, "conv-a")
+        self.assertEqual(started, ["conv-a", "conv-c"])
+        left = [router.inbox._read_json(path)["conversation"]
+                for path in (self.state.path / "external-router").glob("*.json")]
+        self.assertEqual(left, ["conv-b"])
+
+    def test_busy_router_hands_its_idle_conversation_to_the_active_run(self):
+        for conversation, request_id in (("conv-a", "a" * 32), ("conv-b", "b" * 32)):
+            self.state.save_request({"id": request_id, "agent": "antigravity", "thread": conversation,
+                                     "handle": "antigravity:" + conversation, "status": "accepted",
+                                     "root": str(self.root)})
+        started, real_route = [], router.route_pending
+
+        def second_stop_while_a_routes(state, *args, **kwargs):
+            if len(started) == 1:
+                # Conversation B goes idle while A's run still holds the router lock.
+                worker = threading.Thread(target=router.external_run, args=(self.state, "conv-b"))
+                worker.start()
+                worker.join(5)
+                self.assertEqual(started, ["conv-a"])
+            return real_route(state, *args, **kwargs)
+
+        with patch.object(collector, "spawn", side_effect=lambda state, request: started.append(request["thread"])), \
+                patch.object(router, "route_pending", side_effect=second_stop_while_a_routes):
+            router.external_run(self.state, "conv-a")
+        self.assertEqual(started, ["conv-a", "conv-b"])
+        self.assertEqual(list((self.state.path / "external-router").glob("*.json")), [])
 
     def test_hook_child_delivers_pending_once(self):
         config.use_topology(self.root, "antigravity:lead-id", ["codex"], home=self.home)

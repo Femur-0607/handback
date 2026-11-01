@@ -58,7 +58,8 @@ class Base(unittest.TestCase):
         self.now = 1_000_000.0
 
     def register_project(self, pid="proj-1", root=None, name="p"):
-        uri = "file:///" + str(root or self.root).replace("\\", "/").replace(":", "%3A", 1)
+        path = str(root or self.root).replace("\\", "/").replace(":", "%3A", 1)
+        uri = "file://" + ("" if path.startswith("/") else "/") + path
         (self.gemini / "config" / "projects" / (pid + ".json")).write_text(json.dumps(
             {"name": name, "projectResources": {"resources": [{"gitFolder": {"folderUri": uri}}]}}), encoding="utf-8")
 
@@ -126,6 +127,13 @@ class ProjectAndHookConfigTests(Base):
         self.register_project("proj-2")
         with self.assertRaises(AdapterUnavailable):
             agy.resolve_project(self.root, self.gemini)
+
+    def test_folder_uri_keeps_a_posix_root(self):
+        self.assertEqual(agy._uri_path("file:///home/me/x"), "/home/me/x")
+        with patch.object(agy.os, "name", "nt"):
+            self.assertEqual(agy._uri_path("file:///C%3A/Users/me/x"), "C:/Users/me/x")
+        with patch.object(agy.os, "name", "posix"):
+            self.assertEqual(agy._uri_path("file:///a%3Awork/x"), "/a:work/x")
 
     def test_sidecar_managed_project_is_not_a_registration(self):
         # Antigravity 2.23 copies the target project for each sidecar (issue #4).
@@ -505,6 +513,38 @@ class DeliveryTests(Base):
         self.assertTrue((agy.observation_dir(self.state.home) / (CONVERSATION + ".jsonl")).exists())
         self.assertTrue(any((self.state.home / "antigravity" / "backups").iterdir()))
 
+    def test_cleanup_failure_after_the_sidecar_ran_keeps_the_new_conversation(self):
+        self.fake_app(json.dumps({"response": {"newConversation": {"conversationId": CONVERSATION}}}))
+        adapter = agy.AntigravityAdapter(delivery_timeout=10, gemini=self.gemini)
+        real, calls = agy.update_user_json, []
+
+        def settle_fails(*args):
+            calls.append(args)
+            if len(calls) == 2:  # enable succeeds; the app holds config.json during cleanup
+                raise PermissionError("config.json is in use")
+            return real(*args)
+
+        with patch.object(agy, "update_user_json", side_effect=settle_fails):
+            delivery = adapter.deliver("pending-x", {"body": "[relay abababab] hi"}, state=self.state,
+                                       request=self.request, title="My task")
+        self.assertTrue(delivery["accepted"])
+        self.assertEqual(delivery["thread"], CONVERSATION)
+        self.assertIn("cleanup-sidecars", delivery["warnings"][0])
+        self.assertIn("PermissionError", delivery["warnings"][0])
+
+    def test_cleanup_failure_before_the_sidecar_ran_still_raises(self):
+        adapter = agy.AntigravityAdapter(delivery_timeout=0.1, gemini=self.gemini)
+        real, calls = agy.update_user_json, []
+
+        def settle_fails(*args):
+            calls.append(args)
+            if len(calls) == 2:
+                raise PermissionError("config.json is in use")
+            return real(*args)
+
+        with patch.object(agy, "update_user_json", side_effect=settle_fails), self.assertRaises(PermissionError):
+            adapter.deliver(CONVERSATION, {"body": "x"}, state=self.state, request=self.request)
+
     def test_known_conversation_is_observed_before_sidecar_acceptance(self):
         def early_reply():
             self.transcript(message(0, self.request["marker"]), step(1, "PLANNER_RESPONSE", "RELAY_OK"))
@@ -564,6 +604,24 @@ class DeliveryTests(Base):
         self.assertFalse(delivery["accepted"])
         self.assertNotIn("unknown", delivery)
         self.assertIn("agentapi is not available", delivery["stderr"])
+
+    def test_unregistered_checkout_is_send_failed_before_any_sidecar(self):
+        other = self.root.parent / "worktree"
+        other.mkdir()
+        adapter = agy.AntigravityAdapter(delivery_timeout=10, gemini=self.gemini)
+        delivery = adapter.deliver(CONVERSATION, {"body": "x"}, state=self.state,
+                                   request={**self.request, "root": str(other)})
+        self.assertFalse(delivery["accepted"])
+        self.assertNotIn("unknown", delivery)
+        self.assertIn("found 0", delivery["stderr"])
+        self.assertNotIn(agy.SIDECAR_PREFIX, self.config.read_text(encoding="utf-8"))
+
+    def test_busy_lead_lock_is_pending_not_unknown(self):
+        adapter = agy.AntigravityAdapter(gemini=self.gemini)
+        with patch.object(self.state, "lock", side_effect=TimeoutError("busy")), \
+                patch.object(adapter, "deliver", side_effect=AssertionError("must not send")):
+            self.assertEqual(adapter.deliver_to_lead("lead-conv", "text", state=self.state),
+                             {"accepted": False, "pending": True})
 
     def test_unrun_sidecar_is_unknown_and_disabled(self):
         adapter = agy.AntigravityAdapter(delivery_timeout=0.3, gemini=self.gemini)

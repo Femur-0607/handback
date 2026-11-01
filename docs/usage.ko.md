@@ -6,7 +6,7 @@
 2. 실행합니다. SmartScreen 경고가 뜨면(서명 없는 설치 파일) **추가 정보** → **실행**을 누릅니다. 관리자 권한은 필요 없고, `%LOCALAPPDATA%\Programs\handback`에 설치하며 에이전트 스킬도 자동으로 설치합니다. 선택 항목은 Windows 시작 시 실행(기본 켜짐), 바탕화면 아이콘(기본 꺼짐)입니다.
 3. 설치가 끝나면 handback이 자동으로 열립니다. 다음부터는 시작 메뉴의 **handback**을 엽니다.
 
-설치 폴더의 `handback.exe`는 에이전트와 훅이 쓰는 명령줄 도구입니다. 설치 프로그램이 이 폴더를 사용자 PATH에 추가하므로, 설치 후 새로 연 터미널에서 `handback`을 바로 쓸 수 있습니다. 터미널에서는 `handback setup`(`--yes`, `--dry-run`)입니다. 설정은 현황판 우클릭 › **설정**에서 다시 열 수 있습니다.
+설치 폴더의 `handback.exe`는 에이전트와 훅이 쓰는 명령줄 도구입니다. 설치 프로그램이 이 폴더를 사용자 PATH에 추가하므로, 설치 후 새로 연 터미널에서 `handback`을 바로 쓸 수 있습니다. 터미널에서는 `handback setup`(`--yes`, `--dry-run`)입니다. 설정 창은 현황판 우클릭 › **점검·복구 ▶** › **스킬·훅 설치·복구**에서 다시 열 수 있습니다.
 
 업데이트: 현황판이 하루 한 번 새 버전을 확인하며, 우클릭 › **최신 버전 확인**으로 바로 확인할 수도 있습니다(없으면 "최신 버전입니다"). 새 버전이 있으면 그 항목이 **업그레이드 (현재 → 새 버전)**으로 바뀌고, 누르면 설치 파일을 받아 `SHA256SUMS.txt`로 검증한 뒤 그 자리에서 업그레이드하고 현황판을 다시 엽니다. 소스 체크아웃으로 실행 중이면 자동 설치 대신 릴리스 페이지를 엽니다(우클릭 메뉴의 **업데이트 자동 확인**으로 끌 수 있습니다). 새 `setup.exe`를 직접 실행해도 됩니다. 어느 쪽이든 스킬과 복구 훅이 다시 설치됩니다. 삭제: Windows 설정 › 앱 › handback (자동 시작, PATH 항목, handback이 만든 Claude·Codex·Antigravity 훅과 스킬은 지우고, `~/.handback` 데이터는 남깁니다). 다운로드 검증: `SHA256SUMS.txt`와 `Get-FileHash`로 비교하고, `gh attestation verify <setup.exe> --repo Femur-0607/handback`로 빌드 증명을 확인합니다. 아래 명령 설명에서 현황판 우클릭 메뉴로 같은 일을 하는 항목은 함께 적었습니다.
 
@@ -122,7 +122,7 @@ handback install-skills --target-home "<absolute-test-home>" --dry-run
 
 ### 훅과 Antigravity 준비
 
-현황판: 우클릭 → **설정**에서 설치(기본으로 켜짐), 같은 창의 **훅 해제** 버튼으로 제거합니다(설정 파일과 백업 경로를 보여 줍니다).
+현황판: 우클릭 → **점검·복구 ▶** → **스킬·훅 설치·복구**에서 설치(기본으로 켜짐), 같은 창의 **훅 해제** 버튼으로 제거합니다(설정 파일과 백업 경로를 보여 줍니다).
 
 1. Antigravity를 쓴다면 체크아웃을 앱에서 프로젝트로 등록합니다. relay는 프로젝트를 만들지 않습니다. 워커 대화는 Codex처럼 등록한 프로젝트(예: `Study`) 아래에 보입니다. 전달 중에 앱이 잠깐 만드는 프로젝트 복사본은 아래 [Antigravity](#antigravity) 항목을 봅니다.
 2. 선택한 상태 홈의 `config.json`에서 `agents.antigravity.enabled`를 `true`로 설정합니다. 기존 설정에 병합합니다. 선택적 `model`은 `flash_lite`, `flash`, `pro`이며 기본값은 `flash`입니다.
@@ -291,11 +291,11 @@ python handback.py inbox redeliver --root "<absolute-checkout>" --id "<message-i
 ## 알려진 한계
 
 - Lead와 재사용하는 워커 대화는 문맥이 누적됩니다. 작은 작업은 Lead에서 처리하고, 중간 작업은 워커에 위임해 결과만 검토하며, 큰 작업은 계획 문서와 단계별 새 Lead 세션으로 나누는 운영 방식을 권합니다. 단계 사이에는 문서로 인계합니다.
-- Lead를 바꿔도 기존 요청의 반환 주소는 유지됩니다. 새 Lead의 훅·watch는 이전 주소의 결과를 자동으로 받지 않습니다. 같은 상태 홈에서 `inbox list --for "<old-lead-address>" --request "<request-id>"`로 읽고, 검토 후 같은 주소와 요청 ID로 `inbox ack`합니다. 명령에 `--root "<absolute-checkout>"`을 지정합니다.
+- Lead를 바꿔도 기존 요청의 반환 주소는 유지됩니다. 새 Lead의 훅·watch는 이전 주소의 결과를 자동으로 받지 않습니다. 같은 상태 홈에서 `inbox list --for "<old-lead-address>" --request "<request-id>"`로 읽고, 검토 후 같은 주소와 요청 ID로 `inbox ack`합니다. 새 Lead가 받게 하려면 `inbox reassign`으로 옮깁니다. 명령에 `--root "<absolute-checkout>"`을 지정합니다.
 - 검증 범위는 Windows의 한 컴퓨터·한 OS 사용자이며, 지원 조합에 제한이 있습니다. Antigravity는 읽기 전용을 강제하지 못합니다. 앱 업데이트 뒤에는 진단이 필요하고, 접수 불명·시간 초과에서는 재전송 없이 기존 요청을 회수해야 합니다.
 - Claude Monitor는 열린 요청이 남은 채 만료되면 다시 걸고, 같은 체크아웃의 작업은 순차 실행합니다. 현황판의 스캔 비용은 저장된 이력에 따라 커집니다.
 
-[알려진 한계와 우회 방법](limitations.md)은 현재 기능·운영 팁·미구현 개선안을 구분하며, Lead 교체 명령과 결과 크기·미리보기의 정확한 동작을 설명합니다. `handoff --root "<absolute-checkout>" --out "<노트 경로>"`는 토폴로지, 열린 요청, ACK 안 된 결과, 새 Lead가 실행할 명령을 노트 한 장으로 씁니다. 읽기만 하며 요청을 옮기거나 ACK하지 않습니다. 열린 요청을 새 Lead로 재할당하는 명령이나 결과 요약·길이 강제 옵션은 현재 기능이 아닙니다.
+[알려진 한계와 우회 방법](limitations.md)은 현재 기능·운영 팁·미구현 개선안을 구분하며, Lead 교체 명령과 결과 크기·미리보기의 정확한 동작을 설명합니다. `handoff --root "<absolute-checkout>" --out "<노트 경로>"`는 토폴로지, 열린 요청, ACK 안 된 결과, 새 Lead가 실행할 명령을 노트 한 장으로 씁니다. 읽기만 하며 요청을 옮기거나 ACK하지 않습니다. 이전 주소로 남은 열린 요청과 ACK 안 된 결과를 새 Lead로 옮기려면 `inbox reassign --root "<absolute-checkout>" --from "<old-lead-address>" --to "<new-lead-address>"`를 실행합니다. 열린 요청은 반환 주소가 바뀌고, ACK 안 된 결과는 새 주소로 사본을 만든 뒤 원래 주소에서 ACK합니다. 원문은 남고 워커에게는 아무것도 보내지 않습니다. `--dry-run`은 옮길 목록만 보여 주고 `--request`는 한 요청만 옮깁니다. 이전 주소의 `inbox watch`가 살아 있으면 그 세션이 같은 결과를 읽고 있을 수 있으므로 아무것도 옮기지 않고 거부합니다. 먼저 watch를 멈추거나 `--force`를 붙입니다. `new`·`send --max-result-chars N`은 작업 지시문에 N자 이내로, 요약부터 답하라는 줄을 덧붙이고, 수신함 메일과 동기 출력에는 앞의 N자와 전체 결과 파일 경로만 남깁니다. `--return-file`에는 전체 답이 그대로 기록됩니다. 별도의 결과 요약 필드는 현재 기능이 아닙니다.
 
 ## 어댑터별 한계
 

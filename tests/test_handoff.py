@@ -69,6 +69,7 @@ class HandoffTests(unittest.TestCase):
         self.assertIn("handback use --root", note)
         self.assertNotIn("inbox ack", note)
         self.assertNotIn("explain", note)
+        self.assertNotIn("reassign", note)
 
     def test_only_open_requests_are_listed_with_thread_names_and_ages(self):
         self.state.register_thread({"handle": "codex:t1", "name": "4.3 short goal"})
@@ -211,6 +212,13 @@ class HandoffTests(unittest.TestCase):
             "",
             "```sh",
             "handback use --root /work/app --lead claude:<new-session-id> --workers codex",
+            "```",
+            "",
+            "To have the new Lead receive what is still addressed to `claude:old-session`, move it there "
+            "instead of using the old-address commands below:",
+            "",
+            "```sh",
+            "handback inbox reassign --root /work/app --from claude:old-session --to claude:<new-session-id>",
             "```",
             "",
             "Open requests keep returning to `claude:old-session`. Collect and read them there:",

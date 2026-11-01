@@ -36,6 +36,43 @@ def utcnow():
     return datetime.now(timezone.utc).isoformat()
 
 
+def result_path(state, request_id):
+    """Where a large or cut result is kept in full."""
+    return state.path / "results" / (request_id + ".json")
+
+
+def reply_id(request_id):
+    """The one message ID a request's result or error is published under."""
+    return uuid.uuid5(uuid.NAMESPACE_URL, "agent-relay:" + request_id).hex
+
+
+def result_field(result):
+    """"text" or "error", whichever the Lead reads; a blank text must not hide the error."""
+    return next((key for key in ("text", "error")
+                 if isinstance(result.get(key), str) and result[key].strip()), None)
+
+
+def result_text(result):
+    field = result_field(result)
+    return result[field] if field else "(empty response)"
+
+
+def _utf8(result):
+    """Replace lone surrogates, which UTF-8 state and mail files cannot hold."""
+    return {key: value.encode("utf-8", "replace").decode("utf-8") if isinstance(value, str) else value
+            for key, value in result.items()}
+
+
+def limit_text(state, request, text):
+    """What the Lead reads: the request's first max_result_chars, then where the rest is."""
+    limit = request.get("max_result_chars")
+    if not limit or len(text) <= limit:
+        return text
+    report = result_path(state, request["id"])
+    return (text[:limit] + f"\n\n[handback: cut to {limit} of {len(text)} characters by --max-result-chars. "
+            f"Complete result: {report}]")
+
+
 def finish_request(state, request, result):
     current = _finish_request(state, request, result)
     if current.get("reply_id"):
@@ -51,19 +88,23 @@ def _finish_request(state, request, result):
         return request
     if result["outcome"] not in {"completed", "failed"}:
         raise ValueError("unknown collection outcome")
+    result = _utf8(result)
     with state.lock():
         current = state.load_request(request["id"])
         if current.get("status") in {"completed", "failed"}:
             return current
-        text = result.get("text") or result.get("error") or "(empty response)"
-        if len(json.dumps(text, ensure_ascii=False).encode("utf-8")) > 48 * 1024:
-            report = state.path / "results" / (current["id"] + ".json")
+        full = result_text(result)
+        text = limit_text(state, current, full)
+        large = len(json.dumps(text, ensure_ascii=False).encode("utf-8")) > 48 * 1024
+        if large or text != full:
+            report = result_path(state, current["id"])
             atomic_json(report, result)
-            text = "Large worker response. Read the complete result at: " + str(report)
+            if large:
+                text = "Large worker response. Read the complete result at: " + str(report)
         mail = envelope.make(current["id"], current["handle"], current["return_to"], text,
                              kind="result" if result["outcome"] == "completed" else "error",
                              hop=current.get("hop", 0) + 1,
-                             message_id=uuid.uuid5(uuid.NAMESPACE_URL, "agent-relay:" + current["id"]).hex)
+                             message_id=reply_id(current["id"]))
         # Repeating collection after a crash must publish byte-identical mail.
         mail["created_utc"] = current["created_utc"]
         inbox.put(state.path / "inbox", mail)
