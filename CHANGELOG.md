@@ -5,6 +5,21 @@ All notable changes to this project are documented here. This file follows the
 
 ## [Unreleased]
 
+### Added
+
+- `doctor` warns (`Antigravity other hooks`) when a hook other than handback's
+  in an Antigravity `hooks.json` (global, the checkout's `.agents/`, plugins)
+  runs a program that does not exist. On a non-UTF-8 Windows locale such a hook
+  stops worker conversations for good with `invalid UTF-8` (#8). The dashboard's
+  install check lists it too.
+
+### Changed
+
+- An Antigravity result that failed with `invalid UTF-8` now includes the last
+  ERROR step of the conversation's transcript, also when it came from an
+  earlier request on the same conversation, and says to fix the hook and send
+  the task with `new`, since that conversation stops on every later send.
+
 ## [0.5.5] - 2026-10-28
 
 ### Changed

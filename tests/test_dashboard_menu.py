@@ -251,6 +251,9 @@ class MenuActionTests(DashboardMenuTests):
                 {"check": "Python", "level": "OK"},
                 {"check": "codex version", "level": "WARN"}]
         self.assertEqual(dashboard.problem_lines(rows), ["Claude 스킬 없음 — 우클릭 › 설정"])
+        broken = dashboard.problem_lines([{"check": "Antigravity other hooks", "level": "WARN"}])
+        self.assertEqual(len(broken), 1)
+        self.assertIn("실행 파일 없는 다른 훅", broken[0])
         with self.sync_async(), patch.object(dashboard, "doctor_problems", return_value=[]), \
                 patch.object(self.strip, "_dialog") as dialog:
             self.strip._check_install()

@@ -299,6 +299,18 @@ def checklist(state, resolved, agents):
             "Set HANDBACK_ANTIGRAVITY to the installed Antigravity executable.")
         add("Antigravity hooks", "OK" if agy.get("capabilities", {}).get("hooks_installed") else "WARN",
             "relay hook registration", "handback install-hooks --agents antigravity")
+        from .adapters.antigravity import missing_hook_programs
+        try:
+            missing = missing_hook_programs(state.root)
+        except OSError:
+            missing = []
+        add("Antigravity other hooks", "WARN" if missing else "OK",
+            "; ".join(f"{m['group']} ({', '.join(m['events'])}) in {m['file']} runs {m['program']}, which does not exist"
+                      for m in missing) +
+            ". A failing hook can stop a worker conversation for good (invalid UTF-8 on non-UTF-8 Windows locales)"
+            if missing else "programs of other hooks exist (hooks not run)",
+            "Fix or remove these hook groups in the named file (back it up first; handback does not edit other "
+            "tools' hooks). Send work for a conversation that already stopped with new, not send.")
     for agent in ("claude", "codex"):
         try:
             detail = skill_status(agent)

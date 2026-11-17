@@ -19,7 +19,8 @@ class DiagnosticTests(unittest.TestCase):
         self.root = Path(temp.name) / "project"
         self.root.mkdir()
         self.home = Path(temp.name) / "state"
-        env = patch.dict(os.environ, HANDBACK_HOME=str(self.home))
+        self.gemini = Path(temp.name) / "gemini"
+        env = patch.dict(os.environ, HANDBACK_HOME=str(self.home), GEMINI_HOME=str(self.gemini))
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("HANDBACK_LEAD", None)
@@ -332,7 +333,24 @@ class DiagnosticTests(unittest.TestCase):
         rows = {r["check"]: r for r in rows}
         self.assertEqual(rows["Antigravity"]["level"], "OK")
         self.assertEqual(rows["Antigravity hooks"]["level"], "WARN")
+        self.assertEqual(rows["Antigravity other hooks"]["level"], "OK")
         self.assertEqual(rows["antigravity version"]["level"], "WARN")
+
+    def test_antigravity_hook_with_missing_program_warns(self):
+        # Issue #8: another tool's hook that cannot start stops worker conversations.
+        resolved = config.resolve(self.root, validate=False)
+        resolved["values"]["agents"]["antigravity"]["enabled"] = True
+        missing = str(self.root / "gone" / "ai-memory.exe")
+        hooks = self.gemini / "config" / "hooks.json"
+        hooks.parent.mkdir(parents=True)
+        hooks.write_text(json.dumps({"ai-memory": {
+            "PreToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": missing + " hook --event pre"}]}],
+            "Stop": [{"type": "command", "command": missing + " hook --event stop"}]}}), encoding="utf-8")
+        row = {r["check"]: r for r in d.checklist(self.state, resolved, self.agents)}["Antigravity other hooks"]
+        self.assertEqual(row["level"], "WARN")
+        self.assertIn("ai-memory (PreToolUse, Stop)", row["detail"])
+        self.assertIn(missing, row["detail"])
+        self.assertIn("new, not send", row["next_action"])
 
     def test_report_preserves_prerelease_and_suppresses_reader_errors(self):
         import sys

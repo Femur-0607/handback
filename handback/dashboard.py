@@ -4138,6 +4138,8 @@ def _problem_line(row):
         return "Codex 실행 파일을 쓸 수 없음 — Codex 앱을 설치·업데이트하세요"
     if name.startswith("Antigravity hooks"):
         return "Antigravity hook 없음 — handback install-hooks --agents antigravity"
+    if name == "Antigravity other hooks":
+        return "Antigravity에 실행 파일 없는 다른 훅 — 워커 대화가 멈출 수 있음, handback doctor로 확인하세요"
     if name == "Antigravity":
         return "Antigravity 실행 파일 없음 — Antigravity를 설치하세요"
     if name.endswith(" skill"):

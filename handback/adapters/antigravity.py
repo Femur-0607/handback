@@ -192,6 +192,17 @@ def _hook_entries(value):
                     yield name, event, item
 
 
+def _hook_files(root, home):
+    """Every hooks.json Antigravity reads: global, the checkout's .agents and plugins."""
+    files = [home / "config" / "hooks.json"]
+    if root:
+        files.append(Path(root) / ".agents" / "hooks.json")
+    plugins = home / "config" / "plugins"
+    if plugins.is_dir():
+        files.extend(plugins.rglob("hooks.json"))
+    return files
+
+
 def other_stop_hooks(root=None, home=None):
     """Stop hooks other than relay's that could continue a finished turn.
 
@@ -199,14 +210,8 @@ def other_stop_hooks(root=None, home=None):
     hook with the default timeout, because the relay cannot prove it is inert.
     """
     home = home or gemini_home()
-    files = [home / "config" / "hooks.json"]
-    if root:
-        files.append(Path(root) / ".agents" / "hooks.json")
-    plugins = home / "config" / "plugins"
-    if plugins.is_dir():
-        files.extend(plugins.rglob("hooks.json"))
     count, longest = 0, 0
-    for path in files:
+    for path in _hook_files(root, home):
         try:
             value = _read_json(path, {})
         except (OSError, ValueError):
@@ -219,6 +224,50 @@ def other_stop_hooks(root=None, home=None):
             timeout = hook.get("timeout", DEFAULT_HOOK_TIMEOUT) if isinstance(hook, dict) else DEFAULT_HOOK_TIMEOUT
             longest = max(longest, timeout if isinstance(timeout, (int, float)) and timeout > 0 else DEFAULT_HOOK_TIMEOUT)
     return count, longest
+
+
+def _hook_program(command):
+    """Program a hook command starts: its first word, or its quoted first part."""
+    command = command.strip()
+    if command.startswith('"'):
+        return command[1:].partition('"')[0]
+    return command.split(maxsplit=1)[0] if command else ""
+
+
+def _program_missing(program):
+    program = os.path.expanduser(os.path.expandvars(program))
+    if os.path.isabs(program):
+        return not Path(program).exists()
+    if "/" in program or "\\" in program:
+        return False  # relative to a working directory the relay cannot know
+    return shutil.which(program) is None
+
+
+def missing_hook_programs(root=None, home=None):
+    """Hooks other than relay's whose program does not exist (issue #8).
+
+    A failing hook's error output becomes a conversation step; on a non-UTF-8 Windows
+    locale it stops that conversation for good. Returns [{file, group, events, program}],
+    one per group and program. Hooks are not run; unreadable files are skipped.
+    """
+    home = home or gemini_home()
+    found = {}
+    for path in _hook_files(root, home):
+        try:
+            value = _read_json(path, {})
+        except (OSError, ValueError):
+            continue
+        for name, event, hook in _hook_entries(value):
+            if name == HOOK_GROUP and path == home / "config" / "hooks.json":
+                continue
+            command = hook.get("command") if isinstance(hook, dict) else None
+            program = _hook_program(command) if isinstance(command, str) else ""
+            if program and _program_missing(program):
+                entry = found.setdefault((str(path), name, program), [])
+                if event not in entry:
+                    entry.append(event)
+    return [{"file": file, "group": group, "events": events, "program": program}
+            for (file, group, program), events in found.items()]
 
 
 def observation_dir(home):
@@ -320,6 +369,20 @@ def _input_kind(record):
     return None
 
 
+def _step_error(record):
+    text = str(record.get("error") or record.get("content") or "").strip()
+    return text[:500] or "Antigravity step ended with ERROR"
+
+
+def _invalid_utf8_hint(step_error):
+    """Issue #8: a hook's non-UTF-8 error output stops the conversation, and every later send too."""
+    lines = ["Last ERROR step in the transcript: " + step_error] if step_error else []
+    lines.append("A hook probably failed with non-UTF-8 error output; check the Antigravity hooks.json files "
+                 "(handback doctor warns about hooks whose program is missing). This conversation now stops "
+                 "the same way on every send: after fixing the hook, send the task with new, not send.")
+    return "\n" + "\n".join(lines)
+
+
 class TranscriptCollector:
     """Incremental completion check for one marked Antigravity turn."""
 
@@ -336,6 +399,7 @@ class TranscriptCollector:
         self.candidate = None
         self.steps_after_candidate = 0
         self.last_error = None
+        self.earlier_error = None  # a conversation can already be broken before the marked input
 
     def _feed(self, record):
         kind = _input_kind(record)
@@ -344,6 +408,8 @@ class TranscriptCollector:
             if kind == "input" and self.marker in content:
                 self.seen = True
                 self.marker_at = _epoch(record.get("created_at")) or self.clock()
+            elif record.get("status") == "ERROR":
+                self.earlier_error = _step_error(record)
             return None
         if kind == "input":
             settled = self._settled_before(_epoch(record.get("created_at")))
@@ -359,7 +425,7 @@ class TranscriptCollector:
             # Any later step (tool call, tool output, continuation) supersedes the candidate.
             self.steps_after_candidate += 1
             if record.get("status") == "ERROR":
-                self.last_error = content[:500] or "Antigravity step ended with ERROR"
+                self.last_error = _step_error(record)
         return None
 
     def poll(self):
@@ -386,8 +452,10 @@ class TranscriptCollector:
         if self.candidate is None or self.steps_after_candidate:
             reason = stop.get("terminationReason")
             if stop.get("error") or (reason and reason != "NO_TOOL_CALL"):
-                outcome = {"text": "", "outcome": "failed", "turn": None,
-                           "error": f"Antigravity stopped: {reason} {stop.get('error') or self.last_error or ''}".strip()}
+                error = f"Antigravity stopped: {reason} {stop.get('error') or self.last_error or ''}".strip()
+                if "invalid UTF-8" in error:
+                    error += _invalid_utf8_hint(self.last_error or self.earlier_error)
+                outcome = {"text": "", "outcome": "failed", "turn": None, "error": error}
                 return self._confirmed(stop, outcome)
             return None
         return self._confirmed(stop, {"text": self.candidate, "outcome": "completed", "turn": None})

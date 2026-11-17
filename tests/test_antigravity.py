@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -160,6 +161,31 @@ class ProjectAndHookConfigTests(Base):
         (self.root / ".agents").mkdir()
         (self.root / ".agents" / "hooks.json").write_text("{broken", encoding="utf-8")
         self.assertEqual(agy.other_stop_hooks(self.root, self.gemini), (3, 45))
+
+    def test_missing_hook_programs_lists_other_hooks_that_cannot_start(self):
+        gone = str(self.root / "gone" / "ai-memory.exe")
+        spaced = str(self.root / "no such dir" / "tool.exe")
+        (self.gemini / "config" / "hooks.json").write_text(json.dumps({
+            agy.HOOK_GROUP: {"Stop": [{"command": str(self.root / "gone" / "handback.exe") + " hook"}]},
+            "ai-memory": {"PreToolUse": [{"matcher": "", "hooks": [{"command": gone + " hook --event pre"}]}],
+                          "PostToolUse": [{"matcher": "", "hooks": [{"command": gone + " hook --event post"}]}]},
+            "present": {"Stop": [{"command": f'"{sys.executable}" -c pass'}]},
+            "on-path": {"Stop": [{"command": "handback-test-no-such-program --x"}]},
+            "relative": {"Stop": [{"command": "bin\\tool.exe"}]},
+            "quoted": {"Stop": [{"command": f'"{spaced}" run'}]},
+            "disabled": {"enabled": False, "Stop": [{"command": gone}]}}), encoding="utf-8")
+        (self.root / ".agents").mkdir()
+        (self.root / ".agents" / "hooks.json").write_text(
+            json.dumps({agy.HOOK_GROUP: {"Stop": [{"command": gone}]}}), encoding="utf-8")
+        plugin = self.gemini / "config" / "plugins" / "x"
+        plugin.mkdir(parents=True)
+        (plugin / "hooks.json").write_text("{broken", encoding="utf-8")
+        found = {(m["group"], m["program"]): m for m in agy.missing_hook_programs(self.root, self.gemini)}
+        self.assertEqual(set(found), {("ai-memory", gone), ("on-path", "handback-test-no-such-program"),
+                                      ("quoted", spaced), (agy.HOOK_GROUP, gone)})
+        self.assertEqual(found[("ai-memory", gone)]["events"], ["PreToolUse", "PostToolUse"])
+        # Only the global relay group is handback's own; the same name in a checkout is another tool's.
+        self.assertEqual(Path(found[(agy.HOOK_GROUP, gone)]["file"]), self.root / ".agents" / "hooks.json")
 
     def test_install_and_uninstall_touch_only_relay_group(self):
         path = self.gemini / "config" / "hooks.json"
@@ -331,6 +357,34 @@ class CompletionContractTests(Base):
         result = self.collector().poll()
         self.assertEqual(result["outcome"], "failed")
         self.assertIn("model failed", result["error"])
+        self.assertNotIn("hooks.json", result["error"])
+
+    invalid_utf8 = "generating and executing: proto: field google.protobuf.Value.string_value contains invalid UTF-8"
+    hook_failed = ('JSON hook "jsonhook__ai-memory_PreToolUse_0_0" failed: command failed: exit status 1, '
+                   "stderr: �� ��\r\n")
+
+    def hook_error(self, i):
+        record = step(i, "GENERIC", "Created At: x\nEncountered error in step execution: " + self.hook_failed,
+                      status="ERROR")
+        return {**record, "error": self.hook_failed}
+
+    def test_invalid_utf8_stop_names_the_failed_step_and_the_way_out(self):
+        # Issue #8: a hook's CP949 stderr stopped the turn; the Stop error alone does not say why.
+        self.transcript(step(0, "USER_INPUT", self.marker, at=self.start), step(1, "PLANNER_RESPONSE", tools=1),
+                        self.hook_error(2))
+        self.observe("Stop", self.t0 + 2, fullyIdle=True, terminationReason="ERROR", error=self.invalid_utf8)
+        error = self.collector().poll()["error"]
+        self.assertTrue(error.startswith("Antigravity stopped: ERROR " + self.invalid_utf8 + "\n"))
+        self.assertIn("Last ERROR step in the transcript: " + self.hook_failed.strip() + "\n", error)
+        self.assertIn("send the task with new, not send", error)
+
+    def test_invalid_utf8_on_a_broken_conversation_names_the_earlier_step(self):
+        # The same conversation stops again at once, with no new ERROR step after the marked input.
+        self.transcript(step(0, "USER_INPUT", "[relay 00000000] first", at="2026-10-07T08:00:00Z"),
+                        step(1, "PLANNER_RESPONSE", tools=1), self.hook_error(2),
+                        message(3, self.marker + " again", at=self.start))
+        self.observe("Stop", self.t0 + 1, fullyIdle=True, terminationReason="ERROR", error=self.invalid_utf8)
+        self.assertIn("Last ERROR step in the transcript: JSON hook", self.collector().poll()["error"])
 
     def test_busy_stop_is_not_completion(self):
         self.transcript(step(0, "USER_INPUT", self.marker, at=self.start), step(1, "PLANNER_RESPONSE", "done"))

@@ -312,6 +312,7 @@ python handback.py inbox redeliver --root "<absolute-checkout>" --id "<message-i
 - 앱(2.23+)은 사이드카마다 같은 폴더를 가리키는 프로젝트 복사본을 만들고 사이드카 이름을 붙입니다(`handback-<등록 프로젝트 이름>-<요청 id 앞 12자리>`, 예: `handback-study-2650df801dea`). relay는 agentapi에 등록 프로젝트를 지정하므로 새 대화는 등록 프로젝트에 생깁니다. 대화가 등록 프로젝트에 있음을 앱의 대화 목록에서 확인한 뒤에만 이 복사본을 백업하고 지웁니다. 확인하지 못하면 복사본을 남기고, 전달 출력이 대화가 있는 프로젝트를 알려 줍니다. 0.5.1 이전에 만든 대화는 예전 복사본에 그대로 남습니다. 지우면 앱이 그 대화를 숨깁니다.
 - `--sandbox read-only`는 거부합니다. 읽기 전용을 강제할 수 없으므로 제한을 브리프에 씁니다. 앱의 명령 자동 실행 설정이 켜져 있으면 워커가 명령을 바로 실행할 수 있습니다.
 - 반환은 마커가 있는 `transcript_full.jsonl` 입력 이후의 답과 `fullyIdle` Stop 관찰로 확정합니다. 다른 Stop 훅의 최대 제한시간도 기다립니다. 마커 없는 앱 직접 입력은 relay 답으로 수집하지 않습니다.
+- Antigravity는 handback 것이 아닌 훅도 모두 실행합니다. 다른 도구의 훅이 실패하면 그 오류 출력이 대화 단계에 들어가고, 한국어 Windows처럼 UTF-8이 아닌 환경에서는 `invalid UTF-8` 오류로 대화가 멈춥니다. 멈춘 대화는 다시 보내도 같은 오류로 멈추므로 훅을 고친 뒤 `new`로 보냅니다. `doctor`는 실행 파일이 없는 다른 훅을 `Antigravity other hooks` 경고로 알리고(훅을 실행해 보지는 않습니다), 수집 실패 오류에 `invalid UTF-8`이 있으면 transcript의 마지막 ERROR 단계와 이 안내를 덧붙입니다. 자세한 내용은 [알려진 제한 12](limitations.md#12-another-tools-broken-antigravity-hook-can-stop-a-worker-conversation-for-good)를 봅니다.
 - `cleanup-sidecars`는 이름·명령·소유 설명을 확인한 비활성 항목 중 열린 요청이 없는 것만 백업·제거합니다. 다른 상태 홈 항목과 열린 `delivery_unknown`은 보존합니다. `doctor --json`의 `sidecar_cleanup`에서 대상 개수를 확인할 수 있습니다. 앱에 대화가 남아 있는 `handback-…` 프로젝트 복사본은 지우지 않고 남기며, 앱의 대화 DB를 읽을 수 없으면 복사본을 하나도 지우지 않습니다.
 
 ```powershell
